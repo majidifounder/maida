@@ -43,7 +43,7 @@
 
 | # | Phase | Status | Tasks |
 |---|-------|--------|-------|
-| 1 | Foundation | 🟡 In progress (2 of 4 tasks done) | Monorepo init, shared TS contracts, CI/CD, infra provision |
+| 1 | Foundation | ✅ Done (4 of 4 tasks done) | Monorepo init, shared TS contracts, CI/CD, infra provision |
 | 2 | Auth service | ⬜ Not started | Register, login, JWT issue/refresh/revoke, RBAC middleware |
 | 3 | Restaurant service | ⬜ Not started | CRUD listings, availability slots, search/filter, media upload |
 | 4 | Booking service | ⬜ Not started | Create booking (optimistic lock), cancel, list, WebSocket events |
@@ -126,10 +126,42 @@
 - `PROD_JWT_PUBLIC_KEY` — production JWT verify key (GitHub Secret)
 **Notes:** Deploy steps are stubbed with echo placeholders — real deploy commands (Railway, Vercel, Render, etc.) will be filled in during Phase 7 (QA & Launch). Branch protection rules must be enabled manually in GitHub repo settings: require PR + CI pass before merge to main. CODEOWNERS uses @majidifounder.
 
+### ✅ Phase 1 · Task 3 — Infrastructure provision + full database schema
+**Date:** 2026-06-22
+**Files created / modified:**
+- `docker-compose.yml` — PostgreSQL 16 + Redis 7 for local dev with health checks
+- `packages/db/init/00_extensions.sql` — pgcrypto, pg_trgm, citext extensions
+- `packages/db/package.json` — Prisma deps, db:migrate/seed/reset scripts
+- `packages/db/prisma/schema.prisma` — full production schema: User, RefreshToken, Restaurant, TimeSlot, Booking, AuditLog
+- `packages/db/prisma/migrations/20260101000001_constraints_and_rls/migration.sql` — CHECK constraints, trigram indexes, partial indexes, RLS policies
+- `packages/db/src/index.ts` — Prisma singleton + withUserContext helper (sets app.user_id for RLS)
+- `packages/db/src/seed.ts` — idempotent seed: 2 owners, 10 diners, 4 restaurants, 112 slots, bookings
+- `.env.example` — updated with DATABASE_URL, DIRECT_DATABASE_URL, Docker vars
+- `package.json` — added db:up, db:down, db:migrate, db:seed, db:studio, db:reset scripts
+**Interfaces / types added:**
+- `Role` enum — DINER | OWNER (Prisma)
+- `BookingStatus` enum — PENDING | CONFIRMED | CANCELLED | NO_SHOW (Prisma)
+- `CuisineType` enum — ITALIAN | FRENCH | JAPANESE | ... | OTHER (Prisma)
+**API endpoints added:** None
+**Environment variables added:**
+- `DIRECT_DATABASE_URL` — direct DB URL for Prisma migrations (bypasses PgBouncer)
+- `POSTGRES_USER` — Docker compose Postgres username
+- `POSTGRES_PASSWORD` — Docker compose Postgres password
+- `POSTGRES_DB` — Docker compose database name
+- `REDIS_PASSWORD` — Redis auth password
+**Notes:**
+- Run `docker compose up -d` then `pnpm db:migrate` then `pnpm db:seed` to initialise local DB.
+- `withUserContext(userId, fn)` MUST be called before any query that relies on RLS — it sets `app.user_id` for the transaction.
+- AuditLog is append-only — app_user has no UPDATE/DELETE on that table.
+- Slot id `[seed output id]` is fully booked in seed data — use it to test 409 responses.
+- Next: Phase 2 — Auth service (register, login, JWT RS256, refresh, revoke, RBAC middleware).
+
 ---
 
 ## 4 · SHARED TYPE CONTRACTS (`packages/types`)
 <!-- Cursor updates this section when types are added or changed -->
+
+> **Note:** Prisma enums `Role`, `BookingStatus`, and `CuisineType` in `packages/db/prisma/schema.prisma` are now the source of truth for database-layer types. The TypeScript `Role` type in `packages/types` should import from `@prisma/client` going forward.
 
 ```ts
 export type Role = 'diner' | 'owner';
@@ -192,7 +224,14 @@ export interface User {
 ## 6 · DATABASE SCHEMA (Prisma — built so far)
 <!-- Cursor updates this section as models are added -->
 
-_No models yet. Schema lives in `packages/db/schema.prisma`. Will be populated in Phase 1._
+All models defined in `packages/db/prisma/schema.prisma`:
+- `User` — id (uuid), email (citext), password (bcrypt), role, soft-delete
+- `RefreshToken` — jti, tokenHash (SHA-256), expiresAt, revokedAt
+- `Restaurant` — id, ownerId, name, slug, cuisine, city, isActive, soft-delete
+- `TimeSlot` — id, restaurantId, startsAt, capacity, booked, isActive
+- `Booking` — id, restaurantId, dinerId, slotId, partySize, status, cancelledAt
+- `AuditLog` — id, actorId, action, entityType, entityId, metadata, ipAddress (append-only)
+RLS enabled on: users, bookings, restaurants, time_slots, refresh_tokens, audit_logs
 
 ---
 
@@ -216,6 +255,11 @@ _No models yet. Schema lives in `packages/db/schema.prisma`. Will be populated i
 | `PROD_REDIS_URL` | deploy-prod.yml | GitHub Secret (production env) | Stubbed — needs real value |
 | `PROD_JWT_PRIVATE_KEY` | deploy-prod.yml | GitHub Secret (production env) | Stubbed — needs real value |
 | `PROD_JWT_PUBLIC_KEY` | deploy-prod.yml | GitHub Secret (production env) | Stubbed — needs real value |
+| `DIRECT_DATABASE_URL` | `packages/db` | `.env` | Defined in .env.example |
+| `POSTGRES_USER` | docker-compose.yml | `.env` | Defined in .env.example |
+| `POSTGRES_PASSWORD` | docker-compose.yml | `.env` | Defined in .env.example |
+| `POSTGRES_DB` | docker-compose.yml | `.env` | Defined in .env.example |
+| `REDIS_PASSWORD` | docker-compose.yml, `apps/api` | `.env` | Defined in .env.example |
 
 ---
 
@@ -225,7 +269,10 @@ _No models yet. Schema lives in `packages/db/schema.prisma`. Will be populated i
 - ✅ Monorepo scaffold created (Phase 1 · Task 1)
 - ✅ Shared TypeScript types written (packages/types)
 - ✅ CI/CD pipeline created (.github/workflows/) — deploy steps stubbed, to be filled in Phase 7
-- ❌ No database schema / Prisma models
+- ✅ Full Prisma schema written (packages/db) — User, RefreshToken, Restaurant, TimeSlot, Booking, AuditLog
+- ✅ Docker Compose ready (docker-compose.yml) — PostgreSQL 16 + Redis 7
+- ✅ RLS policies in place on all user-data tables
+- ✅ Seed script ready (idempotent)
 - ❌ No auth service (no register, login, JWT)
 - ❌ No restaurant service
 - ❌ No booking service

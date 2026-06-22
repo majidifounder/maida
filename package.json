@@ -7,7 +7,13 @@
     "build":     "turbo run build",
     "lint":      "turbo run lint",
     "typecheck": "turbo run typecheck",
-    "test":      "turbo run test"
+    "test":      "turbo run test",
+    "db:up":      "docker compose up -d",
+    "db:down":    "docker compose down",
+    "db:migrate": "pnpm --filter @restaurant/db db:migrate",
+    "db:seed":    "pnpm --filter @restaurant/db db:seed",
+    "db:studio":  "pnpm --filter @restaurant/db db:studio",
+    "db:reset":   "pnpm --filter @restaurant/db db:reset"
   },
   "devDependencies": {
     "turbo":                           "latest",

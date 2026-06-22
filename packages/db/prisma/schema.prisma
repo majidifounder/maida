@@ -1,0 +1,180 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  // directUrl used for migrations only (bypasses PgBouncer pooling)
+  directUrl  = env("DIRECT_DATABASE_URL")
+  extensions = [pgcrypto, pg_trgm, citext]
+}
+
+// ─── ENUMS ────────────────────────────────────────────────────────────────────
+
+enum Role {
+  DINER
+  OWNER
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  NO_SHOW
+}
+
+enum CuisineType {
+  ITALIAN
+  FRENCH
+  JAPANESE
+  CHINESE
+  INDIAN
+  MEXICAN
+  MEDITERRANEAN
+  AMERICAN
+  THAI
+  OTHER
+}
+
+// ─── USER ─────────────────────────────────────────────────────────────────────
+
+model User {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email     String   @unique @db.Citext   // citext = case-insensitive, prevents duplicates like User@Example.com
+  password  String                        // bcrypt hash — NEVER returned in API responses
+  role      Role     @default(DINER)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deletedAt DateTime?                     // soft delete — user data retained for audit
+
+  // Relations
+  bookings    Booking[]
+  restaurants Restaurant[]
+  sessions    RefreshToken[]
+
+  @@index([email])
+  @@index([role])
+  @@map("users")
+}
+
+// ─── REFRESH TOKEN (token revocation store) ───────────────────────────────────
+
+model RefreshToken {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  jti       String   @unique               // JWT ID — used for fast revocation lookup
+  userId    String   @db.Uuid
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String                         // SHA-256 of the raw refresh token — never store raw
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  revokedAt DateTime?                      // null = active, non-null = revoked
+
+  @@index([userId])
+  @@index([jti])
+  @@index([expiresAt])                     // for cleanup jobs (purge expired tokens)
+  @@map("refresh_tokens")
+}
+
+// ─── RESTAURANT ───────────────────────────────────────────────────────────────
+
+model Restaurant {
+  id          String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ownerId     String      @db.Uuid
+  owner       User        @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  name        String      @db.VarChar(120)
+  slug        String      @unique @db.VarChar(140)  // URL-safe identifier, e.g. "bistro-on-main-sf"
+  cuisine     CuisineType
+  description String      @db.VarChar(1000)
+  address     String      @db.VarChar(300)
+  city        String      @db.VarChar(100)
+  phone       String?     @db.VarChar(20)
+  imageUrl    String?
+  isActive    Boolean     @default(true)             // owner can deactivate without deleting
+  maxCapacity Int                                    // max party size per booking
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  deletedAt   DateTime?
+
+  // Relations
+  slots    TimeSlot[]
+  bookings Booking[]
+
+  @@index([ownerId])
+  @@index([isActive])
+  @@index([city, isActive])               // primary search query: city + active
+  @@index([cuisine, isActive])
+  // trgm index added in raw migration for name ILIKE search
+  @@map("restaurants")
+}
+
+// ─── TIME SLOT ────────────────────────────────────────────────────────────────
+
+model TimeSlot {
+  id           String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  restaurantId String     @db.Uuid
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  startsAt     DateTime                            // full datetime, not just time — timezone aware
+  durationMins Int        @default(90)            // slot duration in minutes
+  capacity     Int                                // max bookable seats in this slot
+  booked       Int        @default(0)             // current booked seats — updated atomically
+  isActive     Boolean    @default(true)          // owner can disable a slot without deleting
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  // Relations
+  bookings Booking[]
+
+  // Unique: one slot definition per restaurant per start time
+  @@unique([restaurantId, startsAt])
+  @@index([restaurantId, startsAt, isActive])    // primary availability query
+  @@index([startsAt])                            // for time-range queries across restaurants
+  @@map("time_slots")
+}
+
+// ─── BOOKING ──────────────────────────────────────────────────────────────────
+
+model Booking {
+  id           String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  restaurantId String        @db.Uuid
+  restaurant   Restaurant    @relation(fields: [restaurantId], references: [id], onDelete: Restrict)
+  dinerId      String        @db.Uuid
+  diner        User          @relation(fields: [dinerId], references: [id], onDelete: Restrict)
+  slotId       String        @db.Uuid
+  slot         TimeSlot      @relation(fields: [slotId], references: [id], onDelete: Restrict)
+  partySize    Int
+  status       BookingStatus @default(PENDING)
+  notes        String?       @db.VarChar(500)   // special requests from diner
+  cancelledAt  DateTime?
+  cancelReason String?       @db.VarChar(300)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([dinerId, status])                    // diner booking history
+  @@index([restaurantId, status])               // owner dashboard query
+  @@index([slotId])                             // conflict detection query
+  @@index([restaurantId, createdAt(sort: Desc)]) // owner dashboard sorted list
+  @@map("bookings")
+}
+
+// ─── AUDIT LOG ────────────────────────────────────────────────────────────────
+// Append-only. Never updated or deleted. Required for compliance and forensics.
+
+model AuditLog {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  actorId    String?  @db.Uuid           // null for system events or unauthenticated actions
+  actorRole  Role?
+  action     String   @db.VarChar(100)   // e.g. "booking.created", "auth.login.failed"
+  entityType String   @db.VarChar(50)    // e.g. "booking", "user", "restaurant"
+  entityId   String?  @db.Uuid
+  metadata   Json?                        // any extra context (IP, user agent, diff)
+  ipAddress  String?  @db.VarChar(45)    // IPv6-safe
+  userAgent  String?  @db.VarChar(300)
+  createdAt  DateTime @default(now())
+
+  @@index([actorId, createdAt])
+  @@index([entityType, entityId])
+  @@index([action, createdAt])
+  @@map("audit_logs")
+}
