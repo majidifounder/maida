@@ -43,7 +43,7 @@
 
 | # | Phase | Status | Tasks |
 |---|-------|--------|-------|
-| 1 | Foundation | 🟡 In progress (1 of 4 tasks done) | Monorepo init, shared TS contracts, CI/CD, infra provision |
+| 1 | Foundation | 🟡 In progress (2 of 4 tasks done) | Monorepo init, shared TS contracts, CI/CD, infra provision |
 | 2 | Auth service | ⬜ Not started | Register, login, JWT issue/refresh/revoke, RBAC middleware |
 | 3 | Restaurant service | ⬜ Not started | CRUD listings, availability slots, search/filter, media upload |
 | 4 | Booking service | ⬜ Not started | Create booking (optimistic lock), cancel, list, WebSocket events |
@@ -104,6 +104,27 @@
 - `PORT` — API server port (default 3001)
 - `QUEUE_NAME` — message queue name (default: booking_events)
 **Notes:** User must run `pnpm install` from the root after this step. No app is executable yet — all are empty scaffolds. Next: Phase 1 Task 2 — CI/CD pipeline.
+
+### ✅ Phase 1 · Task 2 — CI/CD Pipeline
+**Date:** 2026-06-22
+**Files created / modified:**
+- `.github/workflows/ci.yml` — lint, typecheck, test, build on every push/PR
+- `.github/workflows/deploy-staging.yml` — auto-deploy to staging on merge to main
+- `.github/workflows/deploy-prod.yml` — manual-only production deploy with DEPLOY confirmation gate
+- `.github/CODEOWNERS` — protects workflows/, auth paths, db, .env.example
+- `.github/pull_request_template.md` — enforces security + checklist on every PR
+**Interfaces / types added:** None
+**API endpoints added:** None
+**Environment variables added:**
+- `STAGING_DATABASE_URL` — staging DB (GitHub Secret: staging environment)
+- `STAGING_REDIS_URL` — staging Redis (GitHub Secret: staging environment)
+- `STAGING_JWT_PRIVATE_KEY` — staging JWT signing key (GitHub Secret)
+- `STAGING_JWT_PUBLIC_KEY` — staging JWT verify key (GitHub Secret)
+- `PROD_DATABASE_URL` — production DB (GitHub Secret: production environment)
+- `PROD_REDIS_URL` — production Redis (GitHub Secret: production environment)
+- `PROD_JWT_PRIVATE_KEY` — production JWT signing key (GitHub Secret)
+- `PROD_JWT_PUBLIC_KEY` — production JWT verify key (GitHub Secret)
+**Notes:** Deploy steps are stubbed with echo placeholders — real deploy commands (Railway, Vercel, Render, etc.) will be filled in during Phase 7 (QA & Launch). Branch protection rules must be enabled manually in GitHub repo settings: require PR + CI pass before merge to main. CODEOWNERS uses @majidifounder.
 
 ---
 
@@ -187,6 +208,14 @@ _No models yet. Schema lives in `packages/db/schema.prisma`. Will be populated i
 | `NODE_ENV` | all apps | `.env` | Defined in .env.example |
 | `PORT` | `apps/api` | `.env` | Defined in .env.example |
 | `QUEUE_NAME` | `apps/api` | `.env` | Defined in .env.example |
+| `STAGING_DATABASE_URL` | deploy-staging.yml | GitHub Secret (staging env) | Stubbed — needs real value |
+| `STAGING_REDIS_URL` | deploy-staging.yml | GitHub Secret (staging env) | Stubbed — needs real value |
+| `STAGING_JWT_PRIVATE_KEY` | deploy-staging.yml | GitHub Secret (staging env) | Stubbed — needs real value |
+| `STAGING_JWT_PUBLIC_KEY` | deploy-staging.yml | GitHub Secret (staging env) | Stubbed — needs real value |
+| `PROD_DATABASE_URL` | deploy-prod.yml | GitHub Secret (production env) | Stubbed — needs real value |
+| `PROD_REDIS_URL` | deploy-prod.yml | GitHub Secret (production env) | Stubbed — needs real value |
+| `PROD_JWT_PRIVATE_KEY` | deploy-prod.yml | GitHub Secret (production env) | Stubbed — needs real value |
+| `PROD_JWT_PUBLIC_KEY` | deploy-prod.yml | GitHub Secret (production env) | Stubbed — needs real value |
 
 ---
 
@@ -195,13 +224,13 @@ _No models yet. Schema lives in `packages/db/schema.prisma`. Will be populated i
 
 - ✅ Monorepo scaffold created (Phase 1 · Task 1)
 - ✅ Shared TypeScript types written (packages/types)
+- ✅ CI/CD pipeline created (.github/workflows/) — deploy steps stubbed, to be filled in Phase 7
 - ❌ No database schema / Prisma models
 - ❌ No auth service (no register, login, JWT)
 - ❌ No restaurant service
 - ❌ No booking service
 - ❌ No notification service
 - ❌ No frontend apps
-- ❌ No CI pipeline
 - ❌ No Redis or queue integration
 - ❌ No WebSocket server
 

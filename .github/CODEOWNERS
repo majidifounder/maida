@@ -1,0 +1,9 @@
+# Global fallback — any unmatched file requires review
+*                               @majidifounder
+
+# Security-sensitive paths — require explicit review
+.github/workflows/              @majidifounder
+packages/config/                @majidifounder
+apps/api/src/auth/              @majidifounder
+packages/db/                    @majidifounder
+.env.example                    @majidifounder
