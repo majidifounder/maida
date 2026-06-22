@@ -1,0 +1,12 @@
+{
+  "name": "@restaurant/types",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev":       "echo 'not implemented yet'",
+    "build":     "echo 'not implemented yet'",
+    "lint":      "eslint src --ext .ts",
+    "typecheck": "tsc --noEmit",
+    "test":      "echo 'no tests yet'"
+  }
+}
