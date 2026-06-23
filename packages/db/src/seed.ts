@@ -1,6 +1,5 @@
 import { PrismaClient, Role, CuisineType, BookingStatus } from '@prisma/client';
 import { faker } from '@faker-js/faker';
-import { createHash } from 'crypto';
 
 const prisma = new PrismaClient();
 
@@ -138,5 +137,5 @@ async function main(): Promise<void> {
 }
 
 main()
-  .catch((e) => { console.error(e); process.exit(1); })
-  .finally(() => prisma.$disconnect());
+  .catch((e: unknown) => { console.error(e); process.exit(1); })
+  .finally(() => { void prisma.$disconnect(); });

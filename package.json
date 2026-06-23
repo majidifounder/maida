@@ -1,6 +1,7 @@
 {
   "name": "restaurant-platform",
   "private": true,
+  "packageManager": "pnpm@9.12.3",
   "engines": { "node": ">=20" },
   "scripts": {
     "dev":       "turbo run dev",
@@ -8,7 +9,9 @@
     "lint":      "turbo run lint",
     "typecheck": "turbo run typecheck",
     "test":      "turbo run test",
-    "db:up":      "docker compose up -d",
+    "redis:up":   "docker compose up -d redis",
+    "redis:down": "docker compose down",
+    "db:up":      "docker compose up -d redis",
     "db:down":    "docker compose down",
     "db:migrate": "pnpm --filter @restaurant/db db:migrate",
     "db:seed":    "pnpm --filter @restaurant/db db:seed",

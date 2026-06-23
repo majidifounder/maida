@@ -17,7 +17,8 @@ if (process.env.NODE_ENV !== 'production') {
   globalForPrisma.prisma = prisma;
 }
 
-// Set app.user_id in every transaction — required by RLS policies
+// Set app.user_id in every transaction — used with optional self-hosted RLS (see packages/db/sql/rls_self_hosted_optional.sql).
+// On Supabase, Prisma uses the direct connection; authorization is enforced in the API (JWT + RBAC).
 export async function withUserContext<T>(
   userId: string,
   fn: (tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0]) => Promise<T>

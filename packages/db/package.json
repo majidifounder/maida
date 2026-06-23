@@ -3,12 +3,13 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
-    "db:generate":  "prisma generate",
-    "db:migrate":   "prisma migrate dev",
-    "db:push":      "prisma db push",
-    "db:studio":    "prisma studio",
-    "db:seed":      "tsx src/seed.ts",
-    "db:reset":     "prisma migrate reset --force && tsx src/seed.ts",
+    "db:generate":  "dotenv -e ../../.env -- prisma generate",
+    "db:migrate":   "dotenv -e ../../.env -- prisma generate && dotenv -e ../../.env -- prisma migrate deploy",
+    "db:push":      "dotenv -e ../../.env -- prisma db push",
+    "db:studio":    "dotenv -e ../../.env -- prisma studio",
+    "db:seed":      "dotenv -e ../../.env -- tsx src/seed.ts",
+    "db:reset":     "dotenv -e ../../.env -- prisma migrate reset --force && dotenv -e ../../.env -- tsx src/seed.ts",
+    "lint":         "eslint src --ext .ts",
     "typecheck":    "tsc --noEmit",
     "build":        "tsc"
   },
@@ -18,6 +19,8 @@
   "devDependencies": {
     "prisma":    "^5.14.0",
     "tsx":       "^4.15.0",
-    "@faker-js/faker": "^8.4.0"
+    "@faker-js/faker": "^8.4.0",
+    "@types/node": "^20.14.0",
+    "dotenv-cli": "^7.4.2"
   }
 }

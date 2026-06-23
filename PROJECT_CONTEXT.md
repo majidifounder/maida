@@ -13,8 +13,8 @@
 | Backend | Node.js + Fastify (`apps/api`) |
 | Frontend (diner) | React SPA (`apps/web`) |
 | Frontend (owner) | React SPA (`apps/dashboard`) |
-| Database | PostgreSQL via Prisma (`packages/db`) |
-| Cache / pub-sub | Redis |
+| Database | PostgreSQL via Prisma on **Supabase** (`packages/db`) |
+| Cache / pub-sub | **Redis** (Upstash or local Docker for dev) |
 | Queue | Message queue (BullMQ or similar) |
 | Shared types | `packages/types` |
 | Shared config | `packages/config` (ESLint, Prettier, tsconfig) |
@@ -23,6 +23,8 @@
 | Real-time | WebSocket (owner dashboard) via Redis pub/sub |
 | Security layers | TLS, rate-limit (Redis counter), JWT validation, mTLS internal, RBAC, optimistic locking |
 | CI/CD | GitHub Actions → staging (auto) → production (manual gate) |
+| Local dev DB | Supabase (hosted PostgreSQL — Docker not available on dev machine) |
+| Local dev Redis | Upstash (hosted Redis — Docker not available on dev machine) |
 
 ---
 
@@ -36,6 +38,10 @@
 - Gateway handles: TLS termination, rate-limit (`429`), JWT verify (`401`), request logging.
 - Services communicate internally over **mTLS** — gateway never touches DB directly.
 - Roles: `diner` | `owner` only — defined in `packages/types`.
+- **Database:** Supabase PostgreSQL — `DATABASE_URL` (pooled, port 6543) for runtime; `DIRECT_DATABASE_URL` (port 5432) for Prisma migrations only.
+- **Cache / queue:** Redis via `REDIS_URL` (Upstash in cloud; optional local Docker via `pnpm redis:up`).
+- **Auth:** Custom JWT (RS256) — not Supabase Auth. `SUPABASE_*` keys are for project metadata only unless extended later.
+- Local development uses **Supabase** (hosted PostgreSQL) and **Upstash** (hosted Redis) instead of Docker — virtualization unavailable on dev machine. This mirrors the production architecture exactly and is the preferred setup going forward.
 
 ---
 
@@ -156,6 +162,46 @@
 - Slot id `[seed output id]` is fully booked in seed data — use it to test 409 responses.
 - Next: Phase 2 — Auth service (register, login, JWT RS256, refresh, revoke, RBAC middleware).
 
+### ✅ Infra pivot — Supabase + Redis
+**Date:** 2026-06-23
+**Files created / modified:**
+- `docker-compose.yml` — Redis only (optional local dev); Postgres removed
+- `.env.example` — Supabase `DATABASE_URL` / `DIRECT_DATABASE_URL`, `SUPABASE_*`, `REDIS_URL`
+- `packages/db/sql/supabase_enable_extensions.sql` — run in Supabase SQL Editor before migrate
+- `packages/db/sql/rls_self_hosted_optional.sql` — RLS moved out of Prisma migration (Supabase incompatible)
+- `packages/db/prisma/migrations/20260101000001_constraints_and_rls/migration.sql` — constraints + indexes only
+- `package.json` — `redis:up` / `redis:down`; `db:up` now starts Redis only
+- `packages/db/src/index.ts` — updated `withUserContext` comment for Supabase
+**Interfaces / types added:** None
+**API endpoints added:** None
+**Environment variables added:**
+- `SUPABASE_URL` — Supabase project URL
+- `SUPABASE_ANON_KEY` — public anon key (optional, future client features)
+- `SUPABASE_SERVICE_ROLE_KEY` — server-only (optional; never expose to browser)
+**Environment variables removed:**
+- `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` — no local Postgres
+**Notes:**
+- Setup: enable extensions in Supabase → copy connection strings to `.env` → `pnpm db:migrate` → `pnpm db:seed`.
+- Redis: set `REDIS_URL` from Upstash, or run `pnpm redis:up` and use `redis://:devredispass@localhost:6379`.
+- Do not run `rls_self_hosted_optional.sql` on Supabase.
+
+### ✅ Phase 1 · Task 3b — Infrastructure switch: Docker → Supabase + Upstash
+**Date:** 2026-06-23
+**Files created / modified:**
+- `PROJECT_CONTEXT.md` — updated to reflect cloud infrastructure
+**Notes:**
+- Docker Desktop fails on dev machine (virtualization not supported in BIOS).
+- Switched to Supabase (hosted PostgreSQL) + Upstash (hosted Redis).
+- `docker-compose.yml` remains in the repo for future contributors who can run Docker.
+- `.env` file (not committed) contains live Supabase DATABASE_URL, DIRECT_DATABASE_URL, and Upstash REDIS_URL.
+- All Phase 1 verification steps passed against Supabase:
+  - Migration: 2 migrations applied cleanly
+  - Seed: 2 owners, 10 diners, 4 restaurants, 112 slots, 12 bookings
+  - Fully-booked slot id for 409 testing: 85a899ad-ca52-46ca-ac39-5e0015d0caf3
+  - typecheck: 6/6 pass, 0 errors
+  - lint: 6/6 pass, 0 errors (3 no-console warnings in seed.ts are intentional)
+- Next: Phase 2 — Auth service
+
 ---
 
 ## 4 · SHARED TYPE CONTRACTS (`packages/types`)
@@ -231,7 +277,7 @@ All models defined in `packages/db/prisma/schema.prisma`:
 - `TimeSlot` — id, restaurantId, startsAt, capacity, booked, isActive
 - `Booking` — id, restaurantId, dinerId, slotId, partySize, status, cancelledAt
 - `AuditLog` — id, actorId, action, entityType, entityId, metadata, ipAddress (append-only)
-RLS enabled on: users, bookings, restaurants, time_slots, refresh_tokens, audit_logs
+RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (not applied on Supabase; API enforces access)
 
 ---
 
@@ -240,8 +286,8 @@ RLS enabled on: users, bookings, restaurants, time_slots, refresh_tokens, audit_
 
 | Variable | Used in | Set in | Status |
 |----------|---------|--------|--------|
-| `DATABASE_URL` | `packages/db`, `apps/api` | `.env` | Defined in .env.example |
-| `REDIS_URL` | `apps/api` | `.env` | Defined in .env.example |
+| `DATABASE_URL` | `packages/db`, `apps/api` | `.env` (Supabase pooled / port 6543) | Active — Supabase Transaction Pooler URL (port 6543) |
+| `REDIS_URL` | `apps/api` | `.env` (Upstash or local Docker) | Active — Upstash Redis URL (rediss://) |
 | `JWT_PRIVATE_KEY` | `apps/api` | `.env` | Defined in .env.example |
 | `JWT_PUBLIC_KEY` | `apps/api` | `.env` | Defined in .env.example |
 | `NODE_ENV` | all apps | `.env` | Defined in .env.example |
@@ -255,11 +301,11 @@ RLS enabled on: users, bookings, restaurants, time_slots, refresh_tokens, audit_
 | `PROD_REDIS_URL` | deploy-prod.yml | GitHub Secret (production env) | Stubbed — needs real value |
 | `PROD_JWT_PRIVATE_KEY` | deploy-prod.yml | GitHub Secret (production env) | Stubbed — needs real value |
 | `PROD_JWT_PUBLIC_KEY` | deploy-prod.yml | GitHub Secret (production env) | Stubbed — needs real value |
-| `DIRECT_DATABASE_URL` | `packages/db` | `.env` | Defined in .env.example |
-| `POSTGRES_USER` | docker-compose.yml | `.env` | Defined in .env.example |
-| `POSTGRES_PASSWORD` | docker-compose.yml | `.env` | Defined in .env.example |
-| `POSTGRES_DB` | docker-compose.yml | `.env` | Defined in .env.example |
-| `REDIS_PASSWORD` | docker-compose.yml, `apps/api` | `.env` | Defined in .env.example |
+| `DIRECT_DATABASE_URL` | `packages/db` | `.env` (Supabase direct / port 5432) | Active — Supabase Direct Connection URL (port 5432) |
+| `SUPABASE_URL` | optional | `.env` | Defined in .env.example |
+| `SUPABASE_ANON_KEY` | optional | `.env` | Defined in .env.example |
+| `SUPABASE_SERVICE_ROLE_KEY` | optional | `.env` | Defined in .env.example |
+| `REDIS_PASSWORD` | docker-compose.yml (local Redis only) | `.env` | Defined in .env.example |
 
 ---
 
@@ -270,8 +316,9 @@ RLS enabled on: users, bookings, restaurants, time_slots, refresh_tokens, audit_
 - ✅ Shared TypeScript types written (packages/types)
 - ✅ CI/CD pipeline created (.github/workflows/) — deploy steps stubbed, to be filled in Phase 7
 - ✅ Full Prisma schema written (packages/db) — User, RefreshToken, Restaurant, TimeSlot, Booking, AuditLog
-- ✅ Docker Compose ready (docker-compose.yml) — PostgreSQL 16 + Redis 7
-- ✅ RLS policies in place on all user-data tables
+- ✅ docker-compose.yml exists (for future Docker users) — dev machine uses Supabase + Upstash instead
+- ✅ Supabase PostgreSQL connected and migrated (Phase 1 verified)
+- ✅ Upstash Redis connected (Phase 1 verified)
 - ✅ Seed script ready (idempotent)
 - ❌ No auth service (no register, login, JWT)
 - ❌ No restaurant service
