@@ -10,6 +10,7 @@ import { getRedisClient } from './lib/redis.js';
 import authenticatePlugin from './plugins/authenticate.js';
 import { authRoutes } from './modules/auth/auth.routes.js';
 import { restaurantRoutes } from './modules/restaurant/restaurant.routes.js';
+import { bookingRoutes } from './modules/booking/booking.routes.js';
 
 async function buildServer() {
   const fastify = Fastify({
@@ -69,6 +70,7 @@ async function buildServer() {
   await fastify.register(authenticatePlugin);
   await fastify.register(authRoutes);
   await fastify.register(restaurantRoutes);
+  await fastify.register(bookingRoutes);
 
   fastify.setErrorHandler((error, _request, reply) => {
     if (env.NODE_ENV === 'production' && !('statusCode' in error)) {

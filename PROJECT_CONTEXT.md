@@ -52,7 +52,7 @@
 | 1 | Foundation | ✅ Done (4 of 4 tasks done) | Monorepo init, shared TS contracts, CI/CD, infra provision |
 | 2 | Auth service | ✅ Done (2 of 2 tasks done) | Register, login, JWT issue/refresh/revoke, RBAC middleware, integration tests |
 | 3 | Restaurant service | ✅ Done (2 of 2 tasks done) | CRUD listings, availability slots, search/filter, media upload |
-| 4 | Booking service | ⬜ Not started | Create booking (optimistic lock), cancel, list, WebSocket events |
+| 4 | Booking service | 🟡 In progress (1 of 2 tasks done) | Create booking (optimistic lock), cancel, list, WebSocket events |
 | 5 | Notification service | ⬜ Not started | Queue consumer, email diner, alert owner (async) |
 | 6 | Frontend | ⬜ Not started | Diner web app + Owner dashboard (React, JWT storage, WebSocket) |
 | 7 | QA & Launch | ⬜ Not started | Unit tests, integration tests, load test (concurrent booking), prod checklist |
@@ -330,6 +330,37 @@
 - **84 tests passed** on 2026-06-24 (33 auth + 51 restaurant); typecheck 0 errors
 - Next: Phase 4 · Task 1 — Booking service (SELECT FOR UPDATE atomic transaction, cancel, list)
 
+### ✅ Phase 4 · Task 1 — Booking Service
+**Date:** 2026-06-24
+**Files created / modified:**
+- `apps/api/package.json` — added `bullmq` dependency
+- `apps/api/src/env.ts` — added `QUEUE_NAME` to Zod schema (default `booking_events`)
+- `apps/api/src/lib/queue.ts` — BullMQ producer; `publishBookingEvent()`; non-fatal; connection via Redis URL options
+- `apps/api/src/modules/booking/booking.schema.ts` — CreateBookingSchema, ListBookingsQuerySchema, ListRestaurantBookingsQuerySchema
+- `apps/api/src/modules/booking/booking.service.ts` — createBooking (SELECT FOR UPDATE), listMyBookings, getMyBooking, cancelMyBooking, listRestaurantBookings, confirmBooking, cancelBookingByOwner
+- `apps/api/src/modules/booking/booking.routes.ts` — 7 routes (4 diner, 3 owner)
+- `apps/api/src/index.ts` — registered bookingRoutes
+**API endpoints added:**
+- `POST /bookings` — diner creates booking; SELECT FOR UPDATE; 201; dinerId from JWT
+- `GET /bookings` — diner lists own bookings; Bearer + role=diner
+- `GET /bookings/:id` — diner gets single own booking
+- `PATCH /bookings/:id/cancel` — diner cancels own; decrements slot.booked; invalidates cache
+- `GET /restaurants/:id/bookings` — owner lists bookings; includes dinerId + diner email
+- `PATCH /restaurants/:id/bookings/:bookingId/confirm` — owner confirms; PENDING→CONFIRMED only
+- `PATCH /restaurants/:id/bookings/:bookingId/cancel` — owner cancels; decrements slot.booked
+**Environment variables added:** None (`QUEUE_NAME` now validated in `env.ts`; was already in `.env.example`)
+**Notes:**
+- dinerId ALWAYS from req.user.sub — never accepted from body
+- SELECT FOR UPDATE locks `time_slots` row inside Prisma `$transaction` (`CAST($slotId AS uuid)` for Supabase)
+- Over-capacity: 409; does NOT reveal raw available count
+- Past-slot guard: startsAt <= now → 409
+- After commit (non-fatal): Redis slot cache invalidated + BullMQ event published
+- Cancellation (diner or owner): decrements slot.booked by partySize in same transaction
+- BullMQ connection uses Redis URL options object (avoids ioredis version mismatch with bullmq peer)
+- Queue consumer (Phase 5) will process booking.created / booking.cancelled / booking.confirmed events
+- **Verification (prompt §7):** all 16 assertions passed via Fastify inject (2026-06-24); typecheck + lint 0 errors; existing 84 tests still pass
+- Next: Phase 4 · Task 2 — Booking service integration tests
+
 ---
 
 ## 4 · SHARED TYPE CONTRACTS (`packages/types`)
@@ -407,6 +438,13 @@ export interface User {
 | POST | `/restaurants/:id/slots` | api | Bearer JWT + role=owner | ✅ Live |
 | PATCH | `/restaurants/:id/slots/:slotId` | api | Bearer JWT + role=owner | ✅ Live |
 | DELETE | `/restaurants/:id/slots/:slotId` | api | Bearer JWT + role=owner | ✅ Live |
+| POST | `/bookings` | api | Bearer JWT + role=diner | ✅ Live |
+| GET | `/bookings` | api | Bearer JWT + role=diner | ✅ Live |
+| GET | `/bookings/:id` | api | Bearer JWT + role=diner | ✅ Live |
+| PATCH | `/bookings/:id/cancel` | api | Bearer JWT + role=diner | ✅ Live |
+| GET | `/restaurants/:id/bookings` | api | Bearer JWT + role=owner | ✅ Live |
+| PATCH | `/restaurants/:id/bookings/:bookingId/confirm` | api | Bearer JWT + role=owner | ✅ Live |
+| PATCH | `/restaurants/:id/bookings/:bookingId/cancel` | api | Bearer JWT + role=owner | ✅ Live |
 
 ---
 
@@ -437,7 +475,7 @@ RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (no
 | `CORS_ORIGIN` | `apps/api` | `.env` | Defined in .env.example — comma-separated origins |
 | `NODE_ENV` | all apps | `.env` | Defined in .env.example |
 | `PORT` | `apps/api` | `.env` | Defined in .env.example |
-| `QUEUE_NAME` | `apps/api` | `.env` | Defined in .env.example |
+| `QUEUE_NAME` | `apps/api` | `.env` | Validated in `env.ts` — default `booking_events`; BullMQ producer active |
 | `STAGING_DATABASE_URL` | deploy-staging.yml | GitHub Secret (staging env) | Stubbed — needs real value |
 | `STAGING_REDIS_URL` | deploy-staging.yml | GitHub Secret (staging env) | Stubbed — needs real value |
 | `STAGING_JWT_PRIVATE_KEY` | deploy-staging.yml | GitHub Secret (staging env) | Stubbed — needs real value |
@@ -471,10 +509,10 @@ RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (no
 - ✅ Auth integration tests complete (33 tests; Vitest + Fastify `inject()`; Supabase + Upstash)
 - ✅ Restaurant service complete (10 endpoints; 51 integration tests)
 - ✅ Restaurant service integration tests complete (51 tests; combined suite 84)
-- ❌ No booking service
+- ✅ Booking service complete (7 endpoints; SELECT FOR UPDATE; BullMQ producer)
+- ✅ Queue producer integrated — `publishBookingEvent()` via BullMQ (consumer in Phase 5)
 - ❌ No notification service
 - ❌ No frontend apps
-- ❌ No queue integration
 - ❌ No WebSocket server
 
 ---

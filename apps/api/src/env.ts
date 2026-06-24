@@ -9,6 +9,7 @@ const EnvSchema = z.object({
   JWT_PUBLIC_KEY: z.string().min(1, 'JWT_PUBLIC_KEY is required'),
   BCRYPT_ROUNDS: z.coerce.number().int().min(10).max(14).default(12),
   CORS_ORIGIN: z.string().default('http://localhost:5173,http://localhost:5174'),
+  QUEUE_NAME: z.string().default('booking_events'),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
