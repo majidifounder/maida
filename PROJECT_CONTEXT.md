@@ -51,7 +51,7 @@
 |---|-------|--------|-------|
 | 1 | Foundation | ✅ Done (4 of 4 tasks done) | Monorepo init, shared TS contracts, CI/CD, infra provision |
 | 2 | Auth service | ✅ Done (2 of 2 tasks done) | Register, login, JWT issue/refresh/revoke, RBAC middleware, integration tests |
-| 3 | Restaurant service | ⬜ Not started | CRUD listings, availability slots, search/filter, media upload |
+| 3 | Restaurant service | 🟡 In progress (1 of 2 tasks done) | CRUD listings, availability slots, search/filter, media upload |
 | 4 | Booking service | ⬜ Not started | Create booking (optimistic lock), cancel, list, WebSocket events |
 | 5 | Notification service | ⬜ Not started | Queue consumer, email diner, alert owner (async) |
 | 6 | Frontend | ⬜ Not started | Diner web app + Owner dashboard (React, JWT storage, WebSocket) |
@@ -271,6 +271,39 @@
 - **33 tests passed** on 2026-06-24 against Supabase + Upstash; typecheck still passes
 - Next: Phase 3 · Task 1 — Restaurant service (CRUD listings, availability slots, search, Redis caching)
 
+### ✅ Phase 3 · Task 1 — Restaurant Service
+**Date:** 2026-06-24
+**Files created / modified:**
+- `apps/api/src/modules/restaurant/restaurant.schema.ts` — Zod schemas: CreateRestaurant, UpdateRestaurant, SearchRestaurants, GetSlotsQuery, CreateSlots, UpdateSlot
+- `apps/api/src/modules/restaurant/restaurant.service.ts` — searchRestaurants (raw query for availability filter), getRestaurant, getAvailableSlots (Redis-cached), getMyRestaurants, createRestaurant, updateRestaurant, deleteRestaurant, createSlots, updateSlot, deleteSlot
+- `apps/api/src/modules/restaurant/restaurant.routes.ts` — 10 routes (4 public, 6 owner-only)
+- `apps/api/src/index.ts` — registered restaurantRoutes
+**API endpoints added:**
+- `GET /restaurants` — public search: q, city, cuisine, date, partySize, page, limit
+- `GET /restaurants/mine` — owner: own restaurants; Bearer + role=owner
+- `GET /restaurants/:id` — public: single restaurant (no ownerId/deletedAt/isActive)
+- `GET /restaurants/:id/slots?date=YYYY-MM-DD` — public: available slots; cached 5 min; available only
+- `POST /restaurants` — owner: create; ownerId from JWT
+- `PATCH /restaurants/:id` — owner: update; ownership enforced
+- `DELETE /restaurants/:id` — owner: soft delete; 204
+- `POST /restaurants/:id/slots` — owner: bulk create ≤50 slots; cache invalidated
+- `PATCH /restaurants/:id/slots/:slotId` — owner: update slot; cache invalidated
+- `DELETE /restaurants/:id/slots/:slotId` — owner: soft delete slot; 204
+**Environment variables added:** None
+**Notes:**
+- booked NEVER in public responses — only available = capacity - booked
+- Ownership guard runs before every mutation; cross-owner access → 403 (not 404)
+- date+partySize search uses $queryRaw against `time_slots`: SELECT DISTINCT restaurantId WHERE (capacity-booked) >= N
+- Redis cache key: restaurant:{id}:slots:{YYYY-MM-DD}, TTL 300s; errors non-fatal
+- Cache invalidated on createSlots/updateSlot/deleteSlot for affected dates
+- Slug: kebab-case(name) + first 8 chars of a new UUID
+- Soft delete: sets deletedAt=now, isActive=false; public routes filter deletedAt: null
+- /restaurants/mine registered before /:id (Fastify static-segment priority)
+- createRestaurant sets maxCapacity=20 (required Prisma field; not in request body)
+- Search partySize has no upper bound — impossible sizes (e.g. 999) return total: 0 via SQL
+- **Verification (prompt §6):** all 25 assertions passed via Fastify inject (2026-06-24); typecheck + lint 0 errors; auth tests still 33/33
+- Next: Phase 3 · Task 2 — Restaurant service integration tests
+
 ---
 
 ## 4 · SHARED TYPE CONTRACTS (`packages/types`)
@@ -338,6 +371,16 @@ export interface User {
 | POST | `/auth/refresh` | api | Refresh token (cookie or body) | ✅ Live |
 | POST | `/auth/logout` | api | Bearer JWT | ✅ Live |
 | GET | `/auth/me` | api | Bearer JWT | ✅ Live |
+| GET | `/restaurants` | api | None | ✅ Live |
+| GET | `/restaurants/mine` | api | Bearer JWT + role=owner | ✅ Live |
+| GET | `/restaurants/:id` | api | None | ✅ Live |
+| GET | `/restaurants/:id/slots` | api | None | ✅ Live |
+| POST | `/restaurants` | api | Bearer JWT + role=owner | ✅ Live |
+| PATCH | `/restaurants/:id` | api | Bearer JWT + role=owner | ✅ Live |
+| DELETE | `/restaurants/:id` | api | Bearer JWT + role=owner | ✅ Live |
+| POST | `/restaurants/:id/slots` | api | Bearer JWT + role=owner | ✅ Live |
+| PATCH | `/restaurants/:id/slots/:slotId` | api | Bearer JWT + role=owner | ✅ Live |
+| DELETE | `/restaurants/:id/slots/:slotId` | api | Bearer JWT + role=owner | ✅ Live |
 
 ---
 
@@ -397,10 +440,10 @@ RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (no
 - ✅ Upstash Redis connected (Phase 1 verified)
 - ✅ Seed script ready (idempotent)
 - ✅ Auth service complete — register, login, refresh, logout, JWT RS256, Redis deny-list, rate limiting (`apps/api`)
-- ✅ RBAC middleware (`requireRole`) — built in `authenticate` plugin; not yet wired to restaurant/booking routes
+- ✅ RBAC middleware (`requireRole`) — wired on all 6 owner restaurant routes
 - ✅ Redis integrated in API — deny-list on logout + global rate limit (Upstash)
 - ✅ Auth integration tests complete (33 tests; Vitest + Fastify `inject()`; Supabase + Upstash)
-- ❌ No restaurant service
+- ✅ Restaurant service complete (10 endpoints; integration tests pending — Phase 3 · Task 2)
 - ❌ No booking service
 - ❌ No notification service
 - ❌ No frontend apps
