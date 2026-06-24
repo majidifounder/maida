@@ -23,6 +23,7 @@
     "@restaurant/db": "workspace:*",
     "@restaurant/types": "workspace:*",
     "bcryptjs": "^2.4.3",
+    "bullmq": "^5.79.1",
     "fastify": "^4.29.1",
     "fastify-plugin": "^4.5.1",
     "ioredis": "^5.11.1",
