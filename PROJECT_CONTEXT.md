@@ -19,7 +19,7 @@
 | Shared types | `packages/types` |
 | Shared config | `packages/config` (ESLint, Prettier, tsconfig) |
 | Shared UI | `packages/ui` |
-| Auth | JWT (RS256) — Access token (15 min) + Refresh token (7 days); API live at `http://localhost:3001`; 33 Vitest integration tests |
+| Auth | JWT (RS256) — Access token (15 min) + Refresh token (7 days); API live at `http://localhost:3001`; 84 Vitest integration tests |
 | Real-time | WebSocket (owner dashboard) via Redis pub/sub |
 | Security layers | TLS, rate-limit (Redis counter), JWT validation, mTLS internal, RBAC, optimistic locking |
 | CI/CD | GitHub Actions → staging (auto) → production (manual gate) |
@@ -51,7 +51,7 @@
 |---|-------|--------|-------|
 | 1 | Foundation | ✅ Done (4 of 4 tasks done) | Monorepo init, shared TS contracts, CI/CD, infra provision |
 | 2 | Auth service | ✅ Done (2 of 2 tasks done) | Register, login, JWT issue/refresh/revoke, RBAC middleware, integration tests |
-| 3 | Restaurant service | 🟡 In progress (1 of 2 tasks done) | CRUD listings, availability slots, search/filter, media upload |
+| 3 | Restaurant service | ✅ Done (2 of 2 tasks done) | CRUD listings, availability slots, search/filter, media upload |
 | 4 | Booking service | ⬜ Not started | Create booking (optimistic lock), cancel, list, WebSocket events |
 | 5 | Notification service | ⬜ Not started | Queue consumer, email diner, alert owner (async) |
 | 6 | Frontend | ⬜ Not started | Diner web app + Owner dashboard (React, JWT storage, WebSocket) |
@@ -304,6 +304,32 @@
 - **Verification (prompt §6):** all 25 assertions passed via Fastify inject (2026-06-24); typecheck + lint 0 errors; auth tests still 33/33
 - Next: Phase 3 · Task 2 — Restaurant service integration tests
 
+### ✅ Phase 3 · Task 2 — Restaurant Service Integration Tests
+**Date:** 2026-06-24
+**Files created / modified:**
+- `apps/api/src/__tests__/helpers/restaurant.ts` — futureDate(), futureDatetime(), createTestRestaurant(), createTestSlots(), cleanupTestRestaurants()
+- `apps/api/src/__tests__/restaurant.test.ts` — 51 integration tests across all 10 restaurant endpoints + security invariants
+- `apps/api/src/__tests__/helpers/server.ts` — registered restaurantRoutes in buildTestServer()
+**Interfaces / types added:** None
+**API endpoints added:** None
+**Environment variables added:** None
+**Notes:**
+- Tests share 3 users across the suite (owner, owner2, diner) created once in beforeAll
+- Restaurants + slots accumulated in createdRestaurantIds / createdUserIds; hard-deleted in afterAll
+- Cache invalidation tested explicitly: PATCH slot → re-fetch must show new capacity
+- Security invariant tests: booked absent from slots, ownerId absent from restaurants, cross-owner always 403 not 404, diner 403 on all owner endpoints
+- Cross-owner slot-delete test uses `futureDate(2)` to avoid unique constraint on soft-deleted slot rows
+- If orphaned data remains after crash, run in Supabase SQL editor:
+  ```sql
+  DELETE FROM time_slots WHERE "restaurantId" IN (SELECT id FROM restaurants WHERE name LIKE 'Test Restaurant %' OR name LIKE 'Integration Bistro' OR name LIKE 'Searchable Bistro%');
+  DELETE FROM restaurants WHERE name LIKE 'Test Restaurant %' OR name LIKE 'Integration Bistro' OR name LIKE 'Searchable Bistro%' OR city LIKE 'TestCity%' OR city LIKE 'SearchCity-%';
+  DELETE FROM audit_logs WHERE "actorId" IN (SELECT id FROM users WHERE email LIKE '%@integration-test.local');
+  DELETE FROM refresh_tokens WHERE "userId" IN (SELECT id FROM users WHERE email LIKE '%@integration-test.local');
+  DELETE FROM users WHERE email LIKE '%@integration-test.local';
+  ```
+- **84 tests passed** on 2026-06-24 (33 auth + 51 restaurant); typecheck 0 errors
+- Next: Phase 4 · Task 1 — Booking service (SELECT FOR UPDATE atomic transaction, cancel, list)
+
 ---
 
 ## 4 · SHARED TYPE CONTRACTS (`packages/types`)
@@ -443,7 +469,8 @@ RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (no
 - ✅ RBAC middleware (`requireRole`) — wired on all 6 owner restaurant routes
 - ✅ Redis integrated in API — deny-list on logout + global rate limit (Upstash)
 - ✅ Auth integration tests complete (33 tests; Vitest + Fastify `inject()`; Supabase + Upstash)
-- ✅ Restaurant service complete (10 endpoints; integration tests pending — Phase 3 · Task 2)
+- ✅ Restaurant service complete (10 endpoints; 51 integration tests)
+- ✅ Restaurant service integration tests complete (51 tests; combined suite 84)
 - ❌ No booking service
 - ❌ No notification service
 - ❌ No frontend apps
