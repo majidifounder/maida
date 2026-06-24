@@ -19,7 +19,7 @@
 | Shared types | `packages/types` |
 | Shared config | `packages/config` (ESLint, Prettier, tsconfig) |
 | Shared UI | `packages/ui` |
-| Auth | JWT (RS256) — Access token (15 min) + Refresh token (7 days) |
+| Auth | JWT (RS256) — Access token (15 min) + Refresh token (7 days); API live at `http://localhost:3001`; 33 Vitest integration tests |
 | Real-time | WebSocket (owner dashboard) via Redis pub/sub |
 | Security layers | TLS, rate-limit (Redis counter), JWT validation, mTLS internal, RBAC, optimistic locking |
 | CI/CD | GitHub Actions → staging (auto) → production (manual gate) |
@@ -50,7 +50,7 @@
 | # | Phase | Status | Tasks |
 |---|-------|--------|-------|
 | 1 | Foundation | ✅ Done (4 of 4 tasks done) | Monorepo init, shared TS contracts, CI/CD, infra provision |
-| 2 | Auth service | ⬜ Not started | Register, login, JWT issue/refresh/revoke, RBAC middleware |
+| 2 | Auth service | ✅ Done (2 of 2 tasks done) | Register, login, JWT issue/refresh/revoke, RBAC middleware, integration tests |
 | 3 | Restaurant service | ⬜ Not started | CRUD listings, availability slots, search/filter, media upload |
 | 4 | Booking service | ⬜ Not started | Create booking (optimistic lock), cancel, list, WebSocket events |
 | 5 | Notification service | ⬜ Not started | Queue consumer, email diner, alert owner (async) |
@@ -202,6 +202,75 @@
   - lint: 6/6 pass, 0 errors (3 no-console warnings in seed.ts are intentional)
 - Next: Phase 2 — Auth service
 
+### ✅ Phase 2 · Task 1 — Auth Service (server bootstrap + all auth endpoints)
+**Date:** 2026-06-23
+**Files created / modified:**
+- `apps/api/package.json` — api app manifest with all deps
+- `apps/api/tsconfig.json` — TS config extending base
+- `apps/api/src/env.ts` — Zod env validation; process exits on bad config
+- `apps/api/src/lib/redis.ts` — ioredis lazy singleton + subscriber factory
+- `apps/api/src/lib/jwt.ts` — RS256 sign/verify helpers; ACCESS_TOKEN_TTL_SECONDS, REFRESH_TOKEN_TTL_SECONDS
+- `apps/api/src/errors/index.ts` — AppError, UnauthorizedError, ForbiddenError, ConflictError, NotFoundError, UnprocessableError
+- `apps/api/src/modules/auth/auth.schema.ts` — RegisterSchema, LoginSchema, RefreshSchema (Zod)
+- `apps/api/src/modules/auth/auth.service.ts` — registerUser, loginUser, refreshTokens, logoutUser
+- `apps/api/src/modules/auth/auth.routes.ts` — POST /auth/register, POST /auth/login, POST /auth/refresh, POST /auth/logout, GET /auth/me
+- `apps/api/src/plugins/authenticate.ts` — authenticate preHandler + requireRole decorator
+- `apps/api/src/index.ts` — Fastify server with helmet, cors, rate-limit, cookie, sensible, health check
+- `.env.example` — added BCRYPT_ROUNDS, CORS_ORIGIN
+- `packages/db/package.json` — added `exports` for ESM workspace resolution
+- `packages/types/package.json` — added `exports` for ESM workspace resolution
+**Interfaces / types added:** None (using existing types from `@restaurant/types`)
+**API endpoints added:**
+- `POST /auth/register` — create new user account; 201 on success, 409 on duplicate email, 422 on bad input
+- `POST /auth/login` — issue access + refresh token pair; 200 on success, 401 on bad credentials, 429 on rate limit
+- `POST /auth/refresh` — rotate token pair; accepts cookie or body; 200 on success, 401 on invalid/expired
+- `POST /auth/logout` — revoke tokens; requires Bearer token; 200 on success
+- `GET /auth/me` — return current user from DB; requires Bearer token; 200 on success
+- `GET /health` — server health check; no auth
+**Environment variables added:**
+- `BCRYPT_ROUNDS` — bcrypt cost factor, default 12
+- `CORS_ORIGIN` — comma-separated allowed origins
+**Notes:**
+- Refresh token stored as SHA-256 hash in RefreshToken table — raw token never persisted
+- `tokenHash` is not `@unique` in schema — service uses `findFirst` + delete by `id` (prompt assumed `findUnique`; adapted to match Prisma schema)
+- Logout sets `revokedAt` on refresh token (`updateMany`); refresh rotation deletes old row in transaction
+- Logout writes jti to Redis deny-list (key: `deny:{jti}`) with TTL matching token expiry
+- `authenticate` plugin decorates `request.user?: JWTPayload`; `requireRole(role)` returns a preHandler (built; not yet used on business routes)
+- Login rate limit: 5 attempts per IP per 15 min (separate from global 100/min limit)
+- Package scope is `@restaurant/*` (not `@repo/*` from prompt); `dev` script loads root `.env` via `dotenv -e ../../.env`
+- `pnpm --filter @restaurant/api typecheck` and `lint` pass (0 errors, 11 warnings)
+- **Verification (prompt §15):** all assertions passed — health, register, duplicate 409, login, me, wrong password 401, refresh rotation, old refresh 401, logout, revoked access 401, login rate limit 429 (2026-06-23)
+- **Dev machine verified:** register/login/me via PowerShell `Invoke-RestMethod` with user `you@example.com` (2026-06-23)
+- Start API: `pnpm --filter @restaurant/api dev` (keep terminal open; kill stale `node.exe` on port 3001 if `EADDRINUSE`)
+- Next: Phase 2 · Task 2 — Auth integration tests (Vitest + supertest against test DB)
+
+### ✅ Phase 2 · Task 2 — Auth Integration Tests
+**Date:** 2026-06-24
+**Files created / modified:**
+- `apps/api/vitest.config.ts` — Vitest config; loads root `.env` via dotenv; 30 s timeout for remote datastores; serial execution; forks pool
+- `apps/api/src/__tests__/helpers/server.ts` — `buildTestServer()` — Fastify test instance with rate limiting disabled
+- `apps/api/src/__tests__/helpers/db.ts` — `cleanupTestUsers(ids[])` — FK-safe DB cleanup scoped to test-created rows only
+- `apps/api/src/__tests__/helpers/auth.ts` — `uniqueEmail()`, `registerUser()`, `loginUser()` — test convenience helpers
+- `apps/api/src/__tests__/auth.test.ts` — 33 integration tests across all 5 auth endpoints + security invariants
+- `apps/api/package.json` — added `test`, `test:watch`, `test:coverage` scripts; devDeps: vitest, @vitest/coverage-v8, dotenv
+**Interfaces / types added:** None
+**API endpoints added:** None
+**Environment variables added:** None (tests use existing `DATABASE_URL` and `REDIS_URL`)
+**Notes:**
+- Tests use UUID-prefixed emails (`test-{uuid}@integration-test.local`) to isolate from seed data
+- `afterAll` deletes all test-created users in FK-safe order (AuditLog → RefreshToken → User)
+- Rate limiting is disabled in the test server to avoid polluting Upstash Redis with test counters
+- Redis deny-list (logout revocation) IS tested with real Upstash — it is our code, not a library
+- Run tests: `pnpm --filter @restaurant/api test` (~110 s against Supabase + Upstash)
+- If cleanup fails, run in Supabase SQL editor:
+  ```sql
+  DELETE FROM audit_logs WHERE "actorId" IN (SELECT id FROM users WHERE email LIKE '%@integration-test.local');
+  DELETE FROM refresh_tokens WHERE "userId" IN (SELECT id FROM users WHERE email LIKE '%@integration-test.local');
+  DELETE FROM users WHERE email LIKE '%@integration-test.local';
+  ```
+- **33 tests passed** on 2026-06-24 against Supabase + Upstash; typecheck still passes
+- Next: Phase 3 · Task 1 — Restaurant service (CRUD listings, availability slots, search, Redis caching)
+
 ---
 
 ## 4 · SHARED TYPE CONTRACTS (`packages/types`)
@@ -263,7 +332,12 @@ export interface User {
 
 | Method | Route | Service | Auth | Status |
 |--------|-------|---------|------|--------|
-| — | — | — | — | Nothing built yet |
+| GET | `/health` | api | None | ✅ Live |
+| POST | `/auth/register` | api | None | ✅ Live |
+| POST | `/auth/login` | api | None | ✅ Live |
+| POST | `/auth/refresh` | api | Refresh token (cookie or body) | ✅ Live |
+| POST | `/auth/logout` | api | Bearer JWT | ✅ Live |
+| GET | `/auth/me` | api | Bearer JWT | ✅ Live |
 
 ---
 
@@ -288,8 +362,10 @@ RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (no
 |----------|---------|--------|--------|
 | `DATABASE_URL` | `packages/db`, `apps/api` | `.env` (Supabase pooled / port 6543) | Active — Supabase Transaction Pooler URL (port 6543) |
 | `REDIS_URL` | `apps/api` | `.env` (Upstash or local Docker) | Active — Upstash Redis URL (rediss://) |
-| `JWT_PRIVATE_KEY` | `apps/api` | `.env` | Defined in .env.example |
-| `JWT_PUBLIC_KEY` | `apps/api` | `.env` | Defined in .env.example |
+| `JWT_PRIVATE_KEY` | `apps/api` | `.env` | Active — RS256 signing key (PKCS#8 PEM; `\n`-escaped in `.env`) |
+| `JWT_PUBLIC_KEY` | `apps/api` | `.env` | Active — RS256 verify key |
+| `BCRYPT_ROUNDS` | `apps/api` | `.env` | Defined in .env.example — default 12 |
+| `CORS_ORIGIN` | `apps/api` | `.env` | Defined in .env.example — comma-separated origins |
 | `NODE_ENV` | all apps | `.env` | Defined in .env.example |
 | `PORT` | `apps/api` | `.env` | Defined in .env.example |
 | `QUEUE_NAME` | `apps/api` | `.env` | Defined in .env.example |
@@ -320,12 +396,15 @@ RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (no
 - ✅ Supabase PostgreSQL connected and migrated (Phase 1 verified)
 - ✅ Upstash Redis connected (Phase 1 verified)
 - ✅ Seed script ready (idempotent)
-- ❌ No auth service (no register, login, JWT)
+- ✅ Auth service complete — register, login, refresh, logout, JWT RS256, Redis deny-list, rate limiting (`apps/api`)
+- ✅ RBAC middleware (`requireRole`) — built in `authenticate` plugin; not yet wired to restaurant/booking routes
+- ✅ Redis integrated in API — deny-list on logout + global rate limit (Upstash)
+- ✅ Auth integration tests complete (33 tests; Vitest + Fastify `inject()`; Supabase + Upstash)
 - ❌ No restaurant service
 - ❌ No booking service
 - ❌ No notification service
 - ❌ No frontend apps
-- ❌ No Redis or queue integration
+- ❌ No queue integration
 - ❌ No WebSocket server
 
 ---
