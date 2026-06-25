@@ -1,19 +1,39 @@
 import { Queue } from 'bullmq';
 import { env } from '../env.js';
 
+export type BookingEventType =
+  | 'booking.created'
+  | 'booking.cancelled'
+  | 'booking.confirmed';
+
+export interface BookingEventPayload {
+  eventType: BookingEventType;
+  publishedAt: string;
+  bookingId: string;
+  dinerId?: string;
+  restaurantId?: string;
+  slotId?: string;
+  partySize?: number;
+  cancelledBy?: 'diner' | 'owner';
+}
+
+export function getBullmqConnection() {
+  return {
+    url: env.REDIS_URL,
+    ...(env.REDIS_URL.startsWith('rediss://')
+      ? { tls: { rejectUnauthorized: false } }
+      : {}),
+    maxRetriesPerRequest: null,
+    enableReadyCheck: false,
+  };
+}
+
 let _queue: Queue | null = null;
 
 function getQueue(): Queue {
   if (!_queue) {
     _queue = new Queue(env.QUEUE_NAME, {
-      connection: {
-        url: env.REDIS_URL,
-        ...(env.REDIS_URL.startsWith('rediss://')
-          ? { tls: { rejectUnauthorized: false } }
-          : {}),
-        maxRetriesPerRequest: null,
-        enableReadyCheck: false,
-      },
+      connection: getBullmqConnection(),
       defaultJobOptions: {
         attempts: 3,
         backoff: { type: 'exponential', delay: 1_000 },

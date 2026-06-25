@@ -10,6 +10,11 @@ const EnvSchema = z.object({
   BCRYPT_ROUNDS: z.coerce.number().int().min(10).max(14).default(12),
   CORS_ORIGIN: z.string().default('http://localhost:5173,http://localhost:5174'),
   QUEUE_NAME: z.string().default('booking_events'),
+  RESEND_API_KEY: z.string().min(1, 'RESEND_API_KEY is required'),
+  EMAIL_FROM: z
+    .string()
+    .email()
+    .default('reservations@restaurant-booking.app'),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
