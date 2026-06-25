@@ -52,7 +52,7 @@
 | 1 | Foundation | ✅ Done (4 of 4 tasks done) | Monorepo init, shared TS contracts, CI/CD, infra provision |
 | 2 | Auth service | ✅ Done (2 of 2 tasks done) | Register, login, JWT issue/refresh/revoke, RBAC middleware, integration tests |
 | 3 | Restaurant service | ✅ Done (2 of 2 tasks done) | CRUD listings, availability slots, search/filter, media upload |
-| 4 | Booking service | 🟡 In progress (1 of 2 tasks done) | Create booking (optimistic lock), cancel, list, WebSocket events |
+| 4 | Booking service | ✅ Done (2 of 2 tasks done) | Create booking (optimistic lock), cancel, list, WebSocket events |
 | 5 | Notification service | ⬜ Not started | Queue consumer, email diner, alert owner (async) |
 | 6 | Frontend | ⬜ Not started | Diner web app + Owner dashboard (React, JWT storage, WebSocket) |
 | 7 | QA & Launch | ⬜ Not started | Unit tests, integration tests, load test (concurrent booking), prod checklist |
@@ -361,6 +361,21 @@
 - **Verification (prompt §7):** all 16 assertions passed via Fastify inject (2026-06-24); typecheck + lint 0 errors; existing 84 tests still pass
 - Next: Phase 4 · Task 2 — Booking service integration tests
 
+### ✅ Phase 4 · Task 2 — Booking Service Integration Tests
+**Date:** 2026-06-23
+**Files created / modified:**
+- `apps/api/src/__tests__/helpers/booking.ts` — createTestBooking(), cleanupTestBookings()
+- `apps/api/src/__tests__/booking.test.ts` — 40 integration tests across all 7 booking endpoints + concurrency invariant + security invariants
+- `apps/api/src/__tests__/helpers/server.ts` — registered bookingRoutes in buildTestServer()
+**Notes:**
+- 4 actors created once (owner, owner2, diner, diner2); 1 shared restaurant; slots created per describe block to avoid capacity conflicts
+- afterAll cleanup order: bookings → slots+restaurants → users (FK-safe)
+- Concurrency test: Promise.all of two bookings for last seat — verifies exactly [201, 409]
+- dinerId absent from all diner responses; present in all owner responses — both explicitly tested
+- Combined test count: 33 auth + 51 restaurant + 40 booking = 124 total
+- **Verification:** 124 tests passed (2026-06-23); typecheck 0 errors
+- Next: Phase 5 · Task 1 — Notification service (BullMQ consumer, email diner, alert owner)
+
 ---
 
 ## 4 · SHARED TYPE CONTRACTS (`packages/types`)
@@ -510,6 +525,7 @@ RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (no
 - ✅ Restaurant service complete (10 endpoints; 51 integration tests)
 - ✅ Restaurant service integration tests complete (51 tests; combined suite 84)
 - ✅ Booking service complete (7 endpoints; SELECT FOR UPDATE; BullMQ producer)
+- ✅ Booking service integration tests complete (40 tests; combined suite 124)
 - ✅ Queue producer integrated — `publishBookingEvent()` via BullMQ (consumer in Phase 5)
 - ❌ No notification service
 - ❌ No frontend apps
