@@ -11,6 +11,7 @@ import authenticatePlugin from './plugins/authenticate.js';
 import { authRoutes } from './modules/auth/auth.routes.js';
 import { restaurantRoutes } from './modules/restaurant/restaurant.routes.js';
 import { bookingRoutes } from './modules/booking/booking.routes.js';
+import { startNotificationWorker } from './workers/notification.worker.js';
 
 async function buildServer() {
   const fastify = Fastify({
@@ -96,11 +97,24 @@ async function buildServer() {
 
 async function start() {
   const server = await buildServer();
+  let stopWorker: (() => Promise<void>) | null = null;
+
+  const shutdown = async (signal: string) => {
+    console.log(`Received ${signal}, shutting down gracefully…`);
+    if (stopWorker) await stopWorker();
+    await server.close();
+    process.exit(0);
+  };
+
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
 
   try {
     await server.listen({ port: env.PORT, host: '0.0.0.0' });
+    stopWorker = startNotificationWorker();
     console.log(`✅ API server listening on port ${env.PORT}`);
   } catch (err) {
+    if (stopWorker) await stopWorker();
     server.log.error(err);
     process.exit(1);
   }

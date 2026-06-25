@@ -53,7 +53,7 @@
 | 2 | Auth service | ✅ Done (2 of 2 tasks done) | Register, login, JWT issue/refresh/revoke, RBAC middleware, integration tests |
 | 3 | Restaurant service | ✅ Done (2 of 2 tasks done) | CRUD listings, availability slots, search/filter, media upload |
 | 4 | Booking service | ✅ Done (2 of 2 tasks done) | Create booking (optimistic lock), cancel, list, WebSocket events |
-| 5 | Notification service | ⬜ Not started | Queue consumer, email diner, alert owner (async) |
+| 5 | Notification service | 🟡 In progress (1 of 2 tasks done) | Queue consumer, email diner, alert owner (async) |
 | 6 | Frontend | ⬜ Not started | Diner web app + Owner dashboard (React, JWT storage, WebSocket) |
 | 7 | QA & Launch | ⬜ Not started | Unit tests, integration tests, load test (concurrent booking), prod checklist |
 
@@ -376,6 +376,28 @@
 - **Verification:** 124 tests passed (2026-06-23); typecheck 0 errors
 - Next: Phase 5 · Task 1 — Notification service (BullMQ consumer, email diner, alert owner)
 
+### ✅ Phase 5 · Task 1 — Notification Service (BullMQ consumer + Resend emails)
+**Date:** 2026-06-25
+**Files created / modified:**
+- `apps/api/src/env.ts` — added RESEND_API_KEY, EMAIL_FROM to Zod schema
+- `apps/api/src/lib/queue.ts` — exported BookingEventPayload, BookingEventType, getBullmqConnection()
+- `apps/api/src/services/email.service.ts` — Resend-based email functions: sendBookingCreated, sendBookingConfirmed, sendBookingCancelledByDiner, sendBookingCancelledByOwner
+- `apps/api/src/workers/notification.worker.ts` — BullMQ Worker; concurrency 5; graceful shutdown; fetches all email data in one Prisma query
+- `apps/api/src/index.ts` — startNotificationWorker() wired into bootstrap + SIGTERM/SIGINT shutdown handler
+- `apps/api/vitest.config.ts` — test-only RESEND_API_KEY fallback so existing suite stays unaffected
+- `.env.example` — added RESEND_API_KEY, EMAIL_FROM
+- `apps/api/package.json` — added `resend` dependency
+**Environment variables added:**
+- `RESEND_API_KEY` — Resend API key (re_...)
+- `EMAIL_FROM` — From address; default: reservations@restaurant-booking.app
+**Notes:**
+- Worker shares the same Node.js process as Fastify; no separate service needed at this stage
+- buildTestServer() does NOT start the worker — existing 124-test suite is fully unaffected
+- BookingEventPayload type imported from lib/queue.ts, not redefined; worker reads `eventType` + `cancelledBy` from producer payload
+- Single Prisma query per job: booking + diner.email + restaurant.name + restaurant.owner.email + slot.startsAt
+- Unknown event names are logged and skipped (no throw); transient Resend/DB errors are thrown to trigger BullMQ retry (producer defaultJobOptions: 3 attempts, exponential backoff)
+- Next: Phase 5 · Task 2 — Notification service tests (vitest; vi.mock Resend; spy on email service functions; assert correct emails sent per event)
+
 ---
 
 ## 4 · SHARED TYPE CONTRACTS (`packages/types`)
@@ -491,6 +513,8 @@ RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (no
 | `NODE_ENV` | all apps | `.env` | Defined in .env.example |
 | `PORT` | `apps/api` | `.env` | Defined in .env.example |
 | `QUEUE_NAME` | `apps/api` | `.env` | Validated in `env.ts` — default `booking_events`; BullMQ producer active |
+| `RESEND_API_KEY` | `apps/api` | `.env` | Required — Resend email delivery API key |
+| `EMAIL_FROM` | `apps/api` | `.env` | From address for outbound emails — default `reservations@restaurant-booking.app` |
 | `STAGING_DATABASE_URL` | deploy-staging.yml | GitHub Secret (staging env) | Stubbed — needs real value |
 | `STAGING_REDIS_URL` | deploy-staging.yml | GitHub Secret (staging env) | Stubbed — needs real value |
 | `STAGING_JWT_PRIVATE_KEY` | deploy-staging.yml | GitHub Secret (staging env) | Stubbed — needs real value |
@@ -527,9 +551,10 @@ RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (no
 - ✅ Booking service complete (7 endpoints; SELECT FOR UPDATE; BullMQ producer)
 - ✅ Booking service integration tests complete (40 tests; combined suite 124)
 - ✅ Queue producer integrated — `publishBookingEvent()` via BullMQ (consumer in Phase 5)
-- ❌ No notification service
-- ❌ No frontend apps
+- ✅ Notification service consumer built (Phase 5 · Task 1) — BullMQ Worker + Resend email functions
+- ❌ Notification service tests not yet written (Phase 5 · Task 2)
 - ❌ No WebSocket server
+- ❌ No frontend apps
 
 ---
 

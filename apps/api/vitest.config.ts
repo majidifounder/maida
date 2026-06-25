@@ -7,6 +7,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 loadDotenv({ path: resolve(__dirname, '../../.env') });
 
+process.env.RESEND_API_KEY ??= 're_test_placeholder';
+process.env.EMAIL_FROM ??= 'reservations@restaurant-booking.app';
+
 export default defineConfig({
   test: {
     globals: false,
