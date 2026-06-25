@@ -6,6 +6,7 @@ import sensible from '@fastify/sensible';
 import authenticatePlugin from '../../plugins/authenticate.js';
 import { authRoutes } from '../../modules/auth/auth.routes.js';
 import { restaurantRoutes } from '../../modules/restaurant/restaurant.routes.js';
+import { bookingRoutes } from '../../modules/booking/booking.routes.js';
 
 export async function buildTestServer(): Promise<FastifyInstance> {
   const fastify = Fastify({ logger: false });
@@ -17,6 +18,7 @@ export async function buildTestServer(): Promise<FastifyInstance> {
   await fastify.register(authenticatePlugin);
   await fastify.register(authRoutes);
   await fastify.register(restaurantRoutes);
+  await fastify.register(bookingRoutes);
 
   fastify.get('/health', () => ({ status: 'ok' }));
 
