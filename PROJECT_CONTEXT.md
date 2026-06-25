@@ -53,7 +53,7 @@
 | 2 | Auth service | ✅ Done (2 of 2 tasks done) | Register, login, JWT issue/refresh/revoke, RBAC middleware, integration tests |
 | 3 | Restaurant service | ✅ Done (2 of 2 tasks done) | CRUD listings, availability slots, search/filter, media upload |
 | 4 | Booking service | ✅ Done (2 of 2 tasks done) | Create booking (optimistic lock), cancel, list, WebSocket events |
-| 5 | Notification service | 🟡 In progress (1 of 2 tasks done) | Queue consumer, email diner, alert owner (async) |
+| 5 | Notification service | ✅ Done (2 of 2 tasks done) | Queue consumer, email diner, alert owner (async) |
 | 6 | Frontend | ⬜ Not started | Diner web app + Owner dashboard (React, JWT storage, WebSocket) |
 | 7 | QA & Launch | ⬜ Not started | Unit tests, integration tests, load test (concurrent booking), prod checklist |
 
@@ -398,6 +398,20 @@
 - Unknown event names are logged and skipped (no throw); transient Resend/DB errors are thrown to trigger BullMQ retry (producer defaultJobOptions: 3 attempts, exponential backoff)
 - Next: Phase 5 · Task 2 — Notification service tests (vitest; vi.mock Resend; spy on email service functions; assert correct emails sent per event)
 
+### ✅ Phase 5 · Task 2 — Notification Service Tests (unit tests; vi.mock Resend + Prisma)
+**Date:** 2026-06-25
+**Files created / modified:**
+- `apps/api/src/__tests__/notification.test.ts` — 24 unit tests: email.service send functions, processNotificationJob dispatcher, startNotificationWorker lifecycle
+- `apps/api/src/workers/notification.worker.ts` — added named export `processNotificationJob` for test access
+**Interfaces / types added:** None
+**API endpoints added:** None
+**Environment variables added:** None
+**Notes:**
+- Tests are pure unit tests — Resend, BullMQ Worker, and Prisma are all vi.mock-ed; no network calls
+- processNotificationJob tested directly via named export; no real Worker instantiated
+- All 124 existing tests remain unaffected; combined suite is 148 (124 + 24)
+- Phase 5 complete — next: Phase 6 · Task 1 — Diner web app (React SPA: browse restaurants, make booking, view history)
+
 ---
 
 ## 4 · SHARED TYPE CONTRACTS (`packages/types`)
@@ -552,7 +566,7 @@ RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (no
 - ✅ Booking service integration tests complete (40 tests; combined suite 124)
 - ✅ Queue producer integrated — `publishBookingEvent()` via BullMQ (consumer in Phase 5)
 - ✅ Notification service consumer built (Phase 5 · Task 1) — BullMQ Worker + Resend email functions
-- ❌ Notification service tests not yet written (Phase 5 · Task 2)
+- ✅ Notification service tests written (Phase 5 · Task 2) — vi.mock; 24 unit tests for all event paths; combined suite 148
 - ❌ No WebSocket server
 - ❌ No frontend apps
 

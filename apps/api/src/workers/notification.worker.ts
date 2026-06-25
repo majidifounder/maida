@@ -72,6 +72,9 @@ async function processNotificationJob(
   }
 }
 
+// Export for unit testing only — do not call from production code.
+export { processNotificationJob };
+
 export function startNotificationWorker(): () => Promise<void> {
   const worker = new Worker<BookingEventPayload>(
     env.QUEUE_NAME,
