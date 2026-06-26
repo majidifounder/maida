@@ -447,3 +447,18 @@ After DNS and Cloudflare are active on staging subdomains (optional) or producti
 | `CORS_ORIGIN` / `EMAIL_FROM` with real URLs | **B** |
 | OS firewall + origin secret verification | **B** |
 | Production go-live | **B** |
+
+---
+
+## Admin Panel (`apps/admin`)
+
+- [ ] `pnpm --filter @restaurant/admin build` succeeds with 0 TypeScript errors
+- [ ] Admin account in DB: `UPDATE users SET role = 'ADMIN' WHERE email = 'admin@yourdomain.com';`
+- [ ] First login at http://localhost:5175 — QR code → scan authenticator → 6-digit code → dashboard
+- [ ] Subsequent login — email + password + TOTP code (no QR)
+- [ ] Dashboard stats load from `/admin/stats`
+- [ ] Users: ban/unban test user; plan change for owner (STARTER → PRO)
+- [ ] Restaurants, bookings, subscriptions, audit logs pages load with pagination
+- [ ] `CORS_ORIGIN` includes admin panel URL in production
+- [ ] `VITE_API_URL` set in Vercel for `apps/admin` (separate project from web/dashboard)
+- [ ] Admin panel deployed to Vercel (port 5175 in dev)
