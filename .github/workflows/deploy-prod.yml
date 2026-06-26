@@ -67,22 +67,53 @@ jobs:
         env:
           NODE_ENV: production
 
-      - name: Deploy API to production
-        run: echo "TODO — replace with actual deploy command"
+      - name: Pre-deploy environment check
+        run: pnpm check-env
         env:
-          DATABASE_URL:    ${{ secrets.PROD_DATABASE_URL }}
-          REDIS_URL:       ${{ secrets.PROD_REDIS_URL }}
+          DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+          DIRECT_DATABASE_URL: ${{ secrets.PROD_DIRECT_DATABASE_URL }}
+          REDIS_URL: ${{ secrets.PROD_REDIS_URL }}
           JWT_PRIVATE_KEY: ${{ secrets.PROD_JWT_PRIVATE_KEY }}
-          JWT_PUBLIC_KEY:  ${{ secrets.PROD_JWT_PUBLIC_KEY }}
-          NODE_ENV:        production
-          PORT:            ${{ vars.PORT }}
-          QUEUE_NAME:      ${{ vars.QUEUE_NAME }}
+          JWT_PUBLIC_KEY: ${{ secrets.PROD_JWT_PUBLIC_KEY }}
+          CORS_ORIGIN: ${{ secrets.PROD_CORS_ORIGIN }}
+          RESEND_API_KEY: ${{ secrets.PROD_RESEND_API_KEY }}
+          EMAIL_FROM: ${{ secrets.PROD_EMAIL_FROM }}
+          NODE_ENV: production
 
-      - name: Deploy web app to production
-        run: echo "TODO — replace with actual deploy command"
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
 
-      - name: Deploy dashboard to production
-        run: echo "TODO — replace with actual deploy command"
+      - name: Deploy API → Railway (production)
+        env:
+          RAILWAY_TOKEN: ${{ secrets.PROD_RAILWAY_TOKEN }}
+        run: |
+          cd apps/api
+          railway up --service api-prod --detach
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel
+
+      - name: Deploy web → Vercel (production)
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID_WEB: ${{ secrets.VERCEL_PROJECT_ID_WEB_PROD }}
+        run: |
+          cd apps/web
+          vercel pull --yes --environment=production --token=$VERCEL_TOKEN
+          vercel build --prod --token=$VERCEL_TOKEN
+          vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN
+
+      - name: Deploy dashboard → Vercel (production)
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID_DASHBOARD: ${{ secrets.VERCEL_PROJECT_ID_DASHBOARD_PROD }}
+        run: |
+          cd apps/dashboard
+          vercel pull --yes --environment=production --token=$VERCEL_TOKEN
+          vercel build --prod --token=$VERCEL_TOKEN
+          vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN
 
       - name: Notify deployment success
         if: success()

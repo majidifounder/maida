@@ -58,7 +58,7 @@ export async function loginUser(
 ) {
   const user = await prisma.user.findUnique({
     where: { email: input.email },
-    select: { id: true, email: true, password: true, role: true, deletedAt: true },
+    select: { id: true, email: true, password: true, role: true, createdAt: true, deletedAt: true },
   });
 
   const DUMMY_HASH =
@@ -100,7 +100,12 @@ export async function loginUser(
     .catch(() => {});
 
   return {
-    user: { id: user.id, email: user.email, role: user.role },
+    user: {
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      createdAt: user.createdAt.toISOString(),
+    },
     ...tokenPair,
   };
 }

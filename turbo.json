@@ -6,6 +6,6 @@
     "dev":       { "cache": false, "persistent": true },
     "lint":      { "outputs": [] },
     "typecheck": { "outputs": [] },
-    "test":      { "outputs": ["coverage/**"] }
+    "test":      { "dependsOn": [], "outputs": ["coverage/**"], "cache": false }
   }
 }

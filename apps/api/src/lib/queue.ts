@@ -50,11 +50,14 @@ export async function publishBookingEvent(
   payload: Record<string, unknown>,
 ): Promise<void> {
   try {
-    await getQueue().add(eventType, {
+    const job = await getQueue().add(eventType, {
       ...payload,
       eventType,
       publishedAt: new Date().toISOString(),
     });
+    console.info(
+      `[Queue] Enqueued ${eventType} job ${job.id} for booking ${String(payload.bookingId ?? 'unknown')}`,
+    );
   } catch (err) {
     console.warn(
       `[Queue] failed to publish ${eventType}:`,
