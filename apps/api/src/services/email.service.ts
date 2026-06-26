@@ -1,5 +1,6 @@
 import { Resend } from 'resend';
 import { env } from '../env.js';
+import { notifyOnce } from '../lib/notify-once.js';
 
 const resend = new Resend(env.RESEND_API_KEY);
 
@@ -38,7 +39,7 @@ export async function sendBookingCreated(data: BookingEmailData): Promise<void> 
   const slot = fmtSlot(data.slotStartsAt);
   const ref = bookingRef(data.bookingId);
 
-  await Promise.all([
+  await notifyOnce(`${data.bookingId}:created:diner`, () =>
     sendEmail({
       from: env.EMAIL_FROM,
       to: data.dinerEmail,
@@ -53,6 +54,9 @@ export async function sendBookingCreated(data: BookingEmailData): Promise<void> 
         <p>We'll email you once the restaurant confirms your reservation.</p>
       `,
     }),
+  );
+
+  await notifyOnce(`${data.bookingId}:created:owner`, () =>
     sendEmail({
       from: env.EMAIL_FROM,
       to: data.ownerEmail,
@@ -65,7 +69,7 @@ export async function sendBookingCreated(data: BookingEmailData): Promise<void> 
         <p>Log in to your dashboard to <strong>confirm</strong> or <strong>cancel</strong> this booking.</p>
       `,
     }),
-  ]);
+  );
 }
 
 export async function sendBookingConfirmed(
@@ -73,19 +77,21 @@ export async function sendBookingConfirmed(
 ): Promise<void> {
   const slot = fmtSlot(data.slotStartsAt);
 
-  await sendEmail({
-    from: env.EMAIL_FROM,
-    to: data.dinerEmail,
-    subject: `Booking confirmed — ${data.restaurantName} ✓`,
-    html: `
-      <h2>Your booking is confirmed!</h2>
-      <p>The restaurant has confirmed your reservation.</p>
-      <p><strong>Restaurant:</strong> ${data.restaurantName}</p>
-      <p><strong>Date &amp; time:</strong> ${slot}</p>
-      <p><strong>Party size:</strong> ${data.partySize}</p>
-      <p>See you there!</p>
-    `,
-  });
+  await notifyOnce(`${data.bookingId}:confirmed:diner`, () =>
+    sendEmail({
+      from: env.EMAIL_FROM,
+      to: data.dinerEmail,
+      subject: `Booking confirmed — ${data.restaurantName} ✓`,
+      html: `
+        <h2>Your booking is confirmed!</h2>
+        <p>The restaurant has confirmed your reservation.</p>
+        <p><strong>Restaurant:</strong> ${data.restaurantName}</p>
+        <p><strong>Date &amp; time:</strong> ${slot}</p>
+        <p><strong>Party size:</strong> ${data.partySize}</p>
+        <p>See you there!</p>
+      `,
+    }),
+  );
 }
 
 export async function sendBookingCancelledByDiner(
@@ -94,7 +100,7 @@ export async function sendBookingCancelledByDiner(
   const slot = fmtSlot(data.slotStartsAt);
   const ref = bookingRef(data.bookingId);
 
-  await Promise.all([
+  await notifyOnce(`${data.bookingId}:cancelled-by-diner:diner`, () =>
     sendEmail({
       from: env.EMAIL_FROM,
       to: data.dinerEmail,
@@ -108,6 +114,9 @@ export async function sendBookingCancelledByDiner(
         <p>We hope to see you again soon.</p>
       `,
     }),
+  );
+
+  await notifyOnce(`${data.bookingId}:cancelled-by-diner:owner`, () =>
     sendEmail({
       from: env.EMAIL_FROM,
       to: data.ownerEmail,
@@ -120,7 +129,7 @@ export async function sendBookingCancelledByDiner(
         <p>The seat capacity has been automatically restored.</p>
       `,
     }),
-  ]);
+  );
 }
 
 export async function sendBookingCancelledByOwner(
@@ -128,16 +137,18 @@ export async function sendBookingCancelledByOwner(
 ): Promise<void> {
   const slot = fmtSlot(data.slotStartsAt);
 
-  await sendEmail({
-    from: env.EMAIL_FROM,
-    to: data.dinerEmail,
-    subject: `Your booking at ${data.restaurantName} has been cancelled`,
-    html: `
-      <h2>Booking cancelled by restaurant</h2>
-      <p>We're sorry — the restaurant has had to cancel your reservation.</p>
-      <p><strong>Restaurant:</strong> ${data.restaurantName}</p>
-      <p><strong>Original time:</strong> ${slot}</p>
-      <p>Please contact the restaurant directly or make a new reservation.</p>
-    `,
-  });
+  await notifyOnce(`${data.bookingId}:cancelled-by-owner:diner`, () =>
+    sendEmail({
+      from: env.EMAIL_FROM,
+      to: data.dinerEmail,
+      subject: `Your booking at ${data.restaurantName} has been cancelled`,
+      html: `
+        <h2>Booking cancelled by restaurant</h2>
+        <p>We're sorry — the restaurant has had to cancel your reservation.</p>
+        <p><strong>Restaurant:</strong> ${data.restaurantName}</p>
+        <p><strong>Original time:</strong> ${slot}</p>
+        <p>Please contact the restaurant directly or make a new reservation.</p>
+      `,
+    }),
+  );
 }

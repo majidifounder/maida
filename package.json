@@ -16,9 +16,15 @@
     "db:migrate": "pnpm --filter @restaurant/db db:migrate",
     "db:seed":    "pnpm --filter @restaurant/db db:seed",
     "db:studio":  "pnpm --filter @restaurant/db db:studio",
-    "db:reset":   "pnpm --filter @restaurant/db db:reset"
+    "db:reset":   "pnpm --filter @restaurant/db db:reset",
+    "load-test":  "tsx scripts/load-test.ts",
+    "check-env":  "tsx scripts/check-env.ts"
   },
   "devDependencies": {
+    "@restaurant/db":                "workspace:*",
+    "dotenv":                        "^17.4.2",
+    "tsx":                           "^4.22.4",
+    "undici":                        "^7.16.0",
     "turbo":                           "latest",
     "typescript":                      "^5.4.0",
     "eslint":                          "^8.57.0",

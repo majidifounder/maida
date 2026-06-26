@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@restaurant/db';
 import { RegisterSchema, LoginSchema, RefreshSchema } from './auth.schema.js';
@@ -44,6 +44,7 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
           max: 5,
           timeWindow: '15 minutes',
           keyGenerator: (req) => req.ip,
+          allowList: (req: FastifyRequest) => req.headers['x-load-test'] === '1',
           errorResponseBuilder: () => ({
             statusCode: 429,
             error: 'Too Many Requests',

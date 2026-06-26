@@ -49,6 +49,10 @@ vi.mock('@restaurant/db', () => ({
   },
 }));
 
+vi.mock('../lib/notify-once.js', () => ({
+  notifyOnce: (_key: string, fn: () => Promise<void>) => fn(),
+}));
+
 import {
   sendBookingCreated,
   sendBookingConfirmed,
@@ -329,7 +333,7 @@ describe('startNotificationWorker', () => {
     startNotificationWorker();
 
     expect(MockWorker).toHaveBeenCalledOnce();
-    const [queueName] = MockWorker.mock.calls[0] as [string, ...unknown[]];
+    const queueName = (MockWorker.mock.calls[0] as unknown[] | undefined)?.[0];
     expect(queueName).toBe(process.env.QUEUE_NAME ?? 'booking_events');
   });
 

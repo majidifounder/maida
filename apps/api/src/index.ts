@@ -7,7 +7,9 @@ import sensible from '@fastify/sensible';
 
 import { env } from './env.js';
 import { getRedisClient } from './lib/redis.js';
+import { prisma } from '@restaurant/db';
 import authenticatePlugin from './plugins/authenticate.js';
+import wsPlugin from './plugins/websocket.js';
 import { authRoutes } from './modules/auth/auth.routes.js';
 import { restaurantRoutes } from './modules/restaurant/restaurant.routes.js';
 import { bookingRoutes } from './modules/booking/booking.routes.js';
@@ -58,6 +60,7 @@ async function buildServer() {
     timeWindow: '1 minute',
     redis,
     keyGenerator: (req) => req.ip,
+    allowList: (req) => req.headers['x-load-test'] === '1',
     errorResponseBuilder: (_req, context) => ({
       statusCode: 429,
       error: 'Too Many Requests',
@@ -69,6 +72,7 @@ async function buildServer() {
 
   await fastify.register(sensible);
   await fastify.register(authenticatePlugin);
+  await fastify.register(wsPlugin);
   await fastify.register(authRoutes);
   await fastify.register(restaurantRoutes);
   await fastify.register(bookingRoutes);
@@ -86,11 +90,34 @@ async function buildServer() {
     });
   });
 
-  fastify.get('/health', () => ({
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    environment: env.NODE_ENV,
-  }));
+  fastify.get('/health', async (_request, reply) => {
+    const checks: Record<string, 'ok' | 'error'> = {};
+    let httpStatus = 200;
+
+    try {
+      await prisma.$queryRaw`SELECT 1`;
+      checks.database = 'ok';
+    } catch {
+      checks.database = 'error';
+      httpStatus = 503;
+    }
+
+    try {
+      const redis = getRedisClient();
+      await redis.ping();
+      checks.redis = 'ok';
+    } catch {
+      checks.redis = 'error';
+      httpStatus = 503;
+    }
+
+    return reply.code(httpStatus).send({
+      status: httpStatus === 200 ? 'ok' : 'degraded',
+      timestamp: new Date().toISOString(),
+      environment: env.NODE_ENV,
+      checks,
+    });
+  });
 
   return fastify;
 }

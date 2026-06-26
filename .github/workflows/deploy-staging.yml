@@ -53,25 +53,40 @@ jobs:
           NODE_ENV: production
 
       # ─────────────────────────────────────────
-      # Replace the steps below with your actual
-      # deployment commands (Railway, Render, etc.)
-      # ─────────────────────────────────────────
-      - name: Deploy API to staging
-        run: echo "TODO — replace with actual deploy command (e.g. railway deploy)"
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy API → Railway (staging)
         env:
-          DATABASE_URL:    ${{ secrets.STAGING_DATABASE_URL }}
-          REDIS_URL:       ${{ secrets.STAGING_REDIS_URL }}
-          JWT_PRIVATE_KEY: ${{ secrets.STAGING_JWT_PRIVATE_KEY }}
-          JWT_PUBLIC_KEY:  ${{ secrets.STAGING_JWT_PUBLIC_KEY }}
-          NODE_ENV:        staging
-          PORT:            ${{ vars.PORT }}
-          QUEUE_NAME:      ${{ vars.QUEUE_NAME }}
+          RAILWAY_TOKEN: ${{ secrets.STAGING_RAILWAY_TOKEN }}
+        run: |
+          cd apps/api
+          railway up --service api-staging --detach
 
-      - name: Deploy web app to staging
-        run: echo "TODO — replace with actual deploy command (e.g. vercel deploy)"
+      - name: Install Vercel CLI
+        run: npm install -g vercel
 
-      - name: Deploy dashboard to staging
-        run: echo "TODO — replace with actual deploy command"
+      - name: Deploy web → Vercel (staging)
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID_WEB: ${{ secrets.VERCEL_PROJECT_ID_WEB_STAGING }}
+        run: |
+          cd apps/web
+          vercel pull --yes --environment=preview --token=$VERCEL_TOKEN
+          vercel build --token=$VERCEL_TOKEN
+          vercel deploy --prebuilt --token=$VERCEL_TOKEN
+
+      - name: Deploy dashboard → Vercel (staging)
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID_DASHBOARD: ${{ secrets.VERCEL_PROJECT_ID_DASHBOARD_STAGING }}
+        run: |
+          cd apps/dashboard
+          vercel pull --yes --environment=preview --token=$VERCEL_TOKEN
+          vercel build --token=$VERCEL_TOKEN
+          vercel deploy --prebuilt --token=$VERCEL_TOKEN
 
       - name: Notify deployment success
         if: success()

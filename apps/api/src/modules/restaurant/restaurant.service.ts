@@ -21,6 +21,18 @@ function dateFromDatetime(iso: string): string {
   return iso.slice(0, 10);
 }
 
+type PublicSlot = {
+  id: string;
+  startsAt: string;
+  capacity: number;
+  available: number;
+};
+
+function filterUpcomingSlots(slots: PublicSlot[]): PublicSlot[] {
+  const now = Date.now();
+  return slots.filter((slot) => new Date(slot.startsAt).getTime() > now);
+}
+
 async function cacheGetSlots(
   restaurantId: string,
   date: string,
@@ -178,7 +190,7 @@ export async function getAvailableSlots(restaurantId: string, date: string) {
   if (!exists) throw new NotFoundError('Restaurant not found');
 
   const cached = await cacheGetSlots(restaurantId, date);
-  if (cached) return cached;
+  if (cached) return filterUpcomingSlots(cached as PublicSlot[]);
 
   const startOfDay = new Date(`${date}T00:00:00.000Z`);
   const endOfDay = new Date(`${date}T23:59:59.999Z`);
@@ -205,9 +217,11 @@ export async function getAvailableSlots(restaurantId: string, date: string) {
     available: s.capacity - s.booked,
   }));
 
-  await cacheSetSlots(restaurantId, date, publicSlots);
+  const upcomingSlots = filterUpcomingSlots(publicSlots);
 
-  return publicSlots;
+  await cacheSetSlots(restaurantId, date, upcomingSlots);
+
+  return upcomingSlots;
 }
 
 export async function getMyRestaurants(ownerId: string) {
