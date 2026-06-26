@@ -15,6 +15,8 @@ const EnvSchema = z.object({
     .string()
     .email()
     .default('reservations@restaurant-booking.app'),
+  CLOUDFLARE_TURNSTILE_SECRET_KEY: z.string().min(1).optional(),
+  CF_ORIGIN_SECRET: z.string().min(1).optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

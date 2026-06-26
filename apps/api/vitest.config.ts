@@ -10,6 +10,10 @@ loadDotenv({ path: resolve(__dirname, '../../.env') });
 process.env.RESEND_API_KEY ??= 're_test_placeholder';
 process.env.EMAIL_FROM ??= 'reservations@restaurant-booking.app';
 
+// Cloudflare secrets must be absent in tests
+delete process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY;
+delete process.env.CF_ORIGIN_SECRET;
+
 export default defineConfig({
   test: {
     globals: false,

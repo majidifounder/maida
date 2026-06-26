@@ -12,6 +12,7 @@
     "test": "echo 'no tests yet'"
   },
   "dependencies": {
+    "@marsidev/react-turnstile": "^1.5.3",
     "@restaurant/types": "workspace:*",
     "@tanstack/react-query": "^5.90.12",
     "date-fns": "^4.1.0",

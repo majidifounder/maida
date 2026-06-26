@@ -7,8 +7,10 @@ import sensible from '@fastify/sensible';
 
 import { env } from './env.js';
 import { getRedisClient } from './lib/redis.js';
+import { getRealIp } from './lib/cloudflare.js';
 import { prisma } from '@restaurant/db';
 import authenticatePlugin from './plugins/authenticate.js';
+import { cloudflareOnlyPlugin } from './plugins/cloudflareOnly.js';
 import wsPlugin from './plugins/websocket.js';
 import { authRoutes } from './modules/auth/auth.routes.js';
 import { restaurantRoutes } from './modules/restaurant/restaurant.routes.js';
@@ -59,7 +61,7 @@ async function buildServer() {
     max: 100,
     timeWindow: '1 minute',
     redis,
-    keyGenerator: (req) => req.ip,
+    keyGenerator: (req) => getRealIp(req),
     allowList: (req) => req.headers['x-load-test'] === '1',
     errorResponseBuilder: (_req, context) => ({
       statusCode: 429,
@@ -71,6 +73,7 @@ async function buildServer() {
   });
 
   await fastify.register(sensible);
+  await fastify.register(cloudflareOnlyPlugin);
   await fastify.register(authenticatePlugin);
   await fastify.register(wsPlugin);
   await fastify.register(authRoutes);

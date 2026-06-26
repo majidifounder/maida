@@ -4,6 +4,8 @@ import { prisma } from '@restaurant/db';
 import { RegisterSchema, LoginSchema, RefreshSchema } from './auth.schema.js';
 import * as AuthService from './auth.service.js';
 import { AppError } from '../../errors/index.js';
+import { getRealIp, verifyTurnstileToken } from '../../lib/cloudflare.js';
+import { env } from '../../env.js';
 
 const REFRESH_COOKIE_NAME = 'refreshToken';
 const REFRESH_COOKIE_OPTIONS = {
@@ -15,26 +17,78 @@ const REFRESH_COOKIE_OPTIONS = {
 };
 
 export async function authRoutes(fastify: FastifyInstance): Promise<void> {
-  fastify.post('/auth/register', async (request, reply) => {
-    const body = RegisterSchema.safeParse(request.body);
-    if (!body.success) {
-      return reply
-        .code(422)
-        .send({ error: 'Validation failed', details: body.error.flatten() });
-    }
-
-    try {
-      const result = await AuthService.registerUser(body.data, { ip: request.ip });
-      return reply.code(201).send({ user: result.user });
-    } catch (err) {
-      if (err instanceof AppError) {
+  fastify.post(
+    '/auth/register',
+    {
+      config: {
+        rateLimit: {
+          max: 3,
+          timeWindow: '1 hour',
+          keyGenerator: (req) => `register:${getRealIp(req)}`,
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = RegisterSchema.safeParse(request.body);
+      if (!body.success) {
         return reply
-          .code(err.statusCode)
-          .send({ error: err.message, code: err.code });
+          .code(422)
+          .send({ error: 'Validation failed', details: body.error.flatten() });
       }
-      throw err;
-    }
-  });
+
+      if (env.CLOUDFLARE_TURNSTILE_SECRET_KEY) {
+        const token = body.data.cfTurnstileResponse;
+
+        if (!token) {
+          return reply.code(422).send({
+            error: 'Bot verification token is required.',
+            code: 'TURNSTILE_TOKEN_MISSING',
+          });
+        }
+
+        let tokenValid: boolean;
+        try {
+          tokenValid = await verifyTurnstileToken(
+            token,
+            getRealIp(request),
+            env.CLOUDFLARE_TURNSTILE_SECRET_KEY,
+          );
+        } catch (err) {
+          request.log.error({ err }, 'Turnstile API unreachable');
+          return reply.code(503).send({
+            error:
+              'Bot verification service temporarily unavailable. Please try again.',
+            code: 'TURNSTILE_UNAVAILABLE',
+          });
+        }
+
+        if (!tokenValid) {
+          return reply.code(422).send({
+            error:
+              'Bot verification failed. Please complete the challenge and try again.',
+            code: 'TURNSTILE_INVALID',
+          });
+        }
+      }
+
+      const { email, password, role } = body.data;
+
+      try {
+        const result = await AuthService.registerUser(
+          { email, password, role },
+          { ip: getRealIp(request) },
+        );
+        return reply.code(201).send({ user: result.user });
+      } catch (err) {
+        if (err instanceof AppError) {
+          return reply
+            .code(err.statusCode)
+            .send({ error: err.message, code: err.code });
+        }
+        throw err;
+      }
+    },
+  );
 
   fastify.post(
     '/auth/login',
@@ -43,7 +97,7 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
         rateLimit: {
           max: 5,
           timeWindow: '15 minutes',
-          keyGenerator: (req) => req.ip,
+          keyGenerator: (req) => getRealIp(req),
           allowList: (req: FastifyRequest) => req.headers['x-load-test'] === '1',
           errorResponseBuilder: () => ({
             statusCode: 429,

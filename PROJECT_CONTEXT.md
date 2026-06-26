@@ -21,7 +21,7 @@
 | Shared UI | `packages/ui` |
 | Auth | JWT (RS256) — Access token (15 min) + Refresh token (7 days); API live at `http://localhost:3001`; 148 Vitest tests (124 integration + 24 notification unit) |
 | Real-time | WebSocket (owner dashboard) via Redis pub/sub |
-| Security layers | TLS, rate-limit (Redis counter), JWT validation, mTLS internal, RBAC, optimistic locking |
+| Security layers | TLS, rate-limit (Redis counter, real client IP via CF-Connecting-IP), Turnstile bot check on register, CF-origin secret guard, JWT validation, RBAC, optimistic locking |
 | CI/CD | GitHub Actions → staging (auto) → production (manual gate) |
 | Local dev DB | Supabase (hosted PostgreSQL — Docker not available on dev machine) |
 | Local dev Redis | Upstash (hosted Redis — Docker not available on dev machine) |
@@ -56,6 +56,7 @@
 | 5 | Notification service | ✅ Done (2 of 2 tasks done) | Queue consumer, email diner, alert owner (async) |
 | 6 | Frontend | ✅ Done (2 of 2 tasks done) | Diner web app + Owner dashboard (React, JWT storage, WebSocket) |
 | 7 | QA & Launch | ✅ Done (1 of 1 tasks done) | Load test, health check, check-env, LAUNCH_CHECKLIST, CI/CD deploy |
+| 8 | Security Hardening | ✅ Done (1 of 1 tasks done) | Cloudflare proxy + DDoS, Turnstile bot protection, CF-only guard, real-IP rate limiting |
 
 ---
 
@@ -542,6 +543,35 @@
 - LAUNCH_CHECKLIST.md is the single go-live document; work top to bottom
 - 🎉 Platform complete: all 7 phases done, 148 tests passing
 
+### ✅ Phase 8 · Task 1 — Cloudflare Security Hardening
+**Date:** 2026-06-26
+**Files created / modified:**
+- `apps/api/src/lib/cloudflare.ts` — `getRealIp()` reads CF-Connecting-IP; `verifyTurnstileToken()` calls Turnstile siteverify API
+- `apps/api/src/plugins/cloudflareOnly.ts` — rejects requests without X-CF-Origin-Secret header in production
+- `apps/api/src/env.ts` — added optional `CLOUDFLARE_TURNSTILE_SECRET_KEY` and `CF_ORIGIN_SECRET`
+- `apps/api/src/modules/auth/auth.schema.ts` — optional `cfTurnstileResponse` on RegisterSchema
+- `apps/api/src/modules/auth/auth.routes.ts` — register rate limit 3/IP/hour (real IP); Turnstile verification; login keyGenerator uses getRealIp
+- `apps/api/src/index.ts` — cloudflareOnly plugin; global rate-limit keyGenerator uses getRealIp
+- `apps/api/vitest.config.ts` — delete Cloudflare env vars so features inactive in tests
+- `apps/web/src/pages/RegisterPage.tsx` — @marsidev/react-turnstile widget; token sent with registration
+- `apps/web/src/context/AuthContext.tsx` — register() accepts optional cfTurnstileResponse
+- `apps/web/.env.example` — VITE_CLOUDFLARE_TURNSTILE_SITE_KEY
+- `.env.example` — CLOUDFLARE_TURNSTILE_SECRET_KEY, CF_ORIGIN_SECRET
+- `LAUNCH_CHECKLIST.md` — Cloudflare Security Layer section (14 checkboxes)
+**Interfaces / types added:** None
+**API endpoints added:** None (POST /auth/register behaviour changed: Turnstile required when secret key set)
+**Environment variables added:**
+- `CLOUDFLARE_TURNSTILE_SECRET_KEY` — Turnstile server secret; verification skipped when absent (dev/test)
+- `CF_ORIGIN_SECRET` — shared secret with Cloudflare Transform Rule; guard skipped when absent or not production
+- `VITE_CLOUDFLARE_TURNSTILE_SITE_KEY` — public Turnstile site key; dev test key: 1x00000000000000000000AA
+**Notes:**
+- All 148 existing tests pass unchanged — Turnstile and CF-only guard disabled in test environment
+- Real-IP rate limiting works behind Cloudflare (was using CF edge IP → all users shared one counter)
+- OS firewall (ufw) blocks direct origin hits — cloudflareOnly plugin is secondary defence
+- WebSocket on /ws works through Cloudflare when Network → WebSockets is enabled
+- Cloudflare IP ranges in firewall rules should be re-synced periodically at cloudflare.com/ips
+- Project is production-ready with full security hardening
+
 ---
 
 ## 4 · SHARED TYPE CONTRACTS (`packages/types`)
@@ -674,6 +704,9 @@ RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (no
 | `SUPABASE_ANON_KEY` | optional | `.env` | Defined in .env.example |
 | `SUPABASE_SERVICE_ROLE_KEY` | optional | `.env` | Defined in .env.example |
 | `REDIS_PASSWORD` | docker-compose.yml (local Redis only) | `.env` | Defined in .env.example |
+| `CLOUDFLARE_TURNSTILE_SECRET_KEY` | `apps/api` | `.env` | Optional — Turnstile server secret; skipped when absent (dev/test) |
+| `CF_ORIGIN_SECRET` | `apps/api` | `.env` | Optional — shared secret with Cloudflare Transform Rule; guard skipped when absent or not production |
+| `VITE_CLOUDFLARE_TURNSTILE_SITE_KEY` | `apps/web` | `apps/web/.env` | Public Turnstile site key; dev: `1x00000000000000000000AA` (always-pass test key) |
 
 ---
 
@@ -709,6 +742,7 @@ RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (no
 - ✅ CI/CD deploy workflows filled in (Railway + Vercel)
 - ✅ LAUNCH_CHECKLIST.md created
 - 🎉 ALL 7 PHASES COMPLETE
+- ✅ Cloudflare security layer complete (Phase 8 · Task 1) — DDoS protection, Turnstile, CF-only guard, real-IP rate limiting, OS firewall
 
 ---
 
