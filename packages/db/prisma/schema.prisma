@@ -16,6 +16,7 @@ datasource db {
 enum Role {
   DINER
   OWNER
+  ADMIN
 }
 
 enum BookingStatus {
@@ -38,6 +39,12 @@ enum CuisineType {
   OTHER
 }
 
+enum Plan {
+  STARTER
+  PRO
+  PREMIUM
+}
+
 // ─── USER ─────────────────────────────────────────────────────────────────────
 
 model User {
@@ -47,12 +54,14 @@ model User {
   role      Role     @default(DINER)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  deletedAt DateTime?                     // soft delete — user data retained for audit
+  deletedAt  DateTime?                    // soft delete — user data retained for audit
+  totpSecret String?                      // null until admin completes TOTP setup
 
   // Relations
-  bookings    Booking[]
-  restaurants Restaurant[]
-  sessions    RefreshToken[]
+  bookings     Booking[]
+  restaurants  Restaurant[]
+  sessions     RefreshToken[]
+  subscription Subscription?
 
   @@index([email])
   @@index([role])
@@ -177,4 +186,27 @@ model AuditLog {
   @@index([entityType, entityId])
   @@index([action, createdAt])
   @@map("audit_logs")
+}
+
+// ─── SUBSCRIPTION ─────────────────────────────────────────────────────────────
+
+model Subscription {
+  id     String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId String @unique @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan   Plan   @default(STARTER)
+
+  // Lemon Squeezy fields — null until payment integration is added
+  lemonSqueezyId        String?
+  lemonSqueezyOrderId   String?
+  lemonSqueezyProductId String?
+  lemonSqueezyVariantId String?
+  currentPeriodEnd      DateTime?
+  cancelAtPeriodEnd     Boolean   @default(false)
+  status                String    @default("active") // active | cancelled | past_due | paused
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("subscriptions")
 }

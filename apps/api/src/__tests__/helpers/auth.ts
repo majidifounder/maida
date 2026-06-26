@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
+import { prisma } from '@restaurant/db';
 
 export interface TestCredentials {
   email: string;
@@ -40,6 +41,14 @@ export async function loginUser(
   opts: { email?: string; password?: string; role?: 'diner' | 'owner' } = {},
 ): Promise<TestCredentials> {
   const { email, password, userId } = await registerUser(server, opts);
+
+  if (opts.role === 'owner') {
+    await prisma.subscription.upsert({
+      where: { userId },
+      create: { userId, plan: 'PREMIUM' },
+      update: { plan: 'PREMIUM' },
+    });
+  }
 
   const res = await server.inject({
     method: 'POST',

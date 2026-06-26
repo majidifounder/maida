@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@restaurant/db';
+import { verifyAccessToken } from '../../lib/jwt.js';
 
 /** Returns a YYYY-MM-DD string N days from today (UTC) */
 export function futureDate(daysFromNow = 1): string {
@@ -32,6 +33,13 @@ export async function createTestRestaurant(
   ownerToken: string,
   overrides: Record<string, unknown> = {},
 ): Promise<TestRestaurant> {
+  const { sub: ownerId } = verifyAccessToken(ownerToken);
+  await prisma.subscription.upsert({
+    where: { userId: ownerId },
+    create: { userId: ownerId, plan: 'PREMIUM' },
+    update: { plan: 'PREMIUM' },
+  });
+
   const res = await server.inject({
     method: 'POST',
     url: '/restaurants',

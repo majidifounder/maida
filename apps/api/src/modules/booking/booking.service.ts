@@ -6,7 +6,9 @@ import {
   NotFoundError,
   ForbiddenError,
   ConflictError,
+  UnprocessableError,
 } from '../../errors/index.js';
+import { getPlanLimits, startOfCurrentMonth } from '../../lib/plan.js';
 import type {
   CreateBookingInput,
   ListBookingsQuery,
@@ -73,12 +75,50 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function assertBookingPlanLimit(restaurantId: string): Promise<void> {
+  const restaurant = await prisma.restaurant.findFirst({
+    where: { id: restaurantId },
+    select: { ownerId: true },
+  });
+  if (!restaurant) return;
+
+  let sub = await prisma.subscription.findUnique({
+    where: { userId: restaurant.ownerId },
+  });
+  if (!sub) {
+    sub = await prisma.subscription.create({
+      data: { userId: restaurant.ownerId, plan: 'STARTER' },
+    });
+  }
+
+  const limits = getPlanLimits(sub.plan as import('@restaurant/types').Plan);
+  if (limits.bookingsPerMonth === Infinity) return;
+
+  const monthStart = startOfCurrentMonth();
+  const count = await prisma.booking.count({
+    where: {
+      restaurant: { ownerId: restaurant.ownerId },
+      status: { not: 'CANCELLED' },
+      createdAt: { gte: monthStart },
+    },
+  });
+
+  if (count >= limits.bookingsPerMonth) {
+    throw new UnprocessableError(
+      `This restaurant has reached its monthly booking limit (${limits.bookingsPerMonth}). ` +
+        `The owner must upgrade their plan.`,
+    );
+  }
+}
+
 export async function createBooking(dinerId: string, input: CreateBookingInput) {
   const restaurant = await prisma.restaurant.findFirst({
     where: { id: input.restaurantId, isActive: true, deletedAt: null },
     select: { id: true, ownerId: true },
   });
   if (!restaurant) throw new NotFoundError('Restaurant not found');
+
+  await assertBookingPlanLimit(input.restaurantId);
 
   let booking;
 

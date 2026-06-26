@@ -1,4 +1,23 @@
-export type Role = 'diner' | 'owner';
+export type Role = 'diner' | 'owner' | 'admin';
+
+export type Plan = 'STARTER' | 'PRO' | 'PREMIUM';
+
+export interface PlanLimits {
+  restaurants: number;
+  bookingsPerMonth: number;
+}
+
+export interface Subscription {
+  id: string;
+  userId: string;
+  plan: Plan;
+  status: string;
+  currentPeriodEnd: string | null;
+  cancelAtPeriodEnd: boolean;
+  lemonSqueezyId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export interface JWTPayload {
   sub: string;       // user_id

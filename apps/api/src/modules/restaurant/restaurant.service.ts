@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { prisma } from '@restaurant/db';
 import { getRedisClient } from '../../lib/redis.js';
-import { NotFoundError, ForbiddenError } from '../../errors/index.js';
+import { NotFoundError, ForbiddenError, UnprocessableError } from '../../errors/index.js';
+import { getPlanLimits } from '../../lib/plan.js';
 import type {
   CreateRestaurantInput,
   UpdateRestaurantInput,
@@ -232,10 +233,35 @@ export async function getMyRestaurants(ownerId: string) {
   });
 }
 
+async function assertRestaurantPlanLimit(ownerId: string): Promise<void> {
+  let sub = await prisma.subscription.findUnique({ where: { userId: ownerId } });
+  if (!sub) {
+    sub = await prisma.subscription.create({
+      data: { userId: ownerId, plan: 'STARTER' },
+    });
+  }
+
+  const limits = getPlanLimits(sub.plan as import('@restaurant/types').Plan);
+  if (limits.restaurants === Infinity) return;
+
+  const count = await prisma.restaurant.count({
+    where: { ownerId, deletedAt: null },
+  });
+
+  if (count >= limits.restaurants) {
+    throw new UnprocessableError(
+      `Your ${sub.plan} plan allows up to ${limits.restaurants} restaurant(s). ` +
+        `Upgrade to add more.`,
+    );
+  }
+}
+
 export async function createRestaurant(
   ownerId: string,
   input: CreateRestaurantInput,
 ) {
+  await assertRestaurantPlanLimit(ownerId);
+
   const slug = generateSlug(input.name);
 
   return prisma.restaurant.create({
