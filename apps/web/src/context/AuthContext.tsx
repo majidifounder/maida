@@ -42,7 +42,12 @@ interface AuthContextValue extends AuthState {
 
   login: (email: string, password: string) => Promise<void>;
 
-  register: (email: string, password: string, role: 'diner' | 'owner') => Promise<void>;
+  register: (
+    email: string,
+    password: string,
+    role: 'diner' | 'owner',
+    cfTurnstileResponse?: string,
+  ) => Promise<void>;
 
   logout: () => Promise<void>;
 
@@ -186,9 +191,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const register = useCallback(
 
-    async (email: string, password: string, role: 'diner' | 'owner') => {
+    async (
+      email: string,
+      password: string,
+      role: 'diner' | 'owner',
+      cfTurnstileResponse?: string,
+    ) => {
 
-      await api.post('/auth/register', { email, password, role });
+      await api.post('/auth/register', {
+        email,
+        password,
+        role,
+        ...(cfTurnstileResponse ? { cfTurnstileResponse } : {}),
+      });
 
       await login(email, password);
 

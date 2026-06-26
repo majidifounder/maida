@@ -2,11 +2,16 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
+import { Turnstile } from '@marsidev/react-turnstile';
 import { useAuth } from '../context/AuthContext.js';
 import { ApiError } from '../lib/api.js';
 import { Card } from '../components/ui/Card.js';
 import { Input } from '../components/ui/Input.js';
 import { Button } from '../components/ui/Button.js';
+
+const turnstileSiteKey = import.meta.env.VITE_CLOUDFLARE_TURNSTILE_SITE_KEY as
+  | string
+  | undefined;
 
 const schema = z
   .object({
@@ -25,6 +30,7 @@ export function RegisterPage() {
   const { register: registerUser } = useAuth();
   const navigate = useNavigate();
   const [apiError, setApiError] = useState<string | null>(null);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const {
     register,
     handleSubmit,
@@ -44,7 +50,12 @@ export function RegisterPage() {
 
     setApiError(null);
     try {
-      await registerUser(parsed.data.email, parsed.data.password, 'diner');
+      await registerUser(
+        parsed.data.email,
+        parsed.data.password,
+        'diner',
+        turnstileToken ?? undefined,
+      );
       navigate('/restaurants');
     } catch (err) {
       setApiError(
@@ -54,6 +65,9 @@ export function RegisterPage() {
       );
     }
   });
+
+  const submitDisabled =
+    isSubmitting || (Boolean(turnstileSiteKey) && !turnstileToken);
 
   return (
     <div className="mx-auto max-w-md">
@@ -81,12 +95,25 @@ export function RegisterPage() {
             error={errors.confirmPassword?.message}
             {...register('confirmPassword')}
           />
+          {turnstileSiteKey && (
+            <Turnstile
+              siteKey={turnstileSiteKey}
+              onSuccess={(token) => setTurnstileToken(token)}
+              onExpire={() => setTurnstileToken(null)}
+              onError={() => setTurnstileToken(null)}
+            />
+          )}
           {apiError && (
             <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
               {apiError}
             </p>
           )}
-          <Button type="submit" className="w-full" loading={isSubmitting}>
+          <Button
+            type="submit"
+            className="w-full"
+            loading={isSubmitting}
+            disabled={submitDisabled}
+          >
             Register as diner
           </Button>
         </form>
