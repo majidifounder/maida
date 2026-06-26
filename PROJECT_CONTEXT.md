@@ -37,7 +37,7 @@
 - Notifications (email diner + alert owner) fire **async** via queue after `201` is returned; per-recipient idempotency in Redis prevents duplicate emails on BullMQ retries.
 - Gateway handles: TLS termination, rate-limit (`429`), JWT verify (`401`), request logging.
 - Services communicate internally over **mTLS** — gateway never touches DB directly.
-- Roles: `diner` | `owner` only — defined in `packages/types`.
+- Roles: `diner` | `owner` | `admin` — defined in `packages/types`.
 - **Database:** Supabase PostgreSQL — `DATABASE_URL` (pooled, port 6543) for runtime; `DIRECT_DATABASE_URL` (port 5432) for Prisma migrations only.
 - **Cache / queue:** Redis via `REDIS_URL` (Upstash in cloud; optional local Docker via `pnpm redis:up`).
 - **Auth:** Custom JWT (RS256) — not Supabase Auth. `SUPABASE_*` keys are for project metadata only unless extended later.
@@ -57,6 +57,7 @@
 | 6 | Frontend | ✅ Done (2 of 2 tasks done) | Diner web app + Owner dashboard (React, JWT storage, WebSocket) |
 | 7 | QA & Launch | ✅ Done (1 of 1 tasks done) | Load test, health check, check-env, LAUNCH_CHECKLIST, CI/CD deploy |
 | 8 | Security Hardening | ✅ Done (1 of 1 tasks done) | Cloudflare proxy + DDoS, Turnstile bot protection, CF-only guard, real-IP rate limiting |
+| 9 | Admin + Subscriptions | 🟡 In progress (1 of 2 tasks done) | Admin API, TOTP 2FA, plan enforcement, subscription schema |
 
 ---
 
@@ -572,6 +573,42 @@
 - Cloudflare IP ranges in firewall rules should be re-synced periodically at cloudflare.com/ips
 - Project is production-ready with full security hardening
 
+### ✅ Phase 9 · Task 1 — Admin Backend + Subscription Schema + Plan Enforcement
+**Date:** 2026-06-23
+**Files created / modified:**
+- `packages/db/prisma/schema.prisma` — added ADMIN to Role enum; totpSecret on User; Plan enum (STARTER/PRO/PREMIUM); Subscription model with Lemon Squeezy fields stubbed
+- `packages/db/prisma/migrations/20260623000000_admin_role_totp_subscriptions/` — new migration
+- `packages/types/src/index.ts` — added admin to Role, Plan type, PlanLimits, Subscription interface
+- `apps/api/src/lib/plan.ts` — PLAN_LIMITS constant, getPlanLimits(), planDisplayName(), startOfCurrentMonth()
+- `apps/api/src/modules/admin/admin.schema.ts` — AdminLoginSchema, AdminUpdatePlanSchema, AdminPaginationSchema
+- `apps/api/src/modules/admin/admin.service.ts` — adminLogin (TOTP), adminTotpSetup, getStats, listUsers, getUser, banUser, unbanUser, updateUserPlan, listRestaurants, listBookings, listAuditLogs, listSubscriptions
+- `apps/api/src/modules/admin/admin.routes.ts` — /admin/auth/login, /admin/auth/totp/setup, /admin/stats, /admin/users, /admin/restaurants, /admin/bookings, /admin/subscriptions, /admin/audit-logs
+- `apps/api/src/modules/restaurant/restaurant.service.ts` — assertRestaurantPlanLimit() called in createRestaurant
+- `apps/api/src/modules/booking/booking.service.ts` — assertBookingPlanLimit() called in createBooking
+- `apps/api/src/index.ts` — registered adminRoutes
+**API endpoints added:**
+- `POST /admin/auth/login` — admin login with email+password+TOTP; returns QR code on first login
+- `POST /admin/auth/totp/setup` — finalise TOTP setup with pendingToken + 6-digit code
+- `GET /admin/stats` — platform-wide counts (users, restaurants, bookings, plans)
+- `GET /admin/users` — paginated user list with subscription info
+- `GET /admin/users/:id` — user detail + restaurants + subscription
+- `PATCH /admin/users/:id/ban` — soft-ban user
+- `PATCH /admin/users/:id/unban` — unban user
+- `PATCH /admin/users/:id/plan` — manually change owner's subscription plan
+- `GET /admin/restaurants` — all restaurants with owner + booking counts
+- `GET /admin/bookings` — all bookings with diner + restaurant info
+- `GET /admin/subscriptions` — all subscriptions
+- `GET /admin/audit-logs` — full audit log (paginated)
+**Environment variables added:** None
+**Notes:**
+- ADMIN role set directly in DB via SQL — never via API
+- TOTP uses otplib (RFC 6238 compliant); compatible with Google Authenticator, Authy, 1Password
+- Pending TOTP secret stored in Redis with 10-min TTL during setup flow
+- Plan enforcement: STARTER=1 restaurant/200 bookings; PRO=5/1000; PREMIUM=unlimited
+- Subscription auto-created as STARTER on first plan check (lazy initialisation)
+- Lemon Squeezy fields (lemonSqueezyId etc.) are nullable stubs — ready for payment integration
+- Next: Phase 9 · Task 2 — Admin frontend (apps/admin React SPA with TOTP login + management pages)
+
 ---
 
 ## 4 · SHARED TYPE CONTRACTS (`packages/types`)
@@ -580,7 +617,26 @@
 > **Note:** Prisma enums `Role`, `BookingStatus`, and `CuisineType` in `packages/db/prisma/schema.prisma` are now the source of truth for database-layer types. The TypeScript `Role` type in `packages/types` should import from `@prisma/client` going forward.
 
 ```ts
-export type Role = 'diner' | 'owner';
+export type Role = 'diner' | 'owner' | 'admin';
+
+export type Plan = 'STARTER' | 'PRO' | 'PREMIUM';
+
+export interface PlanLimits {
+  restaurants: number;
+  bookingsPerMonth: number;
+}
+
+export interface Subscription {
+  id: string;
+  userId: string;
+  plan: Plan;
+  status: string;
+  currentPeriodEnd: string | null;
+  cancelAtPeriodEnd: boolean;
+  lemonSqueezyId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export interface JWTPayload {
   sub: string;       // user_id
@@ -657,6 +713,18 @@ export interface User {
 | PATCH | `/restaurants/:id/bookings/:bookingId/confirm` | api | Bearer JWT + role=owner | ✅ Live |
 | PATCH | `/restaurants/:id/bookings/:bookingId/cancel` | api | Bearer JWT + role=owner | ✅ Live |
 | GET | `/ws` | api | Bearer JWT (query param) + role=owner | ✅ Live |
+| POST | `/admin/auth/login` | api | None | ✅ Live (email+password+TOTP; QR on first login) |
+| POST | `/admin/auth/totp/setup` | api | None | ✅ Live (pendingToken + 6-digit code) |
+| GET | `/admin/stats` | api | Bearer JWT + role=admin | ✅ Live |
+| GET | `/admin/users` | api | Bearer JWT + role=admin | ✅ Live |
+| GET | `/admin/users/:id` | api | Bearer JWT + role=admin | ✅ Live |
+| PATCH | `/admin/users/:id/ban` | api | Bearer JWT + role=admin | ✅ Live |
+| PATCH | `/admin/users/:id/unban` | api | Bearer JWT + role=admin | ✅ Live |
+| PATCH | `/admin/users/:id/plan` | api | Bearer JWT + role=admin | ✅ Live |
+| GET | `/admin/restaurants` | api | Bearer JWT + role=admin | ✅ Live |
+| GET | `/admin/bookings` | api | Bearer JWT + role=admin | ✅ Live |
+| GET | `/admin/subscriptions` | api | Bearer JWT + role=admin | ✅ Live |
+| GET | `/admin/audit-logs` | api | Bearer JWT + role=admin | ✅ Live |
 
 ---
 
@@ -664,12 +732,13 @@ export interface User {
 <!-- Cursor updates this section as models are added -->
 
 All models defined in `packages/db/prisma/schema.prisma`:
-- `User` — id (uuid), email (citext), password (bcrypt), role, soft-delete
+- `User` — id (uuid), email (citext), password (bcrypt), role (DINER | OWNER | ADMIN), totpSecret (nullable), soft-delete
 - `RefreshToken` — jti, tokenHash (SHA-256), expiresAt, revokedAt
 - `Restaurant` — id, ownerId, name, slug, cuisine, city, isActive, soft-delete
 - `TimeSlot` — id, restaurantId, startsAt, capacity, booked, isActive
 - `Booking` — id, restaurantId, dinerId, slotId, partySize, status, cancelledAt
 - `AuditLog` — id, actorId, action, entityType, entityId, metadata, ipAddress (append-only)
+- `Subscription` — userId (unique FK), plan (STARTER/PRO/PREMIUM), lemonSqueezyId (nullable), currentPeriodEnd (nullable), status
 RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (not applied on Supabase; API enforces access)
 
 ---
@@ -743,6 +812,9 @@ RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (no
 - ✅ LAUNCH_CHECKLIST.md created
 - 🎉 ALL 7 PHASES COMPLETE
 - ✅ Cloudflare security layer complete (Phase 8 · Task 1) — DDoS protection, Turnstile, CF-only guard, real-IP rate limiting, OS firewall
+- ✅ Subscription schema complete (Plan enum, Subscription model, Lemon Squeezy fields stubbed)
+- ✅ Admin API complete (12 endpoints, TOTP 2FA, plan enforcement)
+- ⬜ Admin frontend (`apps/admin`) — Phase 9 · Task 2
 
 ---
 
