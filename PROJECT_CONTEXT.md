@@ -13,6 +13,7 @@
 | Backend | Node.js + Fastify (`apps/api`) |
 | Frontend (diner) | React SPA (`apps/web`) |
 | Frontend (owner) | React SPA (`apps/dashboard`) |
+| Frontend (admin) | React SPA (`apps/admin`, port 5175) |
 | Database | PostgreSQL via Prisma on **Supabase** (`packages/db`) |
 | Cache / pub-sub | **Redis** (Upstash or local Docker for dev) |
 | Queue | Message queue (BullMQ or similar) |
@@ -57,7 +58,7 @@
 | 6 | Frontend | ✅ Done (2 of 2 tasks done) | Diner web app + Owner dashboard (React, JWT storage, WebSocket) |
 | 7 | QA & Launch | ✅ Done (1 of 1 tasks done) | Load test, health check, check-env, LAUNCH_CHECKLIST, CI/CD deploy |
 | 8 | Security Hardening | ✅ Done (1 of 1 tasks done) | Cloudflare proxy + DDoS, Turnstile bot protection, CF-only guard, real-IP rate limiting |
-| 9 | Admin + Subscriptions | 🟡 In progress (1 of 2 tasks done) | Admin API, TOTP 2FA, plan enforcement, subscription schema |
+| 9 | Admin + Subscriptions | ✅ Done (2 of 2 tasks done) | Admin API, TOTP 2FA, plan enforcement, subscription schema, admin SPA |
 
 ---
 
@@ -607,7 +608,31 @@
 - Plan enforcement: STARTER=1 restaurant/200 bookings; PRO=5/1000; PREMIUM=unlimited
 - Subscription auto-created as STARTER on first plan check (lazy initialisation)
 - Lemon Squeezy fields (lemonSqueezyId etc.) are nullable stubs — ready for payment integration
-- Next: Phase 9 · Task 2 — Admin frontend (apps/admin React SPA with TOTP login + management pages)
+
+### ✅ Phase 9 · Task 2 — Admin Frontend (`apps/admin` React SPA)
+**Date:** 2026-06-26
+**Files created / modified:**
+- `apps/admin/` — new Vite app (port 5175); login, dashboard, users, restaurants, bookings, subscriptions, audit logs
+- `apps/admin/src/context/AuthContext.tsx` — multi-step TOTP login (credentials → totp-setup | totp-verify); silent refresh via `/auth/refresh` + `/auth/me`
+- `apps/admin/src/pages/LoginPage.tsx` — dark login; credentials, TOTP verify, QR setup (uses API field `qrCodeDataUrl`, `totpToken`)
+- `apps/admin/src/pages/DashboardPage.tsx` — stats grid + recharts plan pie (`subscriptions.starter/pro/premium`)
+- `apps/admin/src/pages/UsersPage.tsx` — paginated list; search via `q`; ban/unban + plan change with ConfirmModal
+- `apps/admin/src/pages/UserDetailPage.tsx` — profile, restaurants, subscription override
+- `apps/admin/src/pages/RestaurantsPage.tsx`, `BookingsPage.tsx`, `SubscriptionsPage.tsx`, `AuditLogsPage.tsx` — read-only paginated tables
+- `apps/admin/src/components/DataTable.tsx`, `ConfirmModal.tsx`, `ui/*` — admin UI primitives
+- `apps/admin/src/layouts/AdminLayout.tsx` — dark sidebar layout
+- `apps/admin/src/types/api.ts` — response types aligned to actual admin API shapes
+- `apps/api/scripts/admin-totp-setup.ts` — CLI helper for server-side TOTP setup (dev)
+- `LAUNCH_CHECKLIST.md` — Admin Panel section
+**Interfaces / types added:** `AdminStats`, `AdminUserListItem`, `AdminUserDetail`, `AdminRestaurant`, `AdminBooking`, `AdminSubscription`, `AdminAuditLog`, `LoginStep`
+**API endpoints added:** None
+**Environment variables added:**
+- `VITE_API_URL` (`apps/admin/.env`) — API base; blank in dev (Vite proxy `/api` → :3001)
+**Notes:**
+- Access token in module-level store (same pattern as dashboard); never localStorage
+- API uses `totpToken` (not `totpCode`); ban status via `deletedAt` (not `bannedAt`); user search query param `q`
+- Admin panel: port 5175 (web=5173, dashboard=5174, admin=5175)
+- Phase 9 complete — platform delivered with admin panel
 
 ---
 
@@ -759,7 +784,7 @@ RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (no
 | `QUEUE_NAME` | `apps/api` | `.env` | Validated in `env.ts` — default `booking_events`; BullMQ producer active |
 | `RESEND_API_KEY` | `apps/api` | `.env` | Required — Resend email delivery API key |
 | `EMAIL_FROM` | `apps/api` | `.env` | From address for outbound emails — requires verified domain in production; dev may use `onboarding@resend.dev` |
-| `VITE_API_URL` | `apps/web`, `apps/dashboard` | `apps/*/.env` | API base URL; leave blank in dev (Vite proxy `/api` → localhost:3001) |
+| `VITE_API_URL` | `apps/web`, `apps/dashboard`, `apps/admin` | `apps/*/.env` | API base URL; leave blank in dev (Vite proxy `/api` → localhost:3001) |
 | `STAGING_DATABASE_URL` | deploy-staging.yml | GitHub Secret (staging env) | Stubbed — needs real value |
 | `STAGING_REDIS_URL` | deploy-staging.yml | GitHub Secret (staging env) | Stubbed — needs real value |
 | `STAGING_JWT_PRIVATE_KEY` | deploy-staging.yml | GitHub Secret (staging env) | Stubbed — needs real value |
@@ -814,7 +839,8 @@ RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (no
 - ✅ Cloudflare security layer complete (Phase 8 · Task 1) — DDoS protection, Turnstile, CF-only guard, real-IP rate limiting, OS firewall
 - ✅ Subscription schema complete (Plan enum, Subscription model, Lemon Squeezy fields stubbed)
 - ✅ Admin API complete (12 endpoints, TOTP 2FA, plan enforcement)
-- ⬜ Admin frontend (`apps/admin`) — Phase 9 · Task 2
+- ✅ Admin frontend built (Phase 9 · Task 2) — React SPA port 5175; dark sidebar; TOTP login; user management; plan overrides; audit log
+- 🎉 Phase 9 complete — full platform with admin panel
 
 ---
 

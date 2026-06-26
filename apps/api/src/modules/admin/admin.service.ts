@@ -22,6 +22,9 @@ import type {
 const TOTP_ISSUER = 'Restaurant Booking Admin';
 const TOTP_PENDING_TTL = 600;
 
+// Allow ±1 step (30s) for phone/server clock drift
+authenticator.options = { ...authenticator.options, window: 1 };
+
 export async function adminLogin(
   input: AdminLoginInput,
   meta: { ip: string },

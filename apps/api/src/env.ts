@@ -8,7 +8,11 @@ const EnvSchema = z.object({
   JWT_PRIVATE_KEY: z.string().min(1, 'JWT_PRIVATE_KEY is required'),
   JWT_PUBLIC_KEY: z.string().min(1, 'JWT_PUBLIC_KEY is required'),
   BCRYPT_ROUNDS: z.coerce.number().int().min(10).max(14).default(12),
-  CORS_ORIGIN: z.string().default('http://localhost:5173,http://localhost:5174'),
+  CORS_ORIGIN: z
+    .string()
+    .default(
+      'http://localhost:5173,http://localhost:5174,http://localhost:5175',
+    ),
   QUEUE_NAME: z.string().default('booking_events'),
   RESEND_API_KEY: z.string().min(1, 'RESEND_API_KEY is required'),
   EMAIL_FROM: z
