@@ -59,6 +59,7 @@
 | 7 | QA & Launch | ✅ Done (1 of 1 tasks done) | Load test, health check, check-env, LAUNCH_CHECKLIST, CI/CD deploy |
 | 8 | Security Hardening | ✅ Done (1 of 1 tasks done) | Cloudflare proxy + DDoS, Turnstile bot protection, CF-only guard, real-IP rate limiting |
 | 9 | Admin + Subscriptions | ✅ Done (2 of 2 tasks done) | Admin API, TOTP 2FA, plan enforcement, subscription schema, admin SPA |
+| 10 | Password Reset | ✅ Done (1 of 1 tasks done) | Forgot-password flow, reset email, session invalidation, frontend pages |
 
 ---
 
@@ -634,6 +635,32 @@
 - Admin panel: port 5175 (web=5173, dashboard=5174, admin=5175)
 - Phase 9 complete — platform delivered with admin panel
 
+### ✅ Phase 10 · Task 1 — Password Reset Flow
+**Date:** 2026-06-26
+**Files created / modified:**
+- `apps/api/src/modules/auth/auth.schema.ts` — ForgotPasswordSchema, ResetPasswordSchema
+- `apps/api/src/modules/auth/auth.service.ts` — forgotPassword(), resetPassword() (Redis tokens, session revoke)
+- `apps/api/src/modules/auth/auth.routes.ts` — POST /auth/forgot-password (3/IP/hour), POST /auth/reset-password
+- `apps/api/src/services/email.service.ts` — sendPasswordReset() email template
+- `apps/api/src/env.ts` — WEB_URL, DASHBOARD_URL (optional, with defaults)
+- `.env.example` — WEB_URL, DASHBOARD_URL
+- `apps/web/src/pages/ForgotPasswordPage.tsx`, `ResetPasswordPage.tsx` — diner reset flow
+- `apps/web/src/router.tsx`, `LoginPage.tsx` — routes + forgot link + success banner
+- `apps/dashboard/src/pages/ForgotPasswordPage.tsx`, `ResetPasswordPage.tsx` — owner reset flow
+- `apps/dashboard/src/router.tsx`, `LoginPage.tsx` — same routes + link + banner
+**API endpoints added:**
+- `POST /auth/forgot-password` — rate limited 3/IP/hour; always 200; sends reset email if user exists
+- `POST /auth/reset-password` — validates Redis token; updates password; revokes all refresh tokens
+**Environment variables added:**
+- `WEB_URL` — diner app base URL for reset links (default http://localhost:5173)
+- `DASHBOARD_URL` — owner dashboard URL for reset links (default http://localhost:5174)
+**Notes:**
+- Reset tokens in Redis `pwd_reset:{uuid}`, TTL 3600s — no DB model
+- Enumeration prevention: forgot-password returns identical 200 for any email
+- Single-use token deleted on reset; replay returns 401
+- Origin header selects web vs dashboard reset URL
+- Admin password reset excluded — use Supabase SQL
+
 ---
 
 ## 4 · SHARED TYPE CONTRACTS (`packages/types`)
@@ -719,6 +746,8 @@ export interface User {
 | POST | `/auth/login` | api | None | ✅ Live |
 | POST | `/auth/refresh` | api | Refresh token (cookie or body) | ✅ Live |
 | POST | `/auth/logout` | api | Bearer JWT | ✅ Live |
+| POST | `/auth/forgot-password` | api | None (rate limited 3/IP/hour) | ✅ Live |
+| POST | `/auth/reset-password` | api | None | ✅ Live |
 | GET | `/auth/me` | api | Bearer JWT | ✅ Live |
 | GET | `/restaurants` | api | None | ✅ Live |
 | GET | `/restaurants/mine` | api | Bearer JWT + role=owner | ✅ Live |
@@ -801,6 +830,8 @@ RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (no
 | `CLOUDFLARE_TURNSTILE_SECRET_KEY` | `apps/api` | `.env` | Optional — Turnstile server secret; skipped when absent (dev/test) |
 | `CF_ORIGIN_SECRET` | `apps/api` | `.env` | Optional — shared secret with Cloudflare Transform Rule; guard skipped when absent or not production |
 | `VITE_CLOUDFLARE_TURNSTILE_SITE_KEY` | `apps/web` | `apps/web/.env` | Public Turnstile site key; dev: `1x00000000000000000000AA` (always-pass test key) |
+| `WEB_URL` | `apps/api` | `.env` | Diner app URL for password reset links — default http://localhost:5173 |
+| `DASHBOARD_URL` | `apps/api` | `.env` | Owner dashboard URL for password reset links — default http://localhost:5174 |
 
 ---
 
@@ -841,6 +872,7 @@ RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (no
 - ✅ Admin API complete (12 endpoints, TOTP 2FA, plan enforcement)
 - ✅ Admin frontend built (Phase 9 · Task 2) — React SPA port 5175; dark sidebar; TOTP login; user management; plan overrides; audit log
 - 🎉 Phase 9 complete — full platform with admin panel
+- ✅ Password reset flow complete (forgot + reset endpoints; email; session invalidation; web + dashboard pages)
 
 ---
 

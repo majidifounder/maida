@@ -21,6 +21,8 @@ const EnvSchema = z.object({
     .default('reservations@restaurant-booking.app'),
   CLOUDFLARE_TURNSTILE_SECRET_KEY: z.string().min(1).optional(),
   CF_ORIGIN_SECRET: z.string().min(1).optional(),
+  WEB_URL: z.string().url().default('http://localhost:5173'),
+  DASHBOARD_URL: z.string().url().default('http://localhost:5174'),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

@@ -152,3 +152,37 @@ export async function sendBookingCancelledByOwner(
     }),
   );
 }
+
+export async function sendPasswordReset(opts: {
+  toEmail: string;
+  resetUrl: string;
+}): Promise<void> {
+  await sendEmail({
+    from: env.EMAIL_FROM,
+    to: opts.toEmail,
+    subject: 'Reset your password',
+    html: `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px">
+        <h2 style="font-size:20px;margin-bottom:8px">Reset your password</h2>
+        <p style="color:#555;margin-bottom:24px">
+          We received a request to reset the password for your account.
+          Click the button below — this link expires in <strong>1 hour</strong>.
+        </p>
+        <a href="${opts.resetUrl}"
+           style="display:inline-block;background:#1a56db;color:#fff;text-decoration:none;
+                  padding:12px 24px;border-radius:6px;font-weight:600">
+          Reset password
+        </a>
+        <p style="color:#888;font-size:13px;margin-top:24px">
+          If you didn't request this, you can safely ignore this email.
+          Your password will not be changed.
+        </p>
+        <p style="color:#bbb;font-size:12px;margin-top:8px">
+          Link not working? Copy and paste into your browser:<br/>
+          <span style="word-break:break-all">${opts.resetUrl}</span>
+        </p>
+      </div>
+    `,
+    text: `Reset your password\n\nClick this link to reset your password (expires in 1 hour):\n${opts.resetUrl}\n\nIf you didn't request this, ignore this email.`,
+  });
+}
