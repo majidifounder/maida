@@ -9,6 +9,12 @@ loadDotenv({ path: resolve(__dirname, '../../.env') });
 
 process.env.RESEND_API_KEY ??= 're_test_placeholder';
 process.env.EMAIL_FROM ??= 'reservations@restaurant-booking.app';
+process.env.LEMON_SQUEEZY_WEBHOOK_SECRET ??= 'test_secret';
+process.env.LEMON_SQUEEZY_API_KEY ??= 'test_key';
+process.env.LEMON_SQUEEZY_STORE_ID ??= '1';
+process.env.LS_VARIANT_STARTER ??= '100';
+process.env.LS_VARIANT_PRO ??= '200';
+process.env.LS_VARIANT_PREMIUM ??= '300';
 
 // Cloudflare secrets must be absent in tests
 delete process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY;

@@ -16,7 +16,11 @@ export function uniqueEmail(): string {
 
 export async function registerUser(
   server: FastifyInstance,
-  opts: { email?: string; password?: string; role?: 'diner' | 'owner' } = {},
+  opts: {
+    email?: string;
+    password?: string;
+    role?: 'diner' | 'owner';
+  } = {},
 ): Promise<{ email: string; password: string; userId: string }> {
   const email = opts.email ?? uniqueEmail();
   const password = opts.password ?? 'TestPass1!';
@@ -38,16 +42,25 @@ export async function registerUser(
 
 export async function loginUser(
   server: FastifyInstance,
-  opts: { email?: string; password?: string; role?: 'diner' | 'owner' } = {},
+  opts: {
+    email?: string;
+    password?: string;
+    role?: 'diner' | 'owner';
+    /** Owner subscription plan; 'none' skips subscription row (defaults to virtual STARTER). */
+    subscriptionPlan?: 'STARTER' | 'PRO' | 'PREMIUM' | 'none';
+  } = {},
 ): Promise<TestCredentials> {
   const { email, password, userId } = await registerUser(server, opts);
 
   if (opts.role === 'owner') {
-    await prisma.subscription.upsert({
-      where: { userId },
-      create: { userId, plan: 'PREMIUM' },
-      update: { plan: 'PREMIUM' },
-    });
+    const plan = opts.subscriptionPlan ?? 'PREMIUM';
+    if (plan !== 'none') {
+      await prisma.subscription.upsert({
+        where: { userId },
+        create: { userId, plan, status: 'ACTIVE' },
+        update: { plan, status: 'ACTIVE' },
+      });
+    }
   }
 
   const res = await server.inject({

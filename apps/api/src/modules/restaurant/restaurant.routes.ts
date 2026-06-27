@@ -8,6 +8,7 @@ import {
   UpdateSlotSchema,
 } from './restaurant.schema.js';
 import * as RestaurantService from './restaurant.service.js';
+import { assertOwnerRestaurantPlanLimit } from '../subscription/subscription.service.js';
 import { AppError } from '../../errors/index.js';
 
 function handleError(err: unknown, reply: FastifyReply) {
@@ -90,6 +91,18 @@ export async function restaurantRoutes(fastify: FastifyInstance): Promise<void> 
         .code(422)
         .send({ error: 'Validation failed', details: body.error.flatten() });
     }
+
+    const { plan, atLimit, limit } = await assertOwnerRestaurantPlanLimit(
+      request.user!.sub,
+    );
+    if (atLimit) {
+      return reply.code(403).send({
+        error: 'Plan limit reached',
+        message: `Your ${plan} plan allows ${limit === Infinity ? 'unlimited' : limit} restaurant(s). Upgrade to add more.`,
+        upgrade: '/subscriptions/checkout',
+      });
+    }
+
     try {
       const restaurant = await RestaurantService.createRestaurant(
         request.user!.sub,

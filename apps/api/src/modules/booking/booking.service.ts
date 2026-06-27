@@ -9,6 +9,7 @@ import {
   UnprocessableError,
 } from '../../errors/index.js';
 import { getPlanLimits, startOfCurrentMonth } from '../../lib/plan.js';
+import { getCurrentPlan } from '../subscription/subscription.service.js';
 import type {
   CreateBookingInput,
   ListBookingsQuery,
@@ -82,16 +83,8 @@ async function assertBookingPlanLimit(restaurantId: string): Promise<void> {
   });
   if (!restaurant) return;
 
-  let sub = await prisma.subscription.findUnique({
-    where: { userId: restaurant.ownerId },
-  });
-  if (!sub) {
-    sub = await prisma.subscription.create({
-      data: { userId: restaurant.ownerId, plan: 'STARTER' },
-    });
-  }
-
-  const limits = getPlanLimits(sub.plan as import('@restaurant/types').Plan);
+  const plan = await getCurrentPlan(restaurant.ownerId);
+  const limits = getPlanLimits(plan as import('@restaurant/types').Plan);
   if (limits.bookingsPerMonth === Infinity) return;
 
   const monthStart = startOfCurrentMonth();

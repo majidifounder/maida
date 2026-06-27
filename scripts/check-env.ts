@@ -18,6 +18,12 @@ const REQUIRED: Record<string, string> = {
   CORS_ORIGIN: 'Comma-separated list of allowed origins',
   RESEND_API_KEY: 'Resend.com API key',
   EMAIL_FROM: 'Sender address — must be verified in Resend dashboard',
+  LEMON_SQUEEZY_WEBHOOK_SECRET: 'Lemon Squeezy webhook signing secret',
+  LEMON_SQUEEZY_API_KEY: 'Lemon Squeezy REST API key',
+  LEMON_SQUEEZY_STORE_ID: 'Lemon Squeezy store ID',
+  LS_VARIANT_STARTER: 'LS variant ID for STARTER plan',
+  LS_VARIANT_PRO: 'LS variant ID for PRO plan',
+  LS_VARIANT_PREMIUM: 'LS variant ID for PREMIUM plan',
   NODE_ENV: 'Must be "production" in prod deployments',
 };
 

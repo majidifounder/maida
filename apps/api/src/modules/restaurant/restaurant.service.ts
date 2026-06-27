@@ -3,6 +3,7 @@ import { prisma } from '@restaurant/db';
 import { getRedisClient } from '../../lib/redis.js';
 import { NotFoundError, ForbiddenError, UnprocessableError } from '../../errors/index.js';
 import { getPlanLimits } from '../../lib/plan.js';
+import { getCurrentPlan } from '../subscription/subscription.service.js';
 import type {
   CreateRestaurantInput,
   UpdateRestaurantInput,
@@ -234,14 +235,8 @@ export async function getMyRestaurants(ownerId: string) {
 }
 
 async function assertRestaurantPlanLimit(ownerId: string): Promise<void> {
-  let sub = await prisma.subscription.findUnique({ where: { userId: ownerId } });
-  if (!sub) {
-    sub = await prisma.subscription.create({
-      data: { userId: ownerId, plan: 'STARTER' },
-    });
-  }
-
-  const limits = getPlanLimits(sub.plan as import('@restaurant/types').Plan);
+  const plan = await getCurrentPlan(ownerId);
+  const limits = getPlanLimits(plan as import('@restaurant/types').Plan);
   if (limits.restaurants === Infinity) return;
 
   const count = await prisma.restaurant.count({
@@ -250,7 +245,7 @@ async function assertRestaurantPlanLimit(ownerId: string): Promise<void> {
 
   if (count >= limits.restaurants) {
     throw new UnprocessableError(
-      `Your ${sub.plan} plan allows up to ${limits.restaurants} restaurant(s). ` +
+      `Your ${plan} plan allows up to ${limits.restaurants} restaurant(s). ` +
         `Upgrade to add more.`,
     );
   }

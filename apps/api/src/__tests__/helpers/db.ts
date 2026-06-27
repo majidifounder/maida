@@ -7,6 +7,28 @@ export async function cleanupTestUsers(userIds: string[]): Promise<void> {
     where: { actorId: { in: userIds } },
   });
 
+  const ownedRestaurants = await prisma.restaurant.findMany({
+    where: { ownerId: { in: userIds } },
+    select: { id: true },
+  });
+  const restaurantIds = ownedRestaurants.map((r) => r.id);
+
+  if (restaurantIds.length > 0) {
+    await prisma.booking.deleteMany({
+      where: { restaurantId: { in: restaurantIds } },
+    });
+    await prisma.timeSlot.deleteMany({
+      where: { restaurantId: { in: restaurantIds } },
+    });
+    await prisma.restaurant.deleteMany({
+      where: { id: { in: restaurantIds } },
+    });
+  }
+
+  await prisma.subscription.deleteMany({
+    where: { userId: { in: userIds } },
+  });
+
   await prisma.refreshToken.deleteMany({
     where: { userId: { in: userIds } },
   });

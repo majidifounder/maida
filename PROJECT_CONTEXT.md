@@ -20,7 +20,7 @@
 | Shared types | `packages/types` |
 | Shared config | `packages/config` (ESLint, Prettier, tsconfig) |
 | Shared UI | `packages/ui` |
-| Auth | JWT (RS256) — Access token (15 min) + Refresh token (7 days); API live at `http://localhost:3001`; 148 Vitest tests (124 integration + 24 notification unit) |
+| Auth | JWT (RS256) — Access token (15 min) + Refresh token (7 days); API live at `http://localhost:3001`; 165 Vitest tests (136 integration + 24 notification unit + 17 subscription/billing) |
 | Real-time | WebSocket (owner dashboard) via Redis pub/sub |
 | Security layers | TLS, rate-limit (Redis counter, real client IP via CF-Connecting-IP), Turnstile bot check on register, CF-origin secret guard, JWT validation, RBAC, optimistic locking |
 | CI/CD | GitHub Actions → staging (auto) → production (manual gate) |
@@ -60,6 +60,7 @@
 | 8 | Security Hardening | ✅ Done (1 of 1 tasks done) | Cloudflare proxy + DDoS, Turnstile bot protection, CF-only guard, real-IP rate limiting |
 | 9 | Admin + Subscriptions | ✅ Done (2 of 2 tasks done) | Admin API, TOTP 2FA, plan enforcement, subscription schema, admin SPA |
 | 10 | Password Reset | ✅ Done (1 of 1 tasks done) | Forgot-password flow, reset email, session invalidation, frontend pages |
+| 11 | Billing & Subscription Lifecycle | 🟡 In progress (1 of 2 tasks done) | LS webhook handler, checkout URL, plan enforcement, subscription tests |
 
 ---
 
@@ -661,6 +662,40 @@
 - Origin header selects web vs dashboard reset URL
 - Admin password reset excluded — use Supabase SQL
 
+### ✅ Phase 11 · Task 1 — Lemon Squeezy Billing Integration (webhook + checkout + plan enforcement)
+**Date:** 2026-06-26
+**Files created / modified:**
+- `packages/db/prisma/schema.prisma` — SubscriptionStatus enum; status field typed; renewsAt added
+- `packages/db/prisma/migrations/20260626000000_add_subscription_status_enum/` — migration
+- `apps/api/src/env.ts` — LEMON_SQUEEZY_* + LS_VARIANT_* (6 required vars)
+- `apps/api/src/lib/lemon-squeezy.ts` — signature verify, variant/status mapping, checkout URL, idempotency key
+- `apps/api/src/modules/subscription/subscription.service.ts` — getSubscription, getCurrentPlan, upsertFromWebhook, plan limit assert
+- `apps/api/src/modules/subscription/webhook.routes.ts` — POST /webhooks/lemon-squeezy (raw body HMAC, idempotency)
+- `apps/api/src/modules/subscription/subscription.routes.ts` — GET /subscriptions/me, POST /subscriptions/checkout
+- `apps/api/src/modules/restaurant/restaurant.routes.ts` — 403 plan limit on POST /restaurants
+- `apps/api/src/modules/restaurant/restaurant.service.ts` — getCurrentPlan for enforcement (expired → STARTER)
+- `apps/api/src/modules/booking/booking.service.ts` — getCurrentPlan for monthly booking limits
+- `apps/api/src/index.ts` — webhookRoutes before cloudflareOnly; subscriptionRoutes registered
+- `apps/api/vitest.config.ts` — LS env fallbacks for tests
+- `apps/api/src/__tests__/subscription.test.ts` — 17 tests (webhook, upsert, API, plan enforcement)
+- `apps/api/src/__tests__/helpers/db.ts` — cascade cleanup (restaurants, subscriptions)
+- `packages/types/src/index.ts` — SubscriptionStatus union; Subscription.renewsAt
+- `.env.example` — 6 Lemon Squeezy variables
+**API endpoints added:**
+- `POST /webhooks/lemon-squeezy` — no auth; HMAC-SHA256; 8 LS subscription event types
+- `GET /subscriptions/me` — Bearer + role=owner; subscription + plan limits
+- `POST /subscriptions/checkout` — Bearer + role=owner; returns `{ checkoutUrl }`
+**Environment variables added:**
+- `LEMON_SQUEEZY_WEBHOOK_SECRET`, `LEMON_SQUEEZY_API_KEY`, `LEMON_SQUEEZY_STORE_ID`
+- `LS_VARIANT_STARTER`, `LS_VARIANT_PRO`, `LS_VARIANT_PREMIUM`
+**Notes:**
+- Webhook registered BEFORE cloudflareOnly — LS IPs are not CF IPs
+- Raw body via scoped addContentTypeParser in webhook plugin only
+- Idempotency: `ls-event:{eventName}:{subId}:{updatedAt}`, TTL 7 days; deleted on DB failure for LS retry
+- EXPIRED status forces plan STARTER; unknown variantId preserves existing plan on update
+- POST /restaurants returns 403 `{ error, message, upgrade }` when at plan cap
+- Next: Phase 11 · Task 2 — Billing UI in owner dashboard
+
 ---
 
 ## 4 · SHARED TYPE CONTRACTS (`packages/types`)
@@ -678,16 +713,25 @@ export interface PlanLimits {
   bookingsPerMonth: number;
 }
 
+export type SubscriptionStatus =
+  | 'TRIALING'
+  | 'ACTIVE'
+  | 'PAUSED'
+  | 'PAST_DUE'
+  | 'CANCELLED'
+  | 'EXPIRED';
+
 export interface Subscription {
-  id: string;
+  id: string | null;
   userId: string;
   plan: Plan;
-  status: string;
+  status: SubscriptionStatus;
   currentPeriodEnd: string | null;
+  renewsAt: string | null;
   cancelAtPeriodEnd: boolean;
   lemonSqueezyId: string | null;
-  createdAt: string;
-  updatedAt: string;
+  createdAt: string | null;
+  updatedAt: string | null;
 }
 
 export interface JWTPayload {
@@ -779,6 +823,9 @@ export interface User {
 | GET | `/admin/bookings` | api | Bearer JWT + role=admin | ✅ Live |
 | GET | `/admin/subscriptions` | api | Bearer JWT + role=admin | ✅ Live |
 | GET | `/admin/audit-logs` | api | Bearer JWT + role=admin | ✅ Live |
+| POST | `/webhooks/lemon-squeezy` | api | None (HMAC-SHA256 guard) | ✅ Live |
+| GET | `/subscriptions/me` | api | Bearer JWT + role=owner | ✅ Live |
+| POST | `/subscriptions/checkout` | api | Bearer JWT + role=owner | ✅ Live |
 
 ---
 
@@ -792,7 +839,7 @@ All models defined in `packages/db/prisma/schema.prisma`:
 - `TimeSlot` — id, restaurantId, startsAt, capacity, booked, isActive
 - `Booking` — id, restaurantId, dinerId, slotId, partySize, status, cancelledAt
 - `AuditLog` — id, actorId, action, entityType, entityId, metadata, ipAddress (append-only)
-- `Subscription` — userId (unique FK), plan (STARTER/PRO/PREMIUM), lemonSqueezyId (nullable), currentPeriodEnd (nullable), status
+- `Subscription` — userId (unique FK), plan (STARTER/PRO/PREMIUM), status (SubscriptionStatus enum), lemonSqueezyId, lemonSqueezyVariantId, currentPeriodEnd, renewsAt, cancelAtPeriodEnd
 RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (not applied on Supabase; API enforces access)
 
 ---
@@ -832,6 +879,12 @@ RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (no
 | `VITE_CLOUDFLARE_TURNSTILE_SITE_KEY` | `apps/web` | `apps/web/.env` | Public Turnstile site key; dev: `1x00000000000000000000AA` (always-pass test key) |
 | `WEB_URL` | `apps/api` | `.env` | Diner app URL for password reset links — default http://localhost:5173 |
 | `DASHBOARD_URL` | `apps/api` | `.env` | Owner dashboard URL for password reset links — default http://localhost:5174 |
+| `LEMON_SQUEEZY_WEBHOOK_SECRET` | `apps/api` | `.env` | Required — LS webhook signing secret |
+| `LEMON_SQUEEZY_API_KEY` | `apps/api` | `.env` | Required — LS REST API key |
+| `LEMON_SQUEEZY_STORE_ID` | `apps/api` | `.env` | Required — numeric LS store ID |
+| `LS_VARIANT_STARTER` | `apps/api` | `.env` | LS variant ID → STARTER plan |
+| `LS_VARIANT_PRO` | `apps/api` | `.env` | LS variant ID → PRO plan |
+| `LS_VARIANT_PREMIUM` | `apps/api` | `.env` | LS variant ID → PREMIUM plan |
 
 ---
 
@@ -873,6 +926,10 @@ RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (no
 - ✅ Admin frontend built (Phase 9 · Task 2) — React SPA port 5175; dark sidebar; TOTP login; user management; plan overrides; audit log
 - 🎉 Phase 9 complete — full platform with admin panel
 - ✅ Password reset flow complete (forgot + reset endpoints; email; session invalidation; web + dashboard pages)
+- ✅ Lemon Squeezy webhook handler complete (Phase 11 · Task 1) — HMAC sig verify, LS events, Redis idempotency, Prisma upsert, plan downgrade on expiry
+- ✅ Checkout URL endpoint complete (POST /subscriptions/checkout)
+- ✅ Plan enforcement wired on POST /restaurants (403 on limit breach)
+- ❌ Billing UI not yet built in owner dashboard (Phase 11 · Task 2)
 
 ---
 

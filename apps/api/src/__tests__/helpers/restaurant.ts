@@ -36,8 +36,8 @@ export async function createTestRestaurant(
   const { sub: ownerId } = verifyAccessToken(ownerToken);
   await prisma.subscription.upsert({
     where: { userId: ownerId },
-    create: { userId: ownerId, plan: 'PREMIUM' },
-    update: { plan: 'PREMIUM' },
+    create: { userId: ownerId, plan: 'PREMIUM', status: 'ACTIVE' },
+    update: { plan: 'PREMIUM', status: 'ACTIVE' },
   });
 
   const res = await server.inject({

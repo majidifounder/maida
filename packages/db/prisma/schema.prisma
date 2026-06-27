@@ -45,6 +45,15 @@ enum Plan {
   PREMIUM
 }
 
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAUSED
+  PAST_DUE
+  CANCELLED
+  EXPIRED
+}
+
 // ─── USER ─────────────────────────────────────────────────────────────────────
 
 model User {
@@ -202,8 +211,9 @@ model Subscription {
   lemonSqueezyProductId String?
   lemonSqueezyVariantId String?
   currentPeriodEnd      DateTime?
-  cancelAtPeriodEnd     Boolean   @default(false)
-  status                String    @default("active") // active | cancelled | past_due | paused
+  renewsAt              DateTime?
+  cancelAtPeriodEnd     Boolean            @default(false)
+  status                SubscriptionStatus @default(ACTIVE)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
