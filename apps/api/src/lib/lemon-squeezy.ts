@@ -57,6 +57,30 @@ export function webhookIdempotencyKey(
   return `ls-event:${eventName}:${subscriptionId}:${updatedAt}`;
 }
 
+export async function lsRequest<T>(
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+  path: string,
+  body?: unknown,
+): Promise<T> {
+  const res = await fetch(`https://api.lemonsqueezy.com/v1${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${env.LEMON_SQUEEZY_API_KEY}`,
+      'Content-Type': 'application/vnd.api+json',
+      Accept: 'application/vnd.api+json',
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Lemon Squeezy API error ${res.status}: ${text}`);
+  }
+
+  if (res.status === 204) return {} as T;
+  return res.json() as Promise<T>;
+}
+
 export async function createCheckoutUrl(opts: {
   userId: string;
   userEmail: string;

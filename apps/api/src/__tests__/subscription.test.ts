@@ -471,3 +471,128 @@ describe('POST /subscriptions/checkout', () => {
     });
   });
 });
+
+describe('POST /subscriptions/cancel', () => {
+  const trackedUserIds: string[] = [];
+  let app: Awaited<ReturnType<typeof buildTestServer>>;
+
+  beforeEach(async () => {
+    app = await buildTestServer();
+  });
+
+  afterEach(async () => {
+    await app.close();
+    await cleanupTestUsers(trackedUserIds);
+    trackedUserIds.length = 0;
+    vi.restoreAllMocks();
+  });
+
+  it('returns 422 when owner has no Lemon Squeezy subscription', async () => {
+    const owner = await loginUser(app, {
+      role: 'owner',
+      subscriptionPlan: 'none',
+    });
+    trackedUserIds.push(owner.userId);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/subscriptions/cancel',
+      headers: { Authorization: `Bearer ${owner.accessToken}` },
+    });
+
+    expect(res.statusCode).toBe(422);
+  });
+
+  it('returns 200 and sets cancelAtPeriodEnd when subscription exists', async () => {
+    const owner = await loginUser(app, { role: 'owner' });
+    trackedUserIds.push(owner.userId);
+
+    await prisma.subscription.update({
+      where: { userId: owner.userId },
+      data: { lemonSqueezyId: 'ls-cancel-test' },
+    });
+
+    vi.spyOn(await import('../lib/lemon-squeezy.js'), 'lsRequest').mockResolvedValue(
+      {},
+    );
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/subscriptions/cancel',
+      headers: { Authorization: `Bearer ${owner.accessToken}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+
+    const sub = await prisma.subscription.findUnique({
+      where: { userId: owner.userId },
+    });
+    expect(sub?.cancelAtPeriodEnd).toBe(true);
+  });
+});
+
+describe('POST /subscriptions/resume', () => {
+  const trackedUserIds: string[] = [];
+  let app: Awaited<ReturnType<typeof buildTestServer>>;
+
+  beforeEach(async () => {
+    app = await buildTestServer();
+  });
+
+  afterEach(async () => {
+    await app.close();
+    await cleanupTestUsers(trackedUserIds);
+    trackedUserIds.length = 0;
+    vi.restoreAllMocks();
+  });
+
+  it('returns 409 when subscription is not scheduled for cancellation', async () => {
+    const owner = await loginUser(app, { role: 'owner' });
+    trackedUserIds.push(owner.userId);
+
+    await prisma.subscription.update({
+      where: { userId: owner.userId },
+      data: { lemonSqueezyId: 'ls-resume-test', cancelAtPeriodEnd: false },
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/subscriptions/resume',
+      headers: { Authorization: `Bearer ${owner.accessToken}` },
+    });
+
+    expect(res.statusCode).toBe(409);
+  });
+
+  it('returns 200 and clears cancelAtPeriodEnd when scheduled to cancel', async () => {
+    const owner = await loginUser(app, { role: 'owner' });
+    trackedUserIds.push(owner.userId);
+
+    await prisma.subscription.update({
+      where: { userId: owner.userId },
+      data: {
+        lemonSqueezyId: 'ls-resume-test',
+        cancelAtPeriodEnd: true,
+        currentPeriodEnd: new Date(Date.now() + 86_400_000),
+      },
+    });
+
+    const lsSpy = vi
+      .spyOn(await import('../lib/lemon-squeezy.js'), 'lsRequest')
+      .mockResolvedValue({});
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/subscriptions/resume',
+      headers: { Authorization: `Bearer ${owner.accessToken}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(lsSpy).toHaveBeenCalledOnce();
+
+    const sub = await prisma.subscription.findUnique({
+      where: { userId: owner.userId },
+    });
+    expect(sub?.cancelAtPeriodEnd).toBe(false);
+  });
+});

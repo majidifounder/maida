@@ -20,7 +20,7 @@
 | Shared types | `packages/types` |
 | Shared config | `packages/config` (ESLint, Prettier, tsconfig) |
 | Shared UI | `packages/ui` |
-| Auth | JWT (RS256) — Access token (15 min) + Refresh token (7 days); API live at `http://localhost:3001`; 165 Vitest tests (136 integration + 24 notification unit + 17 subscription/billing) |
+| Auth | JWT (RS256) — Access token (15 min) + Refresh token (7 days); API live at `http://localhost:3001`; 169 Vitest tests |
 | Real-time | WebSocket (owner dashboard) via Redis pub/sub |
 | Security layers | TLS, rate-limit (Redis counter, real client IP via CF-Connecting-IP), Turnstile bot check on register, CF-origin secret guard, JWT validation, RBAC, optimistic locking |
 | CI/CD | GitHub Actions → staging (auto) → production (manual gate) |
@@ -60,7 +60,7 @@
 | 8 | Security Hardening | ✅ Done (1 of 1 tasks done) | Cloudflare proxy + DDoS, Turnstile bot protection, CF-only guard, real-IP rate limiting |
 | 9 | Admin + Subscriptions | ✅ Done (2 of 2 tasks done) | Admin API, TOTP 2FA, plan enforcement, subscription schema, admin SPA |
 | 10 | Password Reset | ✅ Done (1 of 1 tasks done) | Forgot-password flow, reset email, session invalidation, frontend pages |
-| 11 | Billing & Subscription Lifecycle | 🟡 In progress (1 of 2 tasks done) | LS webhook handler, checkout URL, plan enforcement, subscription tests |
+| 11 | Billing & Subscription Lifecycle | ✅ Done (2 of 2 tasks done) | LS webhook, checkout, plan enforcement, billing UI, cancel/resume |
 
 ---
 
@@ -696,6 +696,26 @@
 - POST /restaurants returns 403 `{ error, message, upgrade }` when at plan cap
 - Next: Phase 11 · Task 2 — Billing UI in owner dashboard
 
+### ✅ Phase 11 · Task 2 — Billing UI + Cancel/Resume Subscription
+**Date:** 2026-06-27
+**Files created / modified:**
+- `apps/api/src/lib/lemon-squeezy.ts` — lsRequest() helper for LS REST API
+- `apps/api/src/modules/subscription/subscription.service.ts` — cancelSubscription(), resumeSubscription()
+- `apps/api/src/modules/subscription/subscription.routes.ts` — POST /subscriptions/cancel, POST /subscriptions/resume
+- `apps/dashboard/src/pages/BillingPage.tsx` — plan card, comparison grid, checkout redirect, cancel/resume
+- `apps/dashboard/src/router.tsx` — /billing route
+- `apps/dashboard/src/layouts/DashboardLayout.tsx` — sidebar nav (Restaurants + Billing) + plan badge
+- `apps/api/src/__tests__/subscription.test.ts` — cancel/resume endpoint tests
+**API endpoints added:**
+- `POST /subscriptions/cancel` — cancel at period end via LS PATCH; optimistic local DB update
+- `POST /subscriptions/resume` — reactivate via LS PATCH; clears cancelAtPeriodEnd
+**Notes:**
+- Cancel uses LS PATCH cancelled:true (period end, not immediate)
+- Resume uses LS PATCH cancelled:false
+- Billing page maps Prisma SubscriptionStatus to UI badges
+- Upgrade/downgrade via POST /subscriptions/checkout → redirect to Lemon Squeezy
+- Sidebar shows current plan badge (5 min staleTime)
+
 ---
 
 ## 4 · SHARED TYPE CONTRACTS (`packages/types`)
@@ -826,6 +846,8 @@ export interface User {
 | POST | `/webhooks/lemon-squeezy` | api | None (HMAC-SHA256 guard) | ✅ Live |
 | GET | `/subscriptions/me` | api | Bearer JWT + role=owner | ✅ Live |
 | POST | `/subscriptions/checkout` | api | Bearer JWT + role=owner | ✅ Live |
+| POST | `/subscriptions/cancel` | api | Bearer JWT + role=owner | ✅ Live |
+| POST | `/subscriptions/resume` | api | Bearer JWT + role=owner | ✅ Live |
 
 ---
 
@@ -929,7 +951,7 @@ RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (no
 - ✅ Lemon Squeezy webhook handler complete (Phase 11 · Task 1) — HMAC sig verify, LS events, Redis idempotency, Prisma upsert, plan downgrade on expiry
 - ✅ Checkout URL endpoint complete (POST /subscriptions/checkout)
 - ✅ Plan enforcement wired on POST /restaurants (403 on limit breach)
-- ❌ Billing UI not yet built in owner dashboard (Phase 11 · Task 2)
+- ✅ Billing UI complete in owner dashboard (plan card, comparison, upgrade/downgrade, cancel/resume)
 
 ---
 

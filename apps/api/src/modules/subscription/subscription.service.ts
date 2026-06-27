@@ -1,7 +1,15 @@
 import { prisma, Plan, SubscriptionStatus } from '@restaurant/db';
 import type { Plan as TypesPlan } from '@restaurant/types';
 import { getPlanLimits, PLAN_LIMITS } from '../../lib/plan.js';
-import { lsStatusToInternal, variantIdToPlan } from '../../lib/lemon-squeezy.js';
+import {
+  lsStatusToInternal,
+  variantIdToPlan,
+  lsRequest,
+} from '../../lib/lemon-squeezy.js';
+import {
+  ConflictError,
+  UnprocessableError,
+} from '../../errors/index.js';
 
 export { PLAN_LIMITS, getPlanLimits };
 
@@ -104,4 +112,104 @@ export async function assertOwnerRestaurantPlanLimit(
     atLimit: count >= limits.restaurants,
     limit: limits.restaurants,
   };
+}
+
+export async function cancelSubscription(ownerId: string): Promise<void> {
+  const sub = await prisma.subscription.findUnique({
+    where: { userId: ownerId },
+    select: {
+      lemonSqueezyId: true,
+      status: true,
+      cancelAtPeriodEnd: true,
+    },
+  });
+
+  if (!sub?.lemonSqueezyId) {
+    throw new UnprocessableError('No active subscription found');
+  }
+
+  if (sub.cancelAtPeriodEnd) {
+    throw new ConflictError(
+      'Subscription is already scheduled for cancellation',
+    );
+  }
+
+  if (sub.status === SubscriptionStatus.CANCELLED) {
+    throw new ConflictError('Subscription is already cancelled');
+  }
+
+  await lsRequest('PATCH', `/subscriptions/${sub.lemonSqueezyId}`, {
+    data: {
+      type: 'subscriptions',
+      id: sub.lemonSqueezyId,
+      attributes: { cancelled: true },
+    },
+  });
+
+  await prisma.subscription.update({
+    where: { userId: ownerId },
+    data: { cancelAtPeriodEnd: true },
+  });
+
+  await prisma.auditLog
+    .create({
+      data: {
+        actorId: ownerId,
+        action: 'SUBSCRIPTION_CANCELLED',
+        entityType: 'Subscription',
+        entityId: ownerId,
+      },
+    })
+    .catch(() => {});
+}
+
+export async function resumeSubscription(ownerId: string): Promise<void> {
+  const sub = await prisma.subscription.findUnique({
+    where: { userId: ownerId },
+    select: {
+      lemonSqueezyId: true,
+      cancelAtPeriodEnd: true,
+      currentPeriodEnd: true,
+    },
+  });
+
+  if (!sub?.lemonSqueezyId) {
+    throw new UnprocessableError('No subscription found');
+  }
+
+  if (!sub.cancelAtPeriodEnd) {
+    throw new ConflictError(
+      'Subscription is not scheduled for cancellation',
+    );
+  }
+
+  if (sub.currentPeriodEnd && sub.currentPeriodEnd < new Date()) {
+    throw new UnprocessableError(
+      'Subscription has already expired — please subscribe again',
+    );
+  }
+
+  await lsRequest('PATCH', `/subscriptions/${sub.lemonSqueezyId}`, {
+    data: {
+      type: 'subscriptions',
+      id: sub.lemonSqueezyId,
+      attributes: { cancelled: false },
+    },
+  });
+
+  await prisma.subscription.update({
+    where: { userId: ownerId },
+    data: { cancelAtPeriodEnd: false },
+  });
+
+  await prisma.auditLog
+    .create({
+      data: {
+        actorId: ownerId,
+        action: 'SUBSCRIPTION_RESUMED',
+        entityType: 'Subscription',
+        entityId: ownerId,
+      },
+    })
+    .catch(() => {});
 }
