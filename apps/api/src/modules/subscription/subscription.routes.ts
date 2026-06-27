@@ -1,9 +1,24 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@restaurant/db';
 import { env } from '../../env.js';
 import { createCheckoutUrl } from '../../lib/lemon-squeezy.js';
-import { getSubscription, getPlanLimits } from './subscription.service.js';
+import { AppError } from '../../errors/index.js';
+import {
+  getSubscription,
+  getPlanLimits,
+  cancelSubscription,
+  resumeSubscription,
+} from './subscription.service.js';
+
+function handleError(err: unknown, reply: FastifyReply) {
+  if (err instanceof AppError) {
+    return reply
+      .code(err.statusCode)
+      .send({ error: err.message, code: err.code });
+  }
+  throw err;
+}
 
 const CheckoutSchema = z.object({
   plan: z.enum(['STARTER', 'PRO', 'PREMIUM']),
@@ -18,9 +33,13 @@ const planToVariantId: Record<string, string> = {
 export async function subscriptionRoutes(
   fastify: FastifyInstance,
 ): Promise<void> {
+  const ownerHooks = {
+    preHandler: [fastify.authenticate, fastify.requireRole('owner')],
+  };
+
   fastify.get(
     '/subscriptions/me',
-    { preHandler: [fastify.authenticate, fastify.requireRole('owner')] },
+    ownerHooks,
     async (request, reply) => {
       const sub = await getSubscription(request.user!.sub);
       const limits = getPlanLimits(sub.plan);
@@ -30,7 +49,7 @@ export async function subscriptionRoutes(
 
   fastify.post(
     '/subscriptions/checkout',
-    { preHandler: [fastify.authenticate, fastify.requireRole('owner')] },
+    ownerHooks,
     async (request, reply) => {
       const body = CheckoutSchema.safeParse(request.body);
       if (!body.success) {
@@ -60,6 +79,29 @@ export async function subscriptionRoutes(
       }
     },
   );
+
+  fastify.post('/subscriptions/cancel', ownerHooks, async (request, reply) => {
+    try {
+      await cancelSubscription(request.user!.sub);
+      return reply.code(200).send({
+        message:
+          'Subscription will be cancelled at the end of the current period.',
+      });
+    } catch (err) {
+      return handleError(err, reply);
+    }
+  });
+
+  fastify.post('/subscriptions/resume', ownerHooks, async (request, reply) => {
+    try {
+      await resumeSubscription(request.user!.sub);
+      return reply.code(200).send({
+        message: 'Subscription reactivated successfully.',
+      });
+    } catch (err) {
+      return handleError(err, reply);
+    }
+  });
 
   await Promise.resolve();
 }
