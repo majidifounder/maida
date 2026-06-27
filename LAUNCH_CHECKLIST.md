@@ -42,6 +42,14 @@ Set up accounts and tokens first. For `CORS_ORIGIN` and `EMAIL_FROM`, use your *
 - [ ] `STAGING_RESEND_API_KEY` — Resend API key
 - [ ] `STAGING_EMAIL_FROM` — temporary: `onboarding@resend.dev` (Resend sandbox) until domain is verified
 - [ ] `STAGING_CORS_ORIGIN` — temporary: comma-separated Vercel/Railway staging URLs (no trailing slashes)
+- [ ] `STAGING_LEMON_SQUEEZY_WEBHOOK_SECRET` — Lemon Squeezy webhook signing secret (staging store or test mode)
+- [ ] `STAGING_LEMON_SQUEEZY_API_KEY` — Lemon Squeezy API key
+- [ ] `STAGING_LEMON_SQUEEZY_STORE_ID` — numeric store ID from LS dashboard
+- [ ] `STAGING_LS_VARIANT_STARTER` — variant ID for STARTER plan
+- [ ] `STAGING_LS_VARIANT_PRO` — variant ID for PRO plan
+- [ ] `STAGING_LS_VARIANT_PREMIUM` — variant ID for PREMIUM plan
+- [ ] `STAGING_WEB_URL` — temporary: Vercel staging URL for diner app (password reset + checkout return context)
+- [ ] `STAGING_DASHBOARD_URL` — temporary: Vercel staging URL for owner dashboard
 
 ### Production environment secrets
 
@@ -54,6 +62,14 @@ Set up accounts and tokens first. For `CORS_ORIGIN` and `EMAIL_FROM`, use your *
 - [ ] `PROD_RESEND_API_KEY` — Resend API key (production)
 - [ ] `PROD_EMAIL_FROM` — temporary: `onboarding@resend.dev` until domain verified in Phase B
 - [ ] `PROD_CORS_ORIGIN` — temporary: Vercel/Railway production URLs; update in Phase B
+- [ ] `PROD_LEMON_SQUEEZY_WEBHOOK_SECRET` — Lemon Squeezy webhook signing secret (production store)
+- [ ] `PROD_LEMON_SQUEEZY_API_KEY` — Lemon Squeezy API key (production)
+- [ ] `PROD_LEMON_SQUEEZY_STORE_ID` — numeric store ID
+- [ ] `PROD_LS_VARIANT_STARTER` — variant ID for STARTER plan
+- [ ] `PROD_LS_VARIANT_PRO` — variant ID for PRO plan
+- [ ] `PROD_LS_VARIANT_PREMIUM` — variant ID for PREMIUM plan
+- [ ] `PROD_WEB_URL` — update in Phase B: `https://yourdomain.com`
+- [ ] `PROD_DASHBOARD_URL` — update in Phase B: `https://dashboard.yourdomain.com`
 
 ### Vercel secrets (repository-level)
 
@@ -105,7 +121,7 @@ rm prod-private.pem prod-public.pem
 ## A6 · Run all checks locally
 
 ```bash
-# All 148 tests pass
+# All 165 tests pass
 pnpm --filter @restaurant/api test
 
 # Load test passes (API must be running: pnpm --filter @restaurant/api dev)
@@ -118,7 +134,7 @@ pnpm typecheck
 pnpm build
 ```
 
-- [ ] All 148 tests passed
+- [ ] All 165 tests passed
 - [ ] Load test passed (5×201, 15×409, slot.available = 0)
 - [ ] Typecheck: 0 errors
 - [ ] Build: 0 errors
@@ -151,6 +167,139 @@ These are implemented in code; confirm they work on staging:
 - [ ] Login rate limit: 5 attempts / IP / 15 min
 - [ ] Register rate limit: 3 attempts / IP / hour
 - [ ] `GET /` returns 404 (expected — API has no homepage; use `/health`)
+
+---
+
+## A9 · Lemon Squeezy — payment configuration
+
+The platform bills restaurant **owners** via Lemon Squeezy (plans: STARTER / PRO / PREMIUM). Diners and admins are never charged through this flow.
+
+### A9.1 · Create Lemon Squeezy account & store
+
+1. Sign up at [lemonsqueezy.com](https://lemonsqueezy.com) and complete store activation (identity / payout details as required by LS).
+2. **Settings → Stores** → copy your **Store ID** (numeric).
+3. **Settings → API** → create an **API key** with permission to create checkouts.
+
+- [ ] Lemon Squeezy store activated
+- [ ] Store ID copied
+- [ ] API key created and stored securely (never commit to git)
+
+### A9.2 · Create subscription products (3 variants)
+
+In **Products → New product**, create one subscription product (or three separate products — either works) with **three variants** matching your plan limits:
+
+| Internal plan | Suggested name | Restaurant limit | Monthly booking limit (API) |
+|---------------|----------------|------------------|----------------------------|
+| STARTER | Starter | 1 | 200 |
+| PRO | Pro | 5 | 1,000 |
+| PREMIUM | Premium | Unlimited | Unlimited |
+
+For each variant, open **Variants → copy Variant ID** (numeric). Map them to env vars:
+
+| Env var | Value |
+|---------|-------|
+| `LS_VARIANT_STARTER` | Variant ID for Starter |
+| `LS_VARIANT_PRO` | Variant ID for Pro |
+| `LS_VARIANT_PREMIUM` | Variant ID for Premium |
+
+- [ ] Three subscription variants created in Lemon Squeezy
+- [ ] Variant IDs copied into `.env` (local) and GitHub Secrets (staging/prod)
+
+### A9.3 · API environment variables (Railway / local `.env`)
+
+Add all six to the API service (see `.env.example`):
+
+```dotenv
+LEMON_SQUEEZY_WEBHOOK_SECRET=your_webhook_signing_secret
+LEMON_SQUEEZY_API_KEY=your_api_key
+LEMON_SQUEEZY_STORE_ID=12345
+LS_VARIANT_STARTER=100
+LS_VARIANT_PRO=200
+LS_VARIANT_PREMIUM=300
+WEB_URL=http://localhost:5173
+DASHBOARD_URL=http://localhost:5174
+```
+
+- [ ] All 6 Lemon Squeezy vars set on API (server refuses to start if any are missing)
+- [ ] `WEB_URL` / `DASHBOARD_URL` set to match deployed frontend URLs in staging/prod
+
+> **Admin note:** Admin accounts have no checkout flow. To change an admin password, use Supabase SQL — not Lemon Squeezy.
+
+### A9.4 · Webhook endpoint
+
+The API exposes **`POST /webhooks/lemon-squeezy`** (no JWT — protected by HMAC-SHA256 signature only).
+
+**Important:** This route is registered **before** the Cloudflare origin guard so Lemon Squeezy servers can reach it without `X-CF-Origin-Secret`. Do not put the webhook URL behind a CF-only firewall rule that blocks non-CF clients on managed Railway unless LS traffic is proxied.
+
+1. **Settings → Webhooks → Add webhook**
+2. **URL:** `https://<api-host>/webhooks/lemon-squeezy`
+   - Local dev: use [ngrok](https://ngrok.com) — `ngrok http 3001` → `https://xxxx.ngrok-free.app/webhooks/lemon-squeezy`
+   - Staging: Railway URL — `https://xxx.up.railway.app/webhooks/lemon-squeezy`
+   - Production: `https://api.yourdomain.com/webhooks/lemon-squeezy`
+3. **Signing secret:** copy into `LEMON_SQUEEZY_WEBHOOK_SECRET`
+4. **Subscribe to events:**
+   - `subscription_created`
+   - `subscription_updated`
+   - `subscription_cancelled`
+   - `subscription_resumed`
+   - `subscription_expired`
+   - `subscription_payment_failed`
+   - `subscription_payment_success`
+   - `subscription_payment_recovered`
+
+- [ ] Webhook URL configured in Lemon Squeezy dashboard
+- [ ] Signing secret matches `LEMON_SQUEEZY_WEBHOOK_SECRET` in API env
+- [ ] All subscription events above are enabled
+
+### A9.5 · Local smoke test (before staging)
+
+```powershell
+# Terminal 1 — API
+pnpm --filter @restaurant/api dev
+
+# Terminal 2 — ngrok (if testing webhooks locally)
+ngrok http 3001
+
+# Register/login as OWNER (not admin), then:
+# GET subscription status
+Invoke-RestMethod -Uri "http://localhost:3001/subscriptions/me" `
+  -Headers @{ Authorization = "Bearer <owner-access-token>" }
+
+# Create checkout session
+Invoke-RestMethod -Uri "http://localhost:3001/subscriptions/checkout" `
+  -Method POST -ContentType "application/json" `
+  -Headers @{ Authorization = "Bearer <owner-access-token>" } `
+  -Body '{"plan":"PRO"}'
+# → { "checkoutUrl": "https://..." }
+
+# Complete checkout in browser → watch API logs for:
+# [Webhook/LS] ✓ subscription_created — user <uuid> — sub <ls-id>
+
+# Verify plan updated
+Invoke-RestMethod -Uri "http://localhost:3001/subscriptions/me" `
+  -Headers @{ Authorization = "Bearer <owner-access-token>" }
+# → plan: "PRO", status: "ACTIVE"
+```
+
+**If checkout can't be completed locally:** confirm the webhook URL in LS dashboard points at your ngrok/Railway URL, then check API logs and Upstash Data Browser for keys matching `ls-event:*` after LS sends a test webhook.
+
+**Plan limit check:**
+
+- [ ] STARTER owner with 1 restaurant gets **403** on second `POST /restaurants` with `{ "error": "Plan limit reached", "upgrade": "/subscriptions/checkout" }`
+- [ ] After upgrading to PRO via checkout, same owner can create more restaurants (up to plan cap)
+
+### A9.6 · Staging payment smoke test
+
+After A7 deploy and A9 webhook URL pointed at Railway staging:
+
+- [ ] Owner logs into dashboard staging URL
+- [ ] `GET /subscriptions/me` returns current plan + limits
+- [ ] `POST /subscriptions/checkout` `{ "plan": "PRO" }` returns a valid `checkoutUrl`
+- [ ] Test payment completed (LS test mode or real card in staging store)
+- [ ] API logs show `[Webhook/LS] ✓ subscription_created`
+- [ ] Supabase `subscriptions` row updated: `plan`, `status`, `lemonSqueezyId`, `renewsAt`
+- [ ] Re-send same webhook from LS dashboard → log shows **Duplicate event — skipping** (idempotency)
+- [ ] `subscription_expired` webhook (or manual test) downgrades plan to STARTER
 
 ---
 
@@ -340,11 +489,15 @@ Blocks direct access to your server IP (defense in depth with OS firewall in B12
 
 Replace temporary Vercel/Railway URLs with real domains:
 
-- [ ] `PROD_CORS_ORIGIN` = `https://yourdomain.com,https://www.yourdomain.com,https://dashboard.yourdomain.com` (no localhost, no trailing slashes)
+- [ ] `PROD_CORS_ORIGIN` = `https://yourdomain.com,https://www.yourdomain.com,https://dashboard.yourdomain.com,https://admin.yourdomain.com` (no localhost, no trailing slashes)
 - [ ] `STAGING_CORS_ORIGIN` updated if using staging subdomains
-- [ ] `VITE_API_URL` = `https://api.yourdomain.com` in Vercel (web + dashboard)
+- [ ] `VITE_API_URL` = `https://api.yourdomain.com` in Vercel (web + dashboard + admin)
+- [ ] `WEB_URL` = `https://yourdomain.com` in Railway (API — reset emails + checkout context)
+- [ ] `DASHBOARD_URL` = `https://dashboard.yourdomain.com` in Railway (API)
 - [ ] Custom domains added in Vercel project settings for web and dashboard
 - [ ] Custom domain added in Railway for API
+- [ ] Lemon Squeezy webhook URL updated to `https://api.yourdomain.com/webhooks/lemon-squeezy`
+- [ ] Production variant IDs confirmed in `LS_VARIANT_*` (may differ from test store)
 
 Run pre-deploy check:
 
@@ -418,6 +571,8 @@ After DNS and Cloudflare are active on staging subdomains (optional) or producti
 - [ ] Booking confirmation email arrives (Resend, verified domain)
 - [ ] Owner dashboard WebSocket updates without refresh
 - [ ] Cancel booking → email + slot count correct
+- [ ] Owner subscription checkout → payment → plan upgrades in `/subscriptions/me`
+- [ ] STARTER owner blocked from creating 2nd restaurant until plan upgraded
 
 ---
 
@@ -429,6 +584,7 @@ After DNS and Cloudflare are active on staging subdomains (optional) or producti
 - [ ] Production deploy triggered (`deploy-prod.yml` with manual approval)
 - [ ] `GET https://api.yourdomain.com/health` returns 200
 - [ ] End-to-end flow repeated on production
+- [ ] Owner can subscribe via Lemon Squeezy checkout; webhook syncs plan to database
 - [ ] Announce 🎉
 
 ---
@@ -442,9 +598,11 @@ After DNS and Cloudflare are active on staging subdomains (optional) or producti
 | RS256 keys | A |
 | Local tests + load test | A |
 | Staging on `*.vercel.app` / `*.railway.app` | A |
+| Lemon Squeezy store, variants, webhook, checkout smoke test | A |
 | Cloudflare proxy + WAF + Turnstile | **B** |
 | Resend domain verification | **B** |
-| `CORS_ORIGIN` / `EMAIL_FROM` with real URLs | **B** |
+| Lemon Squeezy production webhook + live payments | **B** |
+| `CORS_ORIGIN` / `EMAIL_FROM` / `WEB_URL` / `DASHBOARD_URL` with real URLs | **B** |
 | OS firewall + origin secret verification | **B** |
 | Production go-live | **B** |
 

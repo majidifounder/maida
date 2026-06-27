@@ -16,6 +16,8 @@ import { authRoutes } from './modules/auth/auth.routes.js';
 import { restaurantRoutes } from './modules/restaurant/restaurant.routes.js';
 import { bookingRoutes } from './modules/booking/booking.routes.js';
 import { adminRoutes } from './modules/admin/admin.routes.js';
+import { webhookRoutes } from './modules/subscription/webhook.routes.js';
+import { subscriptionRoutes } from './modules/subscription/subscription.routes.js';
 import { startNotificationWorker } from './workers/notification.worker.js';
 
 async function buildServer() {
@@ -74,12 +76,14 @@ async function buildServer() {
   });
 
   await fastify.register(sensible);
+  await fastify.register(webhookRoutes);
   await fastify.register(cloudflareOnlyPlugin);
   await fastify.register(authenticatePlugin);
   await fastify.register(wsPlugin);
   await fastify.register(authRoutes);
   await fastify.register(restaurantRoutes);
   await fastify.register(bookingRoutes);
+  await fastify.register(subscriptionRoutes);
   await fastify.register(adminRoutes);
 
   fastify.setErrorHandler((error, _request, reply) => {

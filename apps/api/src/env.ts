@@ -23,6 +23,12 @@ const EnvSchema = z.object({
   CF_ORIGIN_SECRET: z.string().min(1).optional(),
   WEB_URL: z.string().url().default('http://localhost:5173'),
   DASHBOARD_URL: z.string().url().default('http://localhost:5174'),
+  LEMON_SQUEEZY_WEBHOOK_SECRET: z.string().min(1),
+  LEMON_SQUEEZY_API_KEY: z.string().min(1),
+  LEMON_SQUEEZY_STORE_ID: z.string().min(1),
+  LS_VARIANT_STARTER: z.string().min(1),
+  LS_VARIANT_PRO: z.string().min(1),
+  LS_VARIANT_PREMIUM: z.string().min(1),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
