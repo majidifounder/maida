@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@restaurant/db';
-import { RegisterSchema, LoginSchema, RefreshSchema } from './auth.schema.js';
+import { RegisterSchema, LoginSchema, RefreshSchema, ForgotPasswordSchema, ResetPasswordSchema } from './auth.schema.js';
 import * as AuthService from './auth.service.js';
 import { AppError } from '../../errors/index.js';
 import { getRealIp, verifyTurnstileToken } from '../../lib/cloudflare.js';
@@ -219,6 +219,71 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
         .send({ message: 'Logged out successfully' });
     },
   );
+
+  fastify.post(
+    '/auth/forgot-password',
+    {
+      config: {
+        rateLimit: {
+          max: 3,
+          timeWindow: '1 hour',
+          keyGenerator: (req) => `forgot-pwd:${getRealIp(req)}`,
+          errorResponseBuilder: () => ({
+            statusCode: 429,
+            error: 'Too Many Requests',
+            message: 'Too many password reset requests. Try again in 1 hour.',
+            retryAfter: 3600,
+          }),
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = ForgotPasswordSchema.safeParse(request.body);
+      if (!body.success) {
+        return reply
+          .code(422)
+          .send({ error: 'Validation failed', details: body.error.flatten() });
+      }
+
+      const origin = request.headers.origin ?? '';
+      const appBaseUrl = origin.includes('dashboard')
+        ? env.DASHBOARD_URL
+        : env.WEB_URL;
+
+      await AuthService.forgotPassword(body.data, {
+        ip: getRealIp(request),
+        appBaseUrl,
+      });
+
+      return reply.code(200).send({
+        message:
+          'If an account with that email exists, a reset link has been sent.',
+      });
+    },
+  );
+
+  fastify.post('/auth/reset-password', async (request, reply) => {
+    const body = ResetPasswordSchema.safeParse(request.body);
+    if (!body.success) {
+      return reply
+        .code(422)
+        .send({ error: 'Validation failed', details: body.error.flatten() });
+    }
+
+    try {
+      await AuthService.resetPassword(body.data, { ip: getRealIp(request) });
+      return reply.code(200).send({
+        message: 'Password updated. Please log in with your new password.',
+      });
+    } catch (err) {
+      if (err instanceof AppError) {
+        return reply
+          .code(err.statusCode)
+          .send({ error: err.message, code: err.code });
+      }
+      throw err;
+    }
+  });
 
   fastify.get(
     '/auth/me',

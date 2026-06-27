@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { prisma, type Prisma } from '@restaurant/db';
 import { getRedisClient } from '../../lib/redis.js';
@@ -9,7 +9,11 @@ import {
 } from '../../lib/jwt.js';
 import { UnauthorizedError, ConflictError } from '../../errors/index.js';
 import { env } from '../../env.js';
+import { sendPasswordReset } from '../../services/email.service.js';
 import type { RegisterInput, LoginInput } from './auth.schema.js';
+
+const RESET_TOKEN_TTL = 60 * 60;
+const RESET_KEY = (token: string) => `pwd_reset:${token}`;
 
 function hashToken(raw: string): string {
   return createHash('sha256').update(raw).digest('hex');
@@ -241,4 +245,91 @@ async function getUserRole(
     select: { role: true },
   });
   return user.role.toLowerCase() as 'diner' | 'owner';
+}
+
+export async function forgotPassword(
+  input: { email: string },
+  meta: { ip: string; appBaseUrl: string },
+): Promise<void> {
+  const user = await prisma.user.findUnique({
+    where: { email: input.email },
+    select: { id: true, deletedAt: true },
+  });
+
+  if (!user || user.deletedAt) {
+    return;
+  }
+
+  const token = randomUUID();
+  const redis = getRedisClient();
+  const resetUrl = `${meta.appBaseUrl}/reset-password?token=${token}`;
+
+  await redis.set(RESET_KEY(token), user.id, 'EX', RESET_TOKEN_TTL);
+
+  try {
+    await sendPasswordReset({ toEmail: input.email, resetUrl });
+  } catch (err) {
+    console.error(
+      '[Auth] password reset email failed (non-fatal):',
+      (err as Error).message,
+    );
+  }
+
+  await prisma.auditLog
+    .create({
+      data: {
+        actorId: user.id,
+        action: 'PASSWORD_RESET_REQUESTED',
+        entityType: 'User',
+        entityId: user.id,
+        ipAddress: meta.ip,
+      },
+    })
+    .catch(() => {});
+}
+
+export async function resetPassword(
+  input: { token: string; password: string },
+  meta: { ip: string },
+): Promise<void> {
+  const redis = getRedisClient();
+  const userId = await redis.get(RESET_KEY(input.token));
+
+  if (!userId) {
+    throw new UnauthorizedError(
+      'This reset link is invalid or has already been used',
+    );
+  }
+
+  await redis.del(RESET_KEY(input.token));
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, deletedAt: true },
+  });
+
+  if (!user || user.deletedAt) {
+    throw new UnauthorizedError('Account not found');
+  }
+
+  const passwordHash = await bcrypt.hash(input.password, env.BCRYPT_ROUNDS);
+
+  await prisma.$transaction(async (tx) => {
+    await tx.user.update({
+      where: { id: userId },
+      data: { password: passwordHash },
+    });
+
+    await tx.refreshToken.deleteMany({ where: { userId } });
+
+    await tx.auditLog.create({
+      data: {
+        actorId: userId,
+        action: 'PASSWORD_RESET_COMPLETED',
+        entityType: 'User',
+        entityId: userId,
+        ipAddress: meta.ip,
+      },
+    });
+  });
 }

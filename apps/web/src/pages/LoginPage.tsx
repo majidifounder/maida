@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { useAuth } from '../context/AuthContext.js';
@@ -18,6 +18,8 @@ type FormData = z.infer<typeof schema>;
 export function LoginPage() {
   const { login } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const resetSuccess = searchParams.get('reset') === 'success';
   const [apiError, setApiError] = useState<string | null>(null);
   const {
     register,
@@ -52,6 +54,11 @@ export function LoginPage() {
       <Card>
         <h1 className="mb-6 text-2xl font-bold text-gray-900">Sign in</h1>
         <form onSubmit={(e) => void onSubmit(e)} className="space-y-4">
+          {resetSuccess && (
+            <div className="rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-700">
+              Password updated successfully. Please log in with your new password.
+            </div>
+          )}
           <Input
             label="Email"
             type="email"
@@ -66,6 +73,14 @@ export function LoginPage() {
             error={errors.password?.message}
             {...register('password')}
           />
+          <div className="flex justify-end">
+            <Link
+              to="/forgot-password"
+              className="text-sm font-medium text-brand-600 hover:text-brand-700"
+            >
+              Forgot password?
+            </Link>
+          </div>
           {apiError && (
             <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
               {apiError}
