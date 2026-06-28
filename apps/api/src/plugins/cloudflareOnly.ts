@@ -21,6 +21,11 @@ export const cloudflareOnlyPlugin = fp(
     }
 
     fastify.addHook('onRequest', async (request, reply) => {
+      const path = request.url.split('?')[0] ?? request.url;
+      if (path.startsWith('/webhooks/')) {
+        return;
+      }
+
       const incoming = request.headers['x-cf-origin-secret'];
       if (incoming !== secret) {
         return reply.status(403).send({ error: 'Forbidden' });

@@ -43,9 +43,9 @@ export function lsStatusToInternal(lsStatus: string): SubscriptionStatus {
       return SubscriptionStatus.EXPIRED;
     default:
       console.warn(
-        `[LemonSqueezy] Unknown LS status: "${lsStatus}" — defaulting to ACTIVE`,
+        `[LemonSqueezy] Unknown LS status: "${lsStatus}" — defaulting to PAST_DUE`,
       );
-      return SubscriptionStatus.ACTIVE;
+      return SubscriptionStatus.PAST_DUE;
   }
 }
 

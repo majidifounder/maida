@@ -8,6 +8,7 @@ import sensible from '@fastify/sensible';
 import { env } from './env.js';
 import { getRedisClient } from './lib/redis.js';
 import { getRealIp } from './lib/cloudflare.js';
+import { isLoadTestRequest } from './lib/load-test.js';
 import { prisma } from '@restaurant/db';
 import authenticatePlugin from './plugins/authenticate.js';
 import { cloudflareOnlyPlugin } from './plugins/cloudflareOnly.js';
@@ -65,7 +66,7 @@ async function buildServer() {
     timeWindow: '1 minute',
     redis,
     keyGenerator: (req) => getRealIp(req),
-    allowList: (req) => req.headers['x-load-test'] === '1',
+    allowList: (req) => isLoadTestRequest(req),
     errorResponseBuilder: (_req, context) => ({
       statusCode: 429,
       error: 'Too Many Requests',

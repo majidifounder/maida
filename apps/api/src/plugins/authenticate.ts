@@ -1,5 +1,6 @@
 import fp from 'fastify-plugin';
 import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
+import { prisma } from '@restaurant/db';
 import { verifyAccessToken } from '../lib/jwt.js';
 import { getRedisClient } from '../lib/redis.js';
 import type { JWTPayload, Role } from '@restaurant/types';
@@ -31,6 +32,16 @@ const authenticatePlugin: FastifyPluginAsync = async (fastify) => {
         const revoked = await redis.get(`deny:${payload.jti}`);
         if (revoked) {
           return reply.code(401).send({ error: 'Token has been revoked' });
+        }
+
+        const user = await prisma.user.findUnique({
+          where: { id: payload.sub },
+          select: { deletedAt: true },
+        });
+        if (!user || user.deletedAt) {
+          return reply
+            .code(401)
+            .send({ error: 'Account has been deactivated' });
         }
 
         request.user = payload;

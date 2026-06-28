@@ -96,6 +96,7 @@ describe('lemon-squeezy lib', () => {
     expect(lsStatusToInternal('past_due')).toBe(SubscriptionStatus.PAST_DUE);
     expect(lsStatusToInternal('unpaid')).toBe(SubscriptionStatus.PAST_DUE);
     expect(lsStatusToInternal('expired')).toBe(SubscriptionStatus.EXPIRED);
+    expect(lsStatusToInternal('bogus_status')).toBe(SubscriptionStatus.PAST_DUE);
   });
 
   it('verifyLemonSqueezySignature accepts valid HMAC', () => {
