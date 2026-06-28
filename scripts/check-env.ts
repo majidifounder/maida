@@ -57,6 +57,50 @@ if (process.env.NODE_ENV === 'production') {
   }
 }
 
+async function checkRedisEvictionPolicy(): Promise<void> {
+  const redisUrl = process.env.REDIS_URL;
+  if (!redisUrl) return; // Already caught by required var check above.
+
+  try {
+    // Parse Upstash REST endpoint from the rediss:// URL.
+    // Format: rediss://:<password>@<host>:<port>
+    const url = new URL(redisUrl.replace(/^redis(s?):\/\//, 'https://'));
+    const token = url.password;
+    const host = url.hostname;
+
+    if (!token || !host) {
+      console.warn('⚠️  Could not parse REDIS_URL for eviction policy check — verify manually in Upstash console');
+      return;
+    }
+
+    const response = await fetch(`https://${host}/config/get/maxmemory-policy`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (!response.ok) {
+      console.warn(`⚠️  Could not verify Redis eviction policy (HTTP ${response.status}) — check manually in Upstash console`);
+      return;
+    }
+
+    const data = await response.json() as { result: string[] };
+    const policy = data.result?.[1];
+
+    if (policy === 'noeviction') {
+      console.log('✅  Redis eviction policy: noeviction');
+    } else if (policy) {
+      console.warn(`⚠️  WARNING: Redis eviction policy is "${policy}". ` +
+        'Set to "noeviction" in Upstash console — otherwise rate-limit counters and JTI deny-list entries can be silently evicted.');
+      hasError = true;
+    } else {
+      console.warn('⚠️  Could not read Redis eviction policy from response — check manually in Upstash console');
+    }
+  } catch {
+    console.warn('⚠️  Could not verify Redis eviction policy — check manually in Upstash console');
+  }
+}
+
+await checkRedisEvictionPolicy();
+
 if (hasError) {
   console.error('\nDeploy blocked — fix the above issues first.\n');
   process.exit(1);

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { prisma } from '@restaurant/db';
 import { getRedisClient } from '../../lib/redis.js';
-import { NotFoundError, ForbiddenError, UnprocessableError } from '../../errors/index.js';
+import { NotFoundError, UnprocessableError } from '../../errors/index.js';
 import { getPlanLimits } from '../../lib/plan.js';
 import { getCurrentPlan } from '../subscription/subscription.service.js';
 import type {
@@ -98,7 +98,8 @@ async function assertRestaurantOwner(restaurantId: string, callerId: string) {
 
   if (!restaurant) throw new NotFoundError('Restaurant not found');
   if (restaurant.ownerId !== callerId) {
-    throw new ForbiddenError('You do not own this restaurant');
+    // Return 404 rather than 403 — 403 would confirm the resource exists to an attacker (IDOR).
+    throw new NotFoundError('Restaurant not found');
   }
 
   return restaurant;

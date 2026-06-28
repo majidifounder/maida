@@ -413,7 +413,8 @@ describe('PATCH /restaurants/:id', () => {
       headers: { authorization: `Bearer ${owner2Token}` },
       payload: { name: 'Hacked' },
     });
-    expect(res.statusCode).toBe(403);
+    // Returns 404 (not 403) for IDOR safety — 403 would reveal the resource exists.
+    expect(res.statusCode).toBe(404);
   });
 
   it('401 — no token', async () => {
@@ -459,7 +460,8 @@ describe('DELETE /restaurants/:id', () => {
       url: `/restaurants/${r.id}`,
       headers: { authorization: `Bearer ${owner2Token}` },
     });
-    expect(res.statusCode).toBe(403);
+    // Returns 404 (not 403) for IDOR safety — 403 would reveal the resource exists.
+    expect(res.statusCode).toBe(404);
   });
 
   it('404 — deleting already-deleted restaurant returns 404', async () => {
@@ -518,7 +520,8 @@ describe('POST /restaurants/:id/slots', () => {
       headers: { authorization: `Bearer ${owner2Token}` },
       payload: { slots: [{ startsAt: futureDatetime(10, 16), capacity: 5 }] },
     });
-    expect(res.statusCode).toBe(403);
+    // Returns 404 (not 403) for IDOR safety — 403 would reveal the resource exists.
+    expect(res.statusCode).toBe(404);
   });
 
   it('422 — empty slots array is rejected', async () => {
@@ -714,7 +717,8 @@ describe('PATCH /restaurants/:id/slots/:slotId', () => {
       headers: { authorization: `Bearer ${owner2Token}` },
       payload: { capacity: 1 },
     });
-    expect(res.statusCode).toBe(403);
+    // Returns 404 (not 403) for IDOR safety — 403 would reveal the resource exists.
+    expect(res.statusCode).toBe(404);
   });
 
   it('404 — non-existent slot ID', async () => {
@@ -771,7 +775,8 @@ describe('DELETE /restaurants/:id/slots/:slotId', () => {
       url: `/restaurants/${restaurantId}/slots/${deletedSlotId}`,
       headers: { authorization: `Bearer ${owner2Token}` },
     });
-    expect(res.statusCode).toBe(403);
+    // Returns 404 (not 403) for IDOR safety — 403 would reveal the resource exists.
+    expect(res.statusCode).toBe(404);
   });
 
   it('404 — non-existent slot returns 404', async () => {
@@ -806,23 +811,25 @@ describe('Security invariants', () => {
     search.restaurants.forEach((r) => expect(r).not.toHaveProperty('ownerId'));
   });
 
-  it('cross-owner mutations always return 403, never 404 (no information leak about existence)', async () => {
+  it('cross-owner mutations return 404 (IDOR-safe — does not reveal resource existence to other owners)', async () => {
     const patch = await server.inject({
       method: 'PATCH',
       url: `/restaurants/${restaurantId}`,
       headers: { authorization: `Bearer ${owner2Token}` },
       payload: { name: 'Attacked' },
     });
-    expect(patch.statusCode).toBe(403);
-    expect(patch.statusCode).not.toBe(404);
+    // 404 is the correct IDOR-safe response: a restaurant another owner doesn't own
+    // does not exist from that owner's perspective.
+    expect(patch.statusCode).toBe(404);
+    expect(patch.statusCode).not.toBe(403);
 
     const del = await server.inject({
       method: 'DELETE',
       url: `/restaurants/${restaurantId}`,
       headers: { authorization: `Bearer ${owner2Token}` },
     });
-    expect(del.statusCode).toBe(403);
-    expect(del.statusCode).not.toBe(404);
+    expect(del.statusCode).toBe(404);
+    expect(del.statusCode).not.toBe(403);
   });
 
   it('diner token is rejected on all owner-only mutation endpoints', async () => {

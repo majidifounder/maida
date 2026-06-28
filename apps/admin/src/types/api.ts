@@ -13,8 +13,6 @@ export interface AdminUser {
 export interface LoginSuccessResponse {
   accessToken: string;
   accessTokenExpiresAt: number;
-  refreshToken: string;
-  refreshTokenExpiresAt: number;
   user: AdminUser;
 }
 
@@ -22,7 +20,6 @@ export interface LoginTotpSetupResponse {
   requiresTOTPSetup: true;
   qrCodeDataUrl: string;
   pendingToken: string;
-  totpSecret: string;
 }
 
 export interface LoginTotpVerifyResponse {

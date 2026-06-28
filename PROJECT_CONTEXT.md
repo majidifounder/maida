@@ -696,6 +696,85 @@
 - POST /restaurants returns 403 `{ error, message, upgrade }` when at plan cap
 - Next: Phase 11 · Task 2 — Billing UI in owner dashboard
 
+### ✅ Phase 13 — FORTRESS: Maximum Security Hardening
+**Date:** 2026-06-28
+**Files created / modified:**
+- `apps/api/package.json` — Fastify 5.3.3, @fastify/cookie ^11, @fastify/cors ^10, @fastify/helmet ^13, @fastify/rate-limit ^10, @fastify/sensible ^6, @fastify/websocket ^11, fastify-plugin ^5, pino ^9, pino-pretty ^13, @types/node ^22
+- `apps/web/package.json`, `apps/dashboard/package.json`, `apps/admin/package.json` — Vite 6.3.5 (→ installed as 6.4.3)
+- `apps/api/src/lib/logger.ts` — NEW: pino logger with 14-path secret redaction (Authorization, Cookie, password, TOTP, cfTurnstileResponse, set-cookie); custom req/res serializers; pino-pretty only in dev
+- `apps/api/src/lib/threat-detector.ts` — NEW: IP-level threat detector; auto-extended 1h ban after 10 auth failures / 30 404s / 15 403s in window; no-op in test mode
+- `apps/api/src/modules/auth/auth.service.ts` — getDummyHash() lazy bcrypt (proper rounds, not fake hash); forgotPassword jitter delay (50–100 ms) on unknown email; account lockout (10 attempts → 30 min lock, 15 min window); all lockout Redis calls skipped in test mode
+- `apps/api/src/lib/cookies.ts` — REFRESH_COOKIE_NAME → '__Host-refresh'; path '/' (required); secure always true (required by __Host- prefix)
+- `apps/api/src/index.ts` — Fastify 5 config (logger, genReqId UUID, trustProxy, requestTimeout 30s, keepAliveTimeout 5s, bodyLimit 100 KB); full helmet v13 CSP + COOP + COEP + CORP + HSTS + referrer; threat detector onRequest/onResponse hooks; scanner UA blocklist (sqlmap, nikto, nmap, masscan, zgrab); method override block (X-HTTP-Method-Override); Permissions-Policy + X-DNS-Prefetch-Control + X-Request-Id onSend hook; /.well-known/security.txt endpoint
+- `apps/api/src/modules/auth/auth.routes.ts` — clearCookie path updated to '/' (matches __Host- cookie)
+- `apps/api/src/lib/cloudflare.ts` — getRealIp() parameter typed as Pick<FastifyRequest, 'headers' | 'ip'> for Fastify 5 hook compatibility
+- `apps/api/src/__tests__/helpers/auth.ts` — cookie extraction updated for __Host-refresh name
+- `apps/api/src/__tests__/helpers/server.ts` — error handler typed as unknown for Fastify 5
+- `apps/api/src/__tests__/auth.test.ts` — enumeration test updated: checks both paths return identical message + message is 'Invalid email or password'
+- `.github/dependabot.yml` — extended to cover npm packages for all 4 workspaces (root, api, web, dashboard, admin) with weekly schedule
+- `.github/workflows/ci.yml` — pnpm audit --audit-level=high + frozen-lockfile verify steps added after install
+- `.npmrc` — created at repo root: audit=true, fund=false, prefer-frozen-lockfile=true
+- `apps/web/public/.well-known/security.txt` — responsible disclosure file
+**Security layers added:**
+- Fastify 5: 4 HIGH CVEs resolved (Content-Type bypass, X-Forwarded-Host spoofing, regex DoS, prototype pollution)
+- Vite 6: 3 HIGH CVEs resolved (path traversal, request smuggling, NTLMv2 credential disclosure)
+- Constant-time auth: getDummyHash() with real bcrypt rounds; forgotPassword jitter prevents email enumeration
+- Account lockout: per-email lockout after 10 failed logins in 15 min; 30 min lock; non-fatal Redis; test mode no-op
+- Pino secret redaction: Authorization, Cookie, password, TOTP, cfTurnstileResponse, set-cookie never appear in logs
+- Correlation IDs: X-Request-Id UUID on every response for cross-system tracing
+- Threat detector: AUTH_FAILURES (10/5min), NOT_FOUND (30/1min), FORBIDDEN (15/5min) → 1h IP ban; test mode no-op
+- __Host- cookie: refresh token immune to subdomain cookie injection; Secure always, Path=/, no Domain
+- Permissions-Policy: accelerometer, camera, geolocation, gyroscope, magnetometer, microphone, payment, usb all disabled
+- X-DNS-Prefetch-Control: off
+- Method override block: X-HTTP-Method-Override / X-Method-Override / X-HTTP-Method rejected with 400
+- Scanner UA blocklist: sqlmap, nikto, nmap, masscan, zgrab, old Python-requests blocked at gateway
+- Request timeout: 30s; body limit: 100 KB global; Fastify keepAlive: 5s
+- pnpm audit in CI: fails build on any HIGH/CRITICAL dep vulnerability
+- Dependabot: weekly automated PRs for GitHub Actions + all 5 npm workspaces
+- security.txt: responsible disclosure channel (/.well-known/security.txt)
+- Full helmet v13: CSP, COOP (same-origin), COEP, CORP (same-origin), HSTS (1yr + preload + subdomains), no-referrer
+**Notes:**
+- 169/169 tests pass post-hardening (DB connectivity was intermittently down during testing; same infra flakiness as Phase 12)
+- __Host- cookie name changed from 'refreshToken' → verify all browser sessions re-login after deploy (old cookie won't match)
+- Account lockout Redis keys: login:fail:{userId}, login:locked:{userId}; threat ban keys: threat:auth:{ip}, threat:404:{ip}, threat:403:{ip}, ban:{ip}
+- pino-pretty only loads in NODE_ENV=development (not test); prevents worker thread hang in Vitest
+- Fastify 5 TypeScript fix: logger cast as unknown as FastifyBaseLogger; getRealIp() uses Pick<> for hook compatibility
+- pnpm audit → 0 HIGH/CRITICAL vulnerabilities found
+
+### ✅ Phase 12 · Security Audit Remediation
+**Date:** 2026-06-28
+**Files created / modified:**
+- `apps/api/src/lib/redis.ts` — removed rejectUnauthorized: false; TLS cert verification enabled (H1)
+- `apps/api/src/lib/queue.ts` — removed rejectUnauthorized: false; added publish rate guard 60/min per restaurant (H1, M5)
+- `apps/api/src/modules/admin/admin.service.ts` — removed totpSecret from login setup response (H2)
+- `apps/api/src/modules/auth/auth.routes.ts` — removed refreshToken from JSON response body (H3)
+- `apps/api/src/modules/admin/admin.routes.ts` — removed refreshToken from JSON response body (H3)
+- `apps/api/src/lib/notify-once.ts` — replaced GET-then-SET with atomic SET NX + delete-on-failure (M1)
+- `apps/api/src/plugins/websocket.ts` — token expiry timer + per-IP connection limit (5/IP) + socket.send try/catch (M2, M3, L2)
+- `apps/api/src/modules/booking/booking.service.ts` — explicit RepeatableRead isolation on createBooking transaction; BOOKING_TX_OPTIONS applied to all cancel transactions (M4)
+- `apps/api/src/modules/restaurant/restaurant.service.ts` — 403→404 on ownership check failure (M6)
+- `apps/api/src/modules/auth/auth.schema.ts` — password max(72) on Register and Reset schemas (L1)
+- `apps/api/src/__tests__/helpers/auth.ts` — refresh token read from set-cookie header, not body (H3 compat)
+- `apps/admin/src/types/api.ts` — removed totpSecret from LoginTotpSetupResponse type (H2)
+- `apps/web/src/context/AuthContext.tsx` — does not read refreshToken from body (H3)
+- `apps/dashboard/src/context/AuthContext.tsx` — does not read refreshToken from body (H3)
+- `apps/admin/src/context/AuthContext.tsx` — does not read refreshToken from body (H3)
+- `.github/workflows/ci.yml` — all actions pinned to commit SHAs (M8)
+- `.github/workflows/deploy-staging.yml` — all actions pinned to commit SHAs (M8)
+- `.github/workflows/deploy-prod.yml` — all actions pinned to commit SHAs; expression injection fixed via CONFIRM_INPUT env var (M8, I2)
+- `.github/dependabot.yml` — created; weekly GitHub Actions SHA updates (M8)
+- `.env.example` — cleaned up Resend key placeholder (RESEND_API_KEY= empty) (L3)
+- `scripts/check-env.ts` — added Upstash eviction policy check via REST API (I1)
+**Security findings resolved:** H1 (Redis TLS), H2 (TOTP secret exposure), H3 (refresh token body), M1 (notifyOnce race), M2 (WS token expiry), M3 (WS connection flood), M4 (tx isolation + cancel tx timeout), M5 (queue flood), M6 (IDOR 403→404), M8 (action SHAs), I2 (shell injection), L1 (bcrypt truncation), L2 (WS send), L3 (env.example), I1 (eviction check)
+**Deferred:** Fastify 4→5 upgrade, Vite 5→6 upgrade — major breaking changes, planned separately
+**Notes:**
+- 169/169 tests pass post-remediation
+- Refresh token is now HttpOnly-cookie only — not in JSON body on any endpoint
+- WebSocket connections auto-close at access token expiry (15-min max without re-connect)
+- notifyOnce is race-condition safe with atomic Redis SET NX
+- All GitHub Action references pinned to SHAs; Dependabot keeps them updated weekly
+- Both diner and owner cancel transactions now use BOOKING_TX_OPTIONS (20s timeout) to avoid flaky failures under RepeatableRead isolation
+
 ### ✅ Phase 11 · Task 2 — Billing UI + Cancel/Resume Subscription
 **Date:** 2026-06-27
 **Files created / modified:**
@@ -976,6 +1055,8 @@ RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (no
 - ✅ Checkout URL endpoint complete (POST /subscriptions/checkout)
 - ✅ Plan enforcement wired on POST /restaurants (403 on limit breach)
 - ✅ Billing UI complete in owner dashboard (plan card, comparison, upgrade/downgrade, cancel/resume)
+- ✅ Security audit remediation complete (Phase 12) — all HIGH/MEDIUM findings resolved; 169 tests pass
+- ✅ FORTRESS hardening complete (Phase 13) — Fastify 5 + Vite 6 upgrade, constant-time auth, pino redaction, threat detector, account lockout, __Host- cookie, security headers, request timeout, CI audit pipeline, security.txt; 169 tests pass
 
 ---
 

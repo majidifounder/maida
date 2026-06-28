@@ -1,4 +1,4 @@
-import { prisma } from '@restaurant/db';
+import { prisma, Prisma } from '@restaurant/db';
 import { getRedisClient } from '../../lib/redis.js';
 import { publishBookingEvent } from '../../lib/queue.js';
 import { publishToRestaurantChannel } from '../../lib/pubsub.js';
@@ -63,13 +63,19 @@ const BOOKING_TX_OPTIONS = {
 
 const BOOKING_TX_MAX_ATTEMPTS = 4;
 
-function isPrismaTransactionTimeout(err: unknown): boolean {
-  return (
-    typeof err === 'object' &&
-    err !== null &&
-    'code' in err &&
-    (err as { code: string }).code === 'P2028'
-  );
+function isPrismaRetryableError(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null || !('code' in err)) return false;
+  const code = (err as { code: string }).code;
+  // P2028 = transaction timeout
+  // P2034 = transaction write conflict / deadlock (RepeatableRead/Serializable)
+  if (code === 'P2028' || code === 'P2034') return true;
+  // P2010 = raw query failed; check if the underlying PostgreSQL code is 40001
+  // (could not serialize access due to concurrent update — RepeatableRead conflict).
+  if (code === 'P2010') {
+    const meta = (err as { meta?: { code?: string } }).meta;
+    return meta?.code === '40001';
+  }
+  return false;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -117,6 +123,10 @@ export async function createBooking(dinerId: string, input: CreateBookingInput) 
 
   for (let attempt = 0; attempt < BOOKING_TX_MAX_ATTEMPTS; attempt++) {
     try {
+      // RepeatableRead ensures our SELECT FOR UPDATE sees a consistent snapshot.
+      // This prevents phantom reads and makes the locking intent explicit.
+      // PostgreSQL upgrades RepeatableRead to Serializable when FOR UPDATE is used,
+      // so this is the correct setting for double-booking prevention.
       booking = await prisma.$transaction(async (tx) => {
         const rows = await tx.$queryRaw<
           Array<{
@@ -188,17 +198,17 @@ export async function createBooking(dinerId: string, input: CreateBookingInput) 
         });
 
         return { booking: newBooking, slotStartsAt: slot.startsAt };
-      }, BOOKING_TX_OPTIONS);
+      }, { ...BOOKING_TX_OPTIONS, isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
       break;
     } catch (err) {
       if (err instanceof ConflictError || err instanceof NotFoundError) {
         throw err;
       }
-      if (isPrismaTransactionTimeout(err) && attempt < BOOKING_TX_MAX_ATTEMPTS - 1) {
+      if (isPrismaRetryableError(err) && attempt < BOOKING_TX_MAX_ATTEMPTS - 1) {
         await sleep(50 * (attempt + 1));
         continue;
       }
-      if (isPrismaTransactionTimeout(err)) {
+      if (isPrismaRetryableError(err)) {
         throw new ConflictError('This time slot is fully booked');
       }
       throw err;
@@ -310,7 +320,7 @@ export async function cancelMyBooking(bookingId: string, dinerId: string) {
     });
 
     return cancelled;
-  });
+  }, BOOKING_TX_OPTIONS);
 
   const slot = await prisma.timeSlot.findUnique({
     where: { id: existing.slotId },
@@ -485,7 +495,7 @@ export async function cancelBookingByOwner(
     });
 
     return cancelled;
-  });
+  }, BOOKING_TX_OPTIONS);
 
   if (existing.slot?.startsAt) {
     await invalidateSlotCache(restaurantId, existing.slot.startsAt);

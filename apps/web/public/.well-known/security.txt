@@ -1,0 +1,6 @@
+Contact: mailto:security@tablz.com
+Expires: 2027-01-01T00:00:00.000Z
+Preferred-Languages: en, fr, ar
+Policy: https://tablz.com/security-policy
+Acknowledgments: https://tablz.com/security-hall-of-fame
+Encryption: https://tablz.com/.well-known/pgp-key.txt

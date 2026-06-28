@@ -5,9 +5,8 @@ let _client: Redis | null = null;
 
 function baseOptions(): RedisOptions {
   return {
-    ...(env.REDIS_URL.startsWith('rediss://')
-      ? { tls: { rejectUnauthorized: false } }
-      : {}),
+    // TLS is enabled automatically by ioredis for rediss:// URLs.
+    // No explicit tls options needed — Upstash uses a CA-signed cert.
     connectTimeout: 5_000,
     lazyConnect: true,
   };

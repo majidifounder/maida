@@ -8,7 +8,7 @@ import type { FastifyRequest } from 'fastify';
  * Falls back to req.ip (socket IP) when Cloudflare is not in front,
  * which is the case in local development and in the test suite.
  */
-export function getRealIp(request: FastifyRequest): string {
+export function getRealIp(request: Pick<FastifyRequest, 'headers' | 'ip'>): string {
   const cfIp = request.headers['cf-connecting-ip'];
   if (typeof cfIp === 'string' && cfIp.trim().length > 0) {
     return cfIp.trim();

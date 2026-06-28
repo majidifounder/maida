@@ -5,6 +5,8 @@ export const RegisterSchema = z.object({
   password: z
     .string()
     .min(8, 'Password must be at least 8 characters')
+    // bcrypt silently truncates at 72 bytes; enforce limit so two passwords never collide.
+    .max(72, 'Password must be at most 72 characters')
     .regex(/[A-Z]/, 'Password must contain at least one uppercase letter')
     .regex(/[0-9]/, 'Password must contain at least one number'),
   role: z.enum(['diner', 'owner']).default('diner'),
@@ -29,6 +31,8 @@ export const ResetPasswordSchema = z.object({
   password: z
     .string()
     .min(8, 'Password must be at least 8 characters')
+    // bcrypt silently truncates at 72 bytes; enforce limit so two passwords never collide.
+    .max(72, 'Password must be at most 72 characters')
     .regex(/[A-Z]/, 'Password must contain at least one uppercase letter')
     .regex(/[0-9]/, 'Password must contain at least one number'),
 });

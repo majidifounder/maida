@@ -104,9 +104,10 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
         );
 
+        // Omit refreshToken from body — HttpOnly cookie is the sole delivery mechanism.
+        const { refreshToken: _rt, refreshTokenExpiresAt: _rte, ...safeResult } = result;
 
-
-        return reply.code(200).send(result);
+        return reply.code(200).send(safeResult);
 
       } catch (err) {
 
@@ -162,9 +163,10 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
       );
 
+      // Omit refreshToken from body — HttpOnly cookie is the sole delivery mechanism.
+      const { refreshToken: _rt, refreshTokenExpiresAt: _rte, ...safeResult } = result;
 
-
-      return reply.code(200).send(result);
+      return reply.code(200).send(safeResult);
 
     } catch (err) {
 
