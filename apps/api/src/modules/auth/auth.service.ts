@@ -142,6 +142,14 @@ export async function refreshTokens(
       throw new UnauthorizedError('Refresh token expired or revoked');
     }
 
+    const account = await tx.user.findUnique({
+      where: { id: existing.userId },
+      select: { deletedAt: true },
+    });
+    if (!account || account.deletedAt) {
+      throw new UnauthorizedError('Account has been deactivated');
+    }
+
     await tx.refreshToken.delete({ where: { id: existing.id } });
 
     const role = await getUserRole(existing.userId, tx);
@@ -249,20 +257,23 @@ async function getUserRole(
 
 export async function forgotPassword(
   input: { email: string },
-  meta: { ip: string; appBaseUrl: string },
+  meta: { ip: string },
 ): Promise<void> {
   const user = await prisma.user.findUnique({
     where: { email: input.email },
-    select: { id: true, deletedAt: true },
+    select: { id: true, deletedAt: true, role: true },
   });
 
-  if (!user || user.deletedAt) {
+  if (!user || user.deletedAt || user.role === 'ADMIN') {
     return;
   }
 
+  const appBaseUrl =
+    user.role === 'OWNER' ? env.DASHBOARD_URL : env.WEB_URL;
+
   const token = randomUUID();
   const redis = getRedisClient();
-  const resetUrl = `${meta.appBaseUrl}/reset-password?token=${token}`;
+  const resetUrl = `${appBaseUrl}/reset-password?token=${token}`;
 
   await redis.set(RESET_KEY(token), user.id, 'EX', RESET_TOKEN_TTL);
 

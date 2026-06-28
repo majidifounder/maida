@@ -287,10 +287,13 @@ export async function banUser(userId: string, adminId: string) {
     throw new ForbiddenError('Cannot ban another admin');
   }
 
-  await prisma.user.update({
-    where: { id: userId },
-    data: { deletedAt: new Date() },
-  });
+  await prisma.$transaction([
+    prisma.user.update({
+      where: { id: userId },
+      data: { deletedAt: new Date() },
+    }),
+    prisma.refreshToken.deleteMany({ where: { userId } }),
+  ]);
 
   await prisma.auditLog.create({
     data: {

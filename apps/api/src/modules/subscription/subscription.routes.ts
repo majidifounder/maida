@@ -1,24 +1,15 @@
-import type { FastifyInstance, FastifyReply } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@restaurant/db';
 import { env } from '../../env.js';
 import { createCheckoutUrl } from '../../lib/lemon-squeezy.js';
-import { AppError } from '../../errors/index.js';
+import { handleRouteError } from '../../lib/handle-route-error.js';
 import {
   getSubscription,
   getPlanLimits,
   cancelSubscription,
   resumeSubscription,
 } from './subscription.service.js';
-
-function handleError(err: unknown, reply: FastifyReply) {
-  if (err instanceof AppError) {
-    return reply
-      .code(err.statusCode)
-      .send({ error: err.message, code: err.code });
-  }
-  throw err;
-}
 
 const CheckoutSchema = z.object({
   plan: z.enum(['STARTER', 'PRO', 'PREMIUM']),
@@ -88,7 +79,7 @@ export async function subscriptionRoutes(
           'Subscription will be cancelled at the end of the current period.',
       });
     } catch (err) {
-      return handleError(err, reply);
+      return handleRouteError(err, reply);
     }
   });
 
@@ -99,7 +90,7 @@ export async function subscriptionRoutes(
         message: 'Subscription reactivated successfully.',
       });
     } catch (err) {
-      return handleError(err, reply);
+      return handleRouteError(err, reply);
     }
   });
 

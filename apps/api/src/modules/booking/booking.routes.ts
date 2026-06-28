@@ -1,20 +1,11 @@
-import type { FastifyInstance, FastifyReply } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import {
   CreateBookingSchema,
   ListBookingsQuerySchema,
   ListRestaurantBookingsQuerySchema,
 } from './booking.schema.js';
 import * as BookingService from './booking.service.js';
-import { AppError } from '../../errors/index.js';
-
-function handleError(err: unknown, reply: FastifyReply) {
-  if (err instanceof AppError) {
-    return reply
-      .code(err.statusCode)
-      .send({ error: err.message, code: err.code });
-  }
-  throw err;
-}
+import { handleRouteError } from '../../lib/handle-route-error.js';
 
 export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
   const dinerHooks = {
@@ -35,7 +26,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       );
       return reply.code(201).send({ booking });
     } catch (err) {
-      return handleError(err, reply);
+      return handleRouteError(err, reply);
     }
   });
 
@@ -51,7 +42,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         .code(200)
         .send(await BookingService.listMyBookings(request.user!.sub, query.data));
     } catch (err) {
-      return handleError(err, reply);
+      return handleRouteError(err, reply);
     }
   });
 
@@ -62,7 +53,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         .code(200)
         .send(await BookingService.getMyBooking(id, request.user!.sub));
     } catch (err) {
-      return handleError(err, reply);
+      return handleRouteError(err, reply);
     }
   });
 
@@ -75,7 +66,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       );
       return reply.code(200).send({ booking });
     } catch (err) {
-      return handleError(err, reply);
+      return handleRouteError(err, reply);
     }
   });
 
@@ -105,7 +96,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
             ),
           );
       } catch (err) {
-        return handleError(err, reply);
+        return handleRouteError(err, reply);
       }
     },
   );
@@ -126,7 +117,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         );
         return reply.code(200).send({ booking });
       } catch (err) {
-        return handleError(err, reply);
+        return handleRouteError(err, reply);
       }
     },
   );
@@ -147,7 +138,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         );
         return reply.code(200).send({ booking });
       } catch (err) {
-        return handleError(err, reply);
+        return handleRouteError(err, reply);
       }
     },
   );

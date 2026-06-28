@@ -716,6 +716,30 @@
 - Upgrade/downgrade via POST /subscriptions/checkout → redirect to Lemon Squeezy
 - Sidebar shows current plan badge (5 min staleTime)
 
+### ✅ Security audit PASS 2 — Ban enforcement, rate limits, webhook guard, deps
+**Date:** 2026-06-27
+**Files created / modified:**
+- `apps/api/src/lib/handle-route-error.ts` — shared AppError → HTTP response helper
+- `apps/api/src/lib/cookies.ts` — shared refresh-token cookie name/options
+- `apps/api/src/lib/load-test.ts` — `X-Load-Test` bypass disabled in production
+- `apps/api/src/plugins/authenticate.ts` — reject banned users (`deletedAt`) on every authenticated request
+- `apps/api/src/plugins/cloudflareOnly.ts` — skip CF secret check for `/webhooks/*`
+- `apps/api/src/lib/lemon-squeezy.ts` — unknown LS status defaults to PAST_DUE (not ACTIVE)
+- `apps/api/src/modules/auth/auth.service.ts` — ban check on refresh; forgot-password URL from user role (not Origin)
+- `apps/api/src/modules/admin/admin.service.ts` — ban revokes all refresh tokens
+- `apps/api/src/modules/auth/auth.routes.ts` — reset-password rate limit; load-test gate; cookie import
+- `apps/api/src/modules/admin/admin.routes.ts` — admin login rate limit (5/15min per IP)
+- `apps/api/src/modules/*/booking|restaurant|subscription.routes.ts` — use shared handleRouteError
+- `apps/api/package.json` — resend ^6.16.0
+- `package.json` — prettier ^3.9.0
+- `pnpm-lock.yaml` — lockfile refresh
+**Notes:**
+- Banned users: immediate 401 on protected routes; refresh returns 401; sessions revoked on ban
+- `POST /auth/reset-password` rate limited 10/IP/hour
+- Forgot-password reset links: OWNER → DASHBOARD_URL, DINER → WEB_URL; ADMIN excluded
+- 169/169 API tests pass; typecheck clean
+- Fastify 5 / Vite 6 / Prisma 7 upgrades deferred (major)
+
 ---
 
 ## 4 · SHARED TYPE CONTRACTS (`packages/types`)
