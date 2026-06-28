@@ -1,4 +1,5 @@
-import Fastify from 'fastify';
+import { randomUUID } from 'node:crypto';
+import Fastify, { type FastifyBaseLogger } from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
@@ -6,9 +7,11 @@ import cookie from '@fastify/cookie';
 import sensible from '@fastify/sensible';
 
 import { env } from './env.js';
+import { logger } from './lib/logger.js';
 import { getRedisClient } from './lib/redis.js';
 import { getRealIp } from './lib/cloudflare.js';
 import { isLoadTestRequest } from './lib/load-test.js';
+import { recordThreatSignal, isExtendedBanned } from './lib/threat-detector.js';
 import { prisma } from '@restaurant/db';
 import authenticatePlugin from './plugins/authenticate.js';
 import { cloudflareOnlyPlugin } from './plugins/cloudflareOnly.js';
@@ -21,27 +24,51 @@ import { webhookRoutes } from './modules/subscription/webhook.routes.js';
 import { subscriptionRoutes } from './modules/subscription/subscription.routes.js';
 import { startNotificationWorker } from './workers/notification.worker.js';
 
+const BLOCKED_UA_PATTERNS = [
+  /sqlmap/i,
+  /nikto/i,
+  /nmap/i,
+  /masscan/i,
+  /zgrab/i,
+  /go-http-client\/1\.1$/i,
+  /python-requests\/[01]\./i,
+];
+
 async function buildServer() {
   const fastify = Fastify({
-    logger: {
-      level: env.NODE_ENV === 'production' ? 'warn' : 'info',
-      ...(env.NODE_ENV === 'development' && {
-        transport: { target: 'pino-pretty', options: { colorize: true } },
-      }),
-    },
-    trustProxy: env.NODE_ENV === 'production',
+    logger: logger as unknown as FastifyBaseLogger,
+    genReqId: () => randomUUID(),
+    trustProxy: true,
+    requestTimeout: 30_000,
+    keepAliveTimeout: 5_000,
+    bodyLimit: 100 * 1024, // 100 KB default
   });
 
   await fastify.register(helmet, {
+    global: true,
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
         scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", 'data:'],
+        connectSrc: ["'self'"],
+        fontSrc: ["'self'"],
         objectSrc: ["'none'"],
+        mediaSrc: ["'self'"],
+        frameSrc: ["'none'"],
         upgradeInsecureRequests: [],
       },
     },
-    crossOriginEmbedderPolicy: false,
+    crossOriginEmbedderPolicy: true,
+    crossOriginOpenerPolicy: { policy: 'same-origin' },
+    crossOriginResourcePolicy: { policy: 'same-origin' },
+    referrerPolicy: { policy: 'no-referrer' },
+    hsts: {
+      maxAge: 31536000,
+      includeSubDomains: true,
+      preload: true,
+    },
   });
 
   const allowedOrigins = env.CORS_ORIGIN.split(',').map((o) => o.trim());
@@ -77,6 +104,61 @@ async function buildServer() {
   });
 
   await fastify.register(sensible);
+
+  // --- Scanner / bot UA block ---
+  fastify.addHook('onRequest', async (request, reply) => {
+    const ua = request.headers['user-agent'] ?? '';
+    if (BLOCKED_UA_PATTERNS.some((pattern) => pattern.test(ua))) {
+      return reply.status(403).send({ error: 'Forbidden' });
+    }
+  });
+
+  // --- Extended IP ban check (threat detector) ---
+  fastify.addHook('onRequest', async (request, reply) => {
+    const ip = getRealIp(request);
+    const banned = await isExtendedBanned(ip);
+    if (banned) {
+      return reply.status(429).send({
+        error: 'Too Many Requests',
+        message: 'Request blocked. Please try again later.',
+      });
+    }
+  });
+
+  // --- Record threat signals on 401 / 403 / 404 responses ---
+  fastify.addHook('onResponse', async (request, reply) => {
+    const ip = getRealIp(request);
+    const status = reply.statusCode;
+    if (status === 401) await recordThreatSignal(ip, 'AUTH_FAILURES');
+    else if (status === 404) await recordThreatSignal(ip, 'NOT_FOUND');
+    else if (status === 403) await recordThreatSignal(ip, 'FORBIDDEN');
+  });
+
+  // --- Security headers + correlation ID ---
+  fastify.addHook('onSend', async (request, reply) => {
+    reply.header(
+      'Permissions-Policy',
+      'accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()',
+    );
+    reply.removeHeader('X-Powered-By');
+    reply.header('X-DNS-Prefetch-Control', 'off');
+    reply.header('X-Request-Id', request.id);
+  });
+
+  // --- Block HTTP method override headers ---
+  fastify.addHook('preHandler', async (request, reply) => {
+    if (
+      request.headers['x-http-method-override'] ||
+      request.headers['x-method-override'] ||
+      request.headers['x-http-method']
+    ) {
+      return reply.status(400).send({
+        error: 'Bad Request',
+        message: 'Method override headers are not permitted',
+      });
+    }
+  });
+
   await fastify.register(webhookRoutes);
   await fastify.register(cloudflareOnlyPlugin);
   await fastify.register(authenticatePlugin);
@@ -87,17 +169,11 @@ async function buildServer() {
   await fastify.register(subscriptionRoutes);
   await fastify.register(adminRoutes);
 
-  fastify.setErrorHandler((error, _request, reply) => {
-    if (env.NODE_ENV === 'production' && !('statusCode' in error)) {
-      fastify.log.error(error);
-      return reply.code(500).send({ error: 'Internal server error' });
-    }
-
-    const statusCode = (error as { statusCode?: number }).statusCode ?? 500;
-    return reply.code(statusCode).send({
-      error: error.message,
-      ...(env.NODE_ENV !== 'production' && { stack: error.stack }),
-    });
+  // --- Responsible disclosure endpoint ---
+  fastify.get('/.well-known/security.txt', async (_request, reply) => {
+    return reply.header('Content-Type', 'text/plain; charset=utf-8').send(
+      `Contact: mailto:security@tablz.com\nExpires: 2027-01-01T00:00:00.000Z\nPreferred-Languages: en, fr, ar\nPolicy: https://tablz.com/security-policy\n`,
+    );
   });
 
   fastify.get('/health', async (_request, reply) => {
@@ -126,6 +202,20 @@ async function buildServer() {
       timestamp: new Date().toISOString(),
       environment: env.NODE_ENV,
       checks,
+    });
+  });
+
+  fastify.setErrorHandler((error: unknown, _request, reply) => {
+    const err = error as { statusCode?: number; message?: string; stack?: string };
+    if (env.NODE_ENV === 'production' && !('statusCode' in (err as object))) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Internal server error' });
+    }
+
+    const statusCode = err.statusCode ?? 500;
+    return reply.code(statusCode).send({
+      error: err.message ?? 'Internal server error',
+      ...(env.NODE_ENV !== 'production' && { stack: err.stack }),
     });
   });
 

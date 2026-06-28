@@ -12,6 +12,55 @@ import { env } from '../../env.js';
 import { sendPasswordReset } from '../../services/email.service.js';
 import type { RegisterInput, LoginInput } from './auth.schema.js';
 
+// --- Account lockout constants ---
+const ACCOUNT_LOCKOUT_ATTEMPTS = 10;
+const ACCOUNT_LOCKOUT_WINDOW_SEC = 900;   // 15 minutes
+const ACCOUNT_LOCKOUT_DURATION_SEC = 1800; // 30 minutes
+
+// --- Lazy-computed dummy bcrypt hash for constant-time login ---
+let _dummyHash: string | null = null;
+async function getDummyHash(): Promise<string> {
+  if (!_dummyHash) {
+    _dummyHash = await bcrypt.hash('__timing_safety_dummy__', env.BCRYPT_ROUNDS);
+  }
+  return _dummyHash;
+}
+
+async function recordFailedLogin(userId: string): Promise<void> {
+  if (process.env.NODE_ENV === 'test') return;
+  try {
+    const redis = getRedisClient();
+    const key = `login:fail:${userId}`;
+    const count = await redis.incr(key);
+    if (count === 1) await redis.expire(key, ACCOUNT_LOCKOUT_WINDOW_SEC);
+    if (count >= ACCOUNT_LOCKOUT_ATTEMPTS) {
+      await redis.set(`login:locked:${userId}`, '1', 'EX', ACCOUNT_LOCKOUT_DURATION_SEC);
+      console.warn(`[Auth] Account locked after ${count} failed logins: ${userId}`);
+    }
+  } catch {
+    // Non-fatal
+  }
+}
+
+async function clearFailedLogins(userId: string): Promise<void> {
+  if (process.env.NODE_ENV === 'test') return;
+  try {
+    await getRedisClient().del(`login:fail:${userId}`);
+  } catch {
+    // Non-fatal
+  }
+}
+
+async function isAccountLocked(userId: string): Promise<boolean> {
+  if (process.env.NODE_ENV === 'test') return false;
+  try {
+    const locked = await getRedisClient().get(`login:locked:${userId}`);
+    return locked !== null;
+  } catch {
+    return false;
+  }
+}
+
 const RESET_TOKEN_TTL = 60 * 60;
 const RESET_KEY = (token: string) => `pwd_reset:${token}`;
 
@@ -65,14 +114,21 @@ export async function loginUser(
     select: { id: true, email: true, password: true, role: true, createdAt: true, deletedAt: true },
   });
 
-  const DUMMY_HASH =
-    '$2b$12$invalidhashfortimingnormalization000000000000000000000000';
-  const passwordMatch = await bcrypt.compare(
-    input.password,
-    user?.password ?? DUMMY_HASH,
-  );
+  // Check account lockout before bcrypt (only for existing non-deleted users)
+  if (user && !user.deletedAt && await isAccountLocked(user.id)) {
+    throw new UnauthorizedError('Invalid email or password');
+  }
+
+  // ALWAYS run bcrypt — even when user not found — to prevent timing-based enumeration
+  const hashToCompare = user?.password ?? await getDummyHash();
+  const passwordMatch = await bcrypt.compare(input.password, hashToCompare);
 
   if (!user || !passwordMatch || user.deletedAt) {
+    // Record failure only for real, non-deleted accounts
+    if (user && !user.deletedAt) {
+      await recordFailedLogin(user.id);
+    }
+
     await prisma.auditLog
       .create({
         data: {
@@ -86,8 +142,11 @@ export async function loginUser(
       })
       .catch(() => {});
 
-    throw new UnauthorizedError('Invalid credentials');
+    throw new UnauthorizedError('Invalid email or password');
   }
+
+  // Successful login — clear failure counter
+  await clearFailedLogins(user.id);
 
   const tokenPair = await issueTokenPair(user.id);
 
@@ -265,6 +324,9 @@ export async function forgotPassword(
   });
 
   if (!user || user.deletedAt || user.role === 'ADMIN') {
+    // Consume time equivalent to token generation + email send to prevent
+    // "email exists" enumeration via response-time differences
+    await new Promise((resolve) => setTimeout(resolve, 50 + Math.random() * 50));
     return;
   }
 

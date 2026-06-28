@@ -75,14 +75,23 @@ export async function loginUser(
 
   const body = JSON.parse(res.body) as {
     accessToken: string;
-    refreshToken: string;
   };
+
+  // Refresh token is in the HttpOnly __Host-refresh cookie — extract from Set-Cookie header.
+  const setCookieHeader = res.headers['set-cookie'];
+  const cookieStr = Array.isArray(setCookieHeader)
+    ? setCookieHeader.find((c) => c.startsWith('__Host-refresh='))
+    : setCookieHeader?.startsWith('__Host-refresh=')
+      ? setCookieHeader
+      : undefined;
+  const refreshToken =
+    cookieStr?.split(';')[0]?.replace('__Host-refresh=', '') ?? '';
 
   return {
     email,
     password,
     userId,
     accessToken: body.accessToken,
-    refreshToken: body.refreshToken,
+    refreshToken,
   };
 }

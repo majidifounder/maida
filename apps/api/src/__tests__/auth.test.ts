@@ -194,7 +194,7 @@ describe('POST /auth/login', () => {
     expect(cookieStr).toMatch(/HttpOnly/i);
   });
 
-  it('401 — wrong password returns generic error (no email-vs-password distinction)', async () => {
+  it('401 — wrong password returns non-distinguishing error (no email-vs-password enumeration)', async () => {
     const { email, userId } = await registerUser(server);
     createdUserIds.push(userId);
 
@@ -206,8 +206,11 @@ describe('POST /auth/login', () => {
 
     expect(res.statusCode).toBe(401);
     const body = JSON.parse(res.body) as { error: string };
-    expect(body.error.toLowerCase()).not.toContain('password');
+    // Message must mention both email and password together — never "wrong password"
+    // or similar text that distinguishes which field was incorrect
     expect(body.error.toLowerCase()).not.toContain('wrong');
+    expect(body.error.toLowerCase()).not.toContain('incorrect');
+    expect(body.error).toBe('Invalid email or password');
   });
 
   it('401 — unknown email returns IDENTICAL error message (prevents enumeration)', async () => {

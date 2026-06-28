@@ -1,5 +1,6 @@
 import { Queue } from 'bullmq';
 import { env } from '../env.js';
+import { getRedisClient } from './redis.js';
 
 export type BookingEventType =
   | 'booking.created'
@@ -18,11 +19,10 @@ export interface BookingEventPayload {
 }
 
 export function getBullmqConnection() {
+  // TLS is handled automatically by BullMQ/ioredis for rediss:// URLs.
+  // Upstash uses a CA-signed cert; no rejectUnauthorized override needed.
   return {
     url: env.REDIS_URL,
-    ...(env.REDIS_URL.startsWith('rediss://')
-      ? { tls: { rejectUnauthorized: false } }
-      : {}),
     maxRetriesPerRequest: null,
     enableReadyCheck: false,
   };
@@ -45,11 +45,32 @@ function getQueue(): Queue {
   return _queue;
 }
 
+const PUBLISH_RATE_LIMIT = 60;
+const PUBLISH_RATE_WINDOW_SECONDS = 60;
+
 export async function publishBookingEvent(
   eventType: 'booking.created' | 'booking.cancelled' | 'booking.confirmed',
   payload: Record<string, unknown>,
 ): Promise<void> {
   try {
+    // Rate cap: 60 booking events per restaurant per minute.
+    // Prevents queue flooding from rapid create/cancel cycles.
+    const restaurantId = String(payload.restaurantId ?? 'unknown');
+    if (restaurantId !== 'unknown') {
+      const redis = getRedisClient();
+      const rateLimitKey = `queue:rate:${restaurantId}`;
+      const count = await redis.incr(rateLimitKey);
+      if (count === 1) {
+        await redis.expire(rateLimitKey, PUBLISH_RATE_WINDOW_SECONDS);
+      }
+      if (count > PUBLISH_RATE_LIMIT) {
+        console.warn(
+          `[Queue] publish rate limit exceeded for restaurant ${restaurantId} — event dropped`,
+        );
+        return;
+      }
+    }
+
     const job = await getQueue().add(eventType, {
       ...payload,
       eventType,

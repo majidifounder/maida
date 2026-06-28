@@ -138,8 +138,6 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
             user: result.user,
             accessToken: result.accessToken,
             accessTokenExpiresAt: result.accessTokenExpiresAt,
-            refreshToken: result.refreshToken,
-            refreshTokenExpiresAt: result.refreshTokenExpiresAt,
           });
       } catch (err) {
         if (err instanceof AppError) {
@@ -181,13 +179,11 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
         .send({
           accessToken: result.accessToken,
           accessTokenExpiresAt: result.accessTokenExpiresAt,
-          refreshToken: result.refreshToken,
-          refreshTokenExpiresAt: result.refreshTokenExpiresAt,
         });
     } catch (err) {
       if (err instanceof AppError) {
         return reply
-          .clearCookie(REFRESH_COOKIE_NAME, { path: '/auth' })
+          .clearCookie(REFRESH_COOKIE_NAME, { path: '/' })
           .code(err.statusCode)
           .send({ error: err.message, code: err.code });
       }
@@ -216,7 +212,7 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
       });
 
       return reply
-        .clearCookie(REFRESH_COOKIE_NAME, { path: '/auth' })
+        .clearCookie(REFRESH_COOKIE_NAME, { path: '/' })
         .code(200)
         .send({ message: 'Logged out successfully' });
     },

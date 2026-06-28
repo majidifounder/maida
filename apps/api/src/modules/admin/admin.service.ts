@@ -75,7 +75,6 @@ export async function adminLogin(
       requiresTOTPSetup: true as const,
       qrCodeDataUrl,
       pendingToken,
-      totpSecret: secret,
     };
   }
 

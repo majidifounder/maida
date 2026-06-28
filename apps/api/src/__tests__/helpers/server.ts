@@ -26,9 +26,10 @@ export async function buildTestServer(): Promise<FastifyInstance> {
 
   fastify.get('/health', () => ({ status: 'ok' }));
 
-  fastify.setErrorHandler((error, _req, reply) => {
-    const statusCode = (error as { statusCode?: number }).statusCode ?? 500;
-    return reply.code(statusCode).send({ error: error.message });
+  fastify.setErrorHandler((error: unknown, _req, reply) => {
+    const err = error as { statusCode?: number; message?: string };
+    const statusCode = err.statusCode ?? 500;
+    return reply.code(statusCode).send({ error: err.message ?? 'Internal server error' });
   });
 
   await fastify.ready();

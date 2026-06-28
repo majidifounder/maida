@@ -1,0 +1,58 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "github-actions"
+
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      production-deps:
+        applies-to: version-updates
+        patterns: ["fastify", "@fastify/*", "prisma", "@prisma/*", "bullmq", "resend", "ioredis"]
+        update-types: ["patch", "minor"]
+    labels:
+      - "dependencies"
+    ignore:
+      - dependency-name: "fastify"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "vite"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: "npm"
+    directory: "/apps/api"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "api"
+
+  - package-ecosystem: "npm"
+    directory: "/apps/web"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "frontend"
+
+  - package-ecosystem: "npm"
+    directory: "/apps/dashboard"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "frontend"
+
+  - package-ecosystem: "npm"
+    directory: "/apps/admin"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "admin"
