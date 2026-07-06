@@ -22,7 +22,10 @@ export class ForbiddenError extends AppError {
 }
 
 export class ConflictError extends AppError {
-  constructor(message = 'Conflict') {
+  constructor(
+    message = 'Conflict',
+    public readonly details?: Record<string, unknown>,
+  ) {
     super(409, message, 'CONFLICT');
   }
 }

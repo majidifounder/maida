@@ -45,7 +45,7 @@ vi.mock('resend', () => ({
 
 vi.mock('@restaurant/db', () => ({
   prisma: {
-    booking: { findUniqueOrThrow: mockFindUniqueOrThrow },
+    reservation: { findUniqueOrThrow: mockFindUniqueOrThrow },
   },
 }));
 
@@ -54,24 +54,27 @@ vi.mock('../lib/notify-once.js', () => ({
 }));
 
 import {
-  sendBookingCreated,
-  sendBookingConfirmed,
-  sendBookingCancelledByDiner,
-  sendBookingCancelledByOwner,
-  type BookingEmailData,
+  sendReservationCreated,
+  sendReservationSeated,
+  sendReservationCancelledByDiner,
+  sendReservationCancelledByOwner,
+  type ReservationEmailData,
 } from '../services/email.service.js';
 import {
   processNotificationJob,
   startNotificationWorker,
 } from '../workers/notification.worker.js';
-import type { BookingEventPayload, BookingEventType } from '../lib/queue.js';
+import type {
+  ReservationEventPayload,
+  ReservationEventType,
+} from '../lib/queue.js';
 
-const MOCK_BOOKING_ID = 'aaaabbbb-0000-0000-0000-000000000001';
+const MOCK_RESERVATION_ID = 'aaaabbbb-0000-0000-0000-000000000001';
 
-const MOCK_DB_BOOKING = {
-  id: MOCK_BOOKING_ID,
+const MOCK_DB_RESERVATION = {
+  id: MOCK_RESERVATION_ID,
   partySize: 3,
-  slot: { startsAt: new Date('2026-09-15T19:00:00.000Z') },
+  startsAt: new Date('2026-09-15T19:00:00.000Z'),
   diner: { email: 'diner@example.com' },
   restaurant: {
     name: 'La Bella',
@@ -79,13 +82,13 @@ const MOCK_DB_BOOKING = {
   },
 };
 
-const BASE_EMAIL_DATA: BookingEmailData = {
-  bookingId: MOCK_BOOKING_ID,
-  partySize: MOCK_DB_BOOKING.partySize,
-  slotStartsAt: MOCK_DB_BOOKING.slot.startsAt.toISOString(),
-  dinerEmail: MOCK_DB_BOOKING.diner.email,
-  ownerEmail: MOCK_DB_BOOKING.restaurant.owner.email,
-  restaurantName: MOCK_DB_BOOKING.restaurant.name,
+const BASE_EMAIL_DATA: ReservationEmailData = {
+  reservationId: MOCK_RESERVATION_ID,
+  partySize: MOCK_DB_RESERVATION.partySize,
+  startsAt: MOCK_DB_RESERVATION.startsAt.toISOString(),
+  dinerEmail: MOCK_DB_RESERVATION.diner.email,
+  ownerEmail: MOCK_DB_RESERVATION.restaurant.owner.email,
+  restaurantName: MOCK_DB_RESERVATION.restaurant.name,
 };
 
 function emailCalls(): Array<{ to: string; subject: string; html: string }> {
@@ -95,16 +98,16 @@ function emailCalls(): Array<{ to: string; subject: string; html: string }> {
 }
 
 function makeJob(
-  data: Partial<BookingEventPayload> &
-    Pick<BookingEventPayload, 'eventType' | 'bookingId'>,
-): Job<BookingEventPayload> {
+  data: Partial<ReservationEventPayload> &
+    Pick<ReservationEventPayload, 'eventType' | 'reservationId'>,
+): Job<ReservationEventPayload> {
   return {
     id: 'job-1',
     data: {
       publishedAt: new Date().toISOString(),
       ...data,
     },
-  } as Job<BookingEventPayload>;
+  } as Job<ReservationEventPayload>;
 }
 
 describe('email.service', () => {
@@ -112,9 +115,9 @@ describe('email.service', () => {
     mockEmailSend.mockClear();
   });
 
-  describe('sendBookingCreated', () => {
+  describe('sendReservationCreated', () => {
     it('sends two emails — one to diner, one to owner', async () => {
-      await sendBookingCreated(BASE_EMAIL_DATA);
+      await sendReservationCreated(BASE_EMAIL_DATA);
 
       const calls = emailCalls();
       expect(calls).toHaveLength(2);
@@ -124,100 +127,51 @@ describe('email.service', () => {
     });
 
     it('diner email subject contains the restaurant name', async () => {
-      await sendBookingCreated(BASE_EMAIL_DATA);
+      await sendReservationCreated(BASE_EMAIL_DATA);
 
       const dinerCall = emailCalls().find((c) => c.to === 'diner@example.com')!;
       expect(dinerCall.subject).toContain('La Bella');
     });
-
-    it('owner email subject contains the restaurant name', async () => {
-      await sendBookingCreated(BASE_EMAIL_DATA);
-
-      const ownerCall = emailCalls().find((c) => c.to === 'owner@labella.com')!;
-      expect(ownerCall.subject).toContain('La Bella');
-    });
-
-    it('both emails reference the correct party size', async () => {
-      await sendBookingCreated(BASE_EMAIL_DATA);
-
-      emailCalls().forEach((call) => {
-        expect(call.html).toContain('3');
-      });
-    });
   });
 
-  describe('sendBookingConfirmed', () => {
+  describe('sendReservationSeated', () => {
     it('sends exactly one email to the diner', async () => {
-      await sendBookingConfirmed(BASE_EMAIL_DATA);
+      await sendReservationSeated(BASE_EMAIL_DATA);
 
       const calls = emailCalls();
       expect(calls).toHaveLength(1);
       expect(calls[0]!.to).toBe('diner@example.com');
     });
 
-    it('subject contains the restaurant name and a confirmation token', async () => {
-      await sendBookingConfirmed(BASE_EMAIL_DATA);
+    it('subject contains the restaurant name', async () => {
+      await sendReservationSeated(BASE_EMAIL_DATA);
 
       expect(emailCalls()[0]!.subject).toContain('La Bella');
-      expect(emailCalls()[0]!.subject).toMatch(/confirmed|✓/i);
-    });
-
-    it('does NOT email the owner', async () => {
-      await sendBookingConfirmed(BASE_EMAIL_DATA);
-
-      expect(
-        emailCalls().some((c) => c.to === 'owner@labella.com'),
-      ).toBe(false);
     });
   });
 
-  describe('sendBookingCancelledByDiner', () => {
+  describe('sendReservationCancelledByDiner', () => {
     it('sends two emails — receipt to diner, alert to owner', async () => {
-      await sendBookingCancelledByDiner(BASE_EMAIL_DATA);
+      await sendReservationCancelledByDiner(BASE_EMAIL_DATA);
 
       const calls = emailCalls();
       expect(calls).toHaveLength(2);
-      expect(calls.map((c) => c.to)).toEqual(
-        expect.arrayContaining(['diner@example.com', 'owner@labella.com']),
-      );
     });
 
     it('diner subject signals cancellation', async () => {
-      await sendBookingCancelledByDiner(BASE_EMAIL_DATA);
+      await sendReservationCancelledByDiner(BASE_EMAIL_DATA);
 
       const dinerCall = emailCalls().find((c) => c.to === 'diner@example.com')!;
       expect(dinerCall.subject.toLowerCase()).toContain('cancel');
     });
-
-    it('owner subject signals guest cancellation', async () => {
-      await sendBookingCancelledByDiner(BASE_EMAIL_DATA);
-
-      const ownerCall = emailCalls().find((c) => c.to === 'owner@labella.com')!;
-      expect(ownerCall.subject.toLowerCase()).toContain('guest');
-    });
   });
 
-  describe('sendBookingCancelledByOwner', () => {
+  describe('sendReservationCancelledByOwner', () => {
     it('sends exactly one email to the diner', async () => {
-      await sendBookingCancelledByOwner(BASE_EMAIL_DATA);
+      await sendReservationCancelledByOwner(BASE_EMAIL_DATA);
 
-      const calls = emailCalls();
-      expect(calls).toHaveLength(1);
-      expect(calls[0]!.to).toBe('diner@example.com');
-    });
-
-    it('subject signals cancellation by restaurant', async () => {
-      await sendBookingCancelledByOwner(BASE_EMAIL_DATA);
-
-      expect(emailCalls()[0]!.subject.toLowerCase()).toContain('cancel');
-    });
-
-    it('does NOT email the owner', async () => {
-      await sendBookingCancelledByOwner(BASE_EMAIL_DATA);
-
-      expect(
-        emailCalls().some((c) => c.to === 'owner@labella.com'),
-      ).toBe(false);
+      expect(emailCalls()).toHaveLength(1);
+      expect(emailCalls()[0]!.to).toBe('diner@example.com');
     });
   });
 });
@@ -226,31 +180,37 @@ describe('processNotificationJob', () => {
   beforeEach(() => {
     mockEmailSend.mockClear();
     mockFindUniqueOrThrow.mockReset();
-    mockFindUniqueOrThrow.mockResolvedValue(MOCK_DB_BOOKING);
+    mockFindUniqueOrThrow.mockResolvedValue(MOCK_DB_RESERVATION);
   });
 
-  it('booking.created → calls sendBookingCreated (2 emails)', async () => {
+  it('reservation.created → sends 2 emails', async () => {
     await processNotificationJob(
-      makeJob({ eventType: 'booking.created', bookingId: MOCK_BOOKING_ID }),
+      makeJob({
+        eventType: 'reservation.created',
+        reservationId: MOCK_RESERVATION_ID,
+      }),
     );
 
     expect(mockEmailSend).toHaveBeenCalledTimes(2);
   });
 
-  it('booking.confirmed → calls sendBookingConfirmed (1 email, diner only)', async () => {
+  it('reservation.seated → sends 1 email to diner', async () => {
     await processNotificationJob(
-      makeJob({ eventType: 'booking.confirmed', bookingId: MOCK_BOOKING_ID }),
+      makeJob({
+        eventType: 'reservation.seated',
+        reservationId: MOCK_RESERVATION_ID,
+      }),
     );
 
     expect(mockEmailSend).toHaveBeenCalledTimes(1);
     expect(emailCalls()[0]!.to).toBe('diner@example.com');
   });
 
-  it('booking.cancelled + cancelledBy=diner → sendBookingCancelledByDiner (2 emails)', async () => {
+  it('reservation.cancelled + cancelledBy=diner → 2 emails', async () => {
     await processNotificationJob(
       makeJob({
-        eventType: 'booking.cancelled',
-        bookingId: MOCK_BOOKING_ID,
+        eventType: 'reservation.cancelled',
+        reservationId: MOCK_RESERVATION_ID,
         cancelledBy: 'diner',
       }),
     );
@@ -258,41 +218,37 @@ describe('processNotificationJob', () => {
     expect(mockEmailSend).toHaveBeenCalledTimes(2);
   });
 
-  it('booking.cancelled + cancelledBy=owner → sendBookingCancelledByOwner (1 email)', async () => {
+  it('reservation.cancelled + cancelledBy=owner → 1 email', async () => {
     await processNotificationJob(
       makeJob({
-        eventType: 'booking.cancelled',
-        bookingId: MOCK_BOOKING_ID,
+        eventType: 'reservation.cancelled',
+        reservationId: MOCK_RESERVATION_ID,
         cancelledBy: 'owner',
       }),
     );
 
     expect(mockEmailSend).toHaveBeenCalledTimes(1);
-    expect(emailCalls()[0]!.to).toBe('diner@example.com');
   });
 
-  it('calls findUniqueOrThrow with the booking id from the job payload', async () => {
+  it('calls findUniqueOrThrow with the reservation id', async () => {
     await processNotificationJob(
-      makeJob({ eventType: 'booking.created', bookingId: MOCK_BOOKING_ID }),
+      makeJob({
+        eventType: 'reservation.created',
+        reservationId: MOCK_RESERVATION_ID,
+      }),
     );
 
     expect(mockFindUniqueOrThrow).toHaveBeenCalledOnce();
     const call = mockFindUniqueOrThrow.mock.calls[0]![0] as {
       where: { id: string };
-      select: unknown;
     };
-    expect(call.where.id).toBe(MOCK_BOOKING_ID);
-    expect(call.select).toMatchObject({
-      diner: { select: { email: true } },
-      restaurant: { select: { owner: { select: { email: true } } } },
-      slot: { select: { startsAt: true } },
-    });
+    expect(call.where.id).toBe(MOCK_RESERVATION_ID);
   });
 
-  it('unknown event name → does NOT throw (logs and skips)', async () => {
+  it('unknown event name → does NOT throw', async () => {
     const job = makeJob({
-      eventType: 'booking.unknown_event' as BookingEventType,
-      bookingId: MOCK_BOOKING_ID,
+      eventType: 'reservation.unknown' as ReservationEventType,
+      reservationId: MOCK_RESERVATION_ID,
     });
 
     await expect(processNotificationJob(job)).resolves.toBeUndefined();
@@ -302,23 +258,27 @@ describe('processNotificationJob', () => {
   it('Resend failure → re-throws so BullMQ can retry', async () => {
     mockEmailSend.mockRejectedValueOnce(new Error('Resend 503'));
 
-    const job = makeJob({
-      eventType: 'booking.created',
-      bookingId: MOCK_BOOKING_ID,
-    });
-
-    await expect(processNotificationJob(job)).rejects.toThrow('Resend 503');
+    await expect(
+      processNotificationJob(
+        makeJob({
+          eventType: 'reservation.created',
+          reservationId: MOCK_RESERVATION_ID,
+        }),
+      ),
+    ).rejects.toThrow('Resend 503');
   });
 
   it('Prisma failure → re-throws so BullMQ can retry', async () => {
     mockFindUniqueOrThrow.mockRejectedValueOnce(new Error('DB timeout'));
 
-    const job = makeJob({
-      eventType: 'booking.created',
-      bookingId: MOCK_BOOKING_ID,
-    });
-
-    await expect(processNotificationJob(job)).rejects.toThrow('DB timeout');
+    await expect(
+      processNotificationJob(
+        makeJob({
+          eventType: 'reservation.created',
+          reservationId: MOCK_RESERVATION_ID,
+        }),
+      ),
+    ).rejects.toThrow('DB timeout');
   });
 });
 

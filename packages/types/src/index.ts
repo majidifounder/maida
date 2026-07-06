@@ -12,7 +12,12 @@ export type SubscriptionStatus =
 
 export interface PlanLimits {
   restaurants: number;
-  bookingsPerMonth: number;
+  reservationsPerMonth: number;
+  tablesPerRestaurant: number;
+  combinationsPerRestaurant: number;
+  turnTimeRulesPerRestaurant: number;
+  flexibleSeating: boolean;
+  customReservations: boolean;
 }
 
 export interface Subscription {
@@ -36,21 +41,61 @@ export interface JWTPayload {
   exp: number;
 }
 
-export interface Booking {
+// ─── Reservation engine ───────────────────────────────────────────────────────
+
+export type SeatingMode = 'LOCKED' | 'FLEXIBLE';
+
+export type ReservationStatus =
+  | 'SCHEDULED'
+  | 'SEATED'
+  | 'COMPLETED'
+  | 'CANCELLED'
+  | 'NO_SHOW';
+
+export type ReservationType = 'STANDARD' | 'CUSTOM';
+
+export type ReservationSource = 'ONLINE' | 'WALK_IN' | 'STAFF';
+
+export interface Reservation {
   id: string;
   restaurantId: string;
-  dinerId: string;
-  slotId: string;
   partySize: number;
-  status: 'pending' | 'confirmed' | 'cancelled';
+  startsAt: string;   // ISO 8601
+  endsAt: string;     // ISO 8601
+  status: ReservationStatus;
+  reservationType: ReservationType;
+  source: ReservationSource;
+  customFeeSnapshot: string | null;
+  extraHourFeeSnapshot: string | null;
+  feeCurrency: string | null;
   createdAt: string;
 }
 
-export interface TimeSlot {
+export interface DiningTable {
   id: string;
-  startsAt: string;   // ISO 8601
-  capacity: number;
-  booked: number;
+  restaurantId: string;
+  name: string;
+  minPartySize: number;
+  maxPartySize: number;
+  isActive: boolean;
+}
+
+export interface TableCombination {
+  id: string;
+  restaurantId: string;
+  name: string;
+  minPartySize: number;
+  maxPartySize: number;
+  isActive: boolean;
+  tableIds: string[];
+}
+
+export interface TurnTimeRule {
+  id: string;
+  restaurantId: string;
+  minPartySize: number;
+  maxPartySize: number;
+  durationMins: number;
 }
 
 export interface Restaurant {

@@ -3,14 +3,12 @@ import type { FastifyInstance } from 'fastify';
 import { prisma } from '@restaurant/db';
 import { verifyAccessToken } from '../../lib/jwt.js';
 
-/** Returns a YYYY-MM-DD string N days from today (UTC) */
 export function futureDate(daysFromNow = 1): string {
   const d = new Date();
   d.setUTCDate(d.getUTCDate() + daysFromNow);
   return d.toISOString().slice(0, 10);
 }
 
-/** Returns a full ISO datetime string N days from today at the given UTC hour */
 export function futureDatetime(daysFromNow = 1, hourUtc = 12): string {
   const d = new Date();
   d.setUTCDate(d.getUTCDate() + daysFromNow);
@@ -24,10 +22,6 @@ export interface TestRestaurant {
   slug: string;
 }
 
-/**
- * Create a restaurant via the API as the given owner token.
- * Returns the created restaurant — throws if the request fails.
- */
 export async function createTestRestaurant(
   server: FastifyInstance,
   ownerToken: string,
@@ -62,57 +56,49 @@ export async function createTestRestaurant(
   return body.restaurant;
 }
 
-export interface TestSlot {
+export interface TestTable {
   id: string;
-  startsAt: string;
-  capacity: number;
+  name: string;
+  maxPartySize: number;
 }
 
-/**
- * Bulk-create slots for a restaurant on the given date (default: tomorrow).
- * Returns the array of created slots.
- */
-export async function createTestSlots(
+export async function createTestTables(
   server: FastifyInstance,
   restaurantId: string,
   ownerToken: string,
-  opts: { date?: string; count?: number; capacity?: number } = {},
-): Promise<TestSlot[]> {
-  const date = opts.date ?? futureDate(1);
-  const count = opts.count ?? 3;
-  const capacity = opts.capacity ?? 10;
-
-  const slots = Array.from({ length: count }, (_, i) => ({
-    startsAt: `${date}T${String(12 + i).padStart(2, '0')}:00:00.000Z`,
-    capacity,
-  }));
-
-  const res = await server.inject({
-    method: 'POST',
-    url: `/restaurants/${restaurantId}/slots`,
-    headers: { authorization: `Bearer ${ownerToken}` },
-    payload: { slots },
-  });
-
-  if (res.statusCode !== 201) {
-    throw new Error(`createTestSlots failed: ${res.statusCode} ${res.body}`);
+  tables: Array<{ name: string; minPartySize?: number; maxPartySize: number }>,
+): Promise<TestTable[]> {
+  const created: TestTable[] = [];
+  for (const t of tables) {
+    const res = await server.inject({
+      method: 'POST',
+      url: `/restaurants/${restaurantId}/tables`,
+      headers: { authorization: `Bearer ${ownerToken}` },
+      payload: {
+        name: t.name,
+        minPartySize: t.minPartySize ?? 1,
+        maxPartySize: t.maxPartySize,
+      },
+    });
+    if (res.statusCode !== 201) {
+      throw new Error(`createTestTables failed: ${res.statusCode} ${res.body}`);
+    }
+    const body = JSON.parse(res.body) as { table: TestTable };
+    created.push(body.table);
   }
-
-  const body = JSON.parse(res.body) as { slots: TestSlot[] };
-  return body.slots;
+  return created;
 }
 
-/**
- * Hard-delete restaurants and their slots by ID.
- * Safe to call even if some IDs were already soft-deleted.
- * Call this in afterAll alongside cleanupTestUsers.
- */
 export async function cleanupTestRestaurants(
   restaurantIds: string[],
 ): Promise<void> {
   if (restaurantIds.length === 0) return;
 
-  await prisma.timeSlot.deleteMany({
+  await prisma.reservation.deleteMany({
+    where: { restaurantId: { in: restaurantIds } },
+  });
+
+  await prisma.diningTable.deleteMany({
     where: { restaurantId: { in: restaurantIds } },
   });
 

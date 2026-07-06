@@ -4,16 +4,22 @@ import { notifyOnce } from '../lib/notify-once.js';
 
 const resend = new Resend(env.RESEND_API_KEY);
 
-export interface BookingEmailData {
+export interface ReservationEmailData {
   dinerEmail: string;
   ownerEmail: string;
   restaurantName: string;
-  slotStartsAt: string;
+  startsAt: string;
   partySize: number;
-  bookingId: string;
+  reservationId: string;
 }
 
-function fmtSlot(iso: string): string {
+/** @deprecated Use ReservationEmailData */
+export type BookingEmailData = ReservationEmailData & {
+  slotStartsAt?: string;
+  bookingId?: string;
+};
+
+function fmtTime(iso: string): string {
   return new Date(iso).toLocaleString('en-US', {
     weekday: 'long',
     year: 'numeric',
@@ -24,7 +30,7 @@ function fmtSlot(iso: string): string {
   });
 }
 
-function bookingRef(id: string): string {
+function reservationRef(id: string): string {
   return id.slice(0, 8).toUpperCase();
 }
 
@@ -35,123 +41,140 @@ async function sendEmail(
   if (error) throw new Error(error.message);
 }
 
-export async function sendBookingCreated(data: BookingEmailData): Promise<void> {
-  const slot = fmtSlot(data.slotStartsAt);
-  const ref = bookingRef(data.bookingId);
+export async function sendReservationCreated(
+  data: ReservationEmailData,
+): Promise<void> {
+  const time = fmtTime(data.startsAt);
+  const ref = reservationRef(data.reservationId);
 
-  await notifyOnce(`${data.bookingId}:created:diner`, () =>
+  await notifyOnce(`${data.reservationId}:created:diner`, () =>
     sendEmail({
       from: env.EMAIL_FROM,
       to: data.dinerEmail,
-      subject: `Booking received — ${data.restaurantName}`,
+      subject: `Reservation confirmed — ${data.restaurantName}`,
       html: `
-        <h2>Your booking request is received!</h2>
+        <h2>Your reservation is confirmed!</h2>
         <p><strong>Restaurant:</strong> ${data.restaurantName}</p>
-        <p><strong>Date &amp; time:</strong> ${slot}</p>
+        <p><strong>Date &amp; time:</strong> ${time}</p>
         <p><strong>Party size:</strong> ${data.partySize}</p>
-        <p><strong>Status:</strong> Pending owner confirmation</p>
         <p style="color:#6b7280;font-size:13px">Reference: ${ref}</p>
-        <p>We'll email you once the restaurant confirms your reservation.</p>
+        <p>We look forward to seeing you!</p>
       `,
     }),
   );
 
-  await notifyOnce(`${data.bookingId}:created:owner`, () =>
+  await notifyOnce(`${data.reservationId}:created:owner`, () =>
     sendEmail({
       from: env.EMAIL_FROM,
       to: data.ownerEmail,
-      subject: `New booking request — ${data.restaurantName}`,
+      subject: `New reservation — ${data.restaurantName}`,
       html: `
-        <h2>New booking request</h2>
-        <p><strong>Date &amp; time:</strong> ${slot}</p>
+        <h2>New reservation</h2>
+        <p><strong>Date &amp; time:</strong> ${time}</p>
         <p><strong>Party size:</strong> ${data.partySize}</p>
         <p style="color:#6b7280;font-size:13px">Reference: ${ref}</p>
-        <p>Log in to your dashboard to <strong>confirm</strong> or <strong>cancel</strong> this booking.</p>
+        <p>Log in to your dashboard to manage this reservation.</p>
       `,
     }),
   );
 }
 
-export async function sendBookingConfirmed(
-  data: BookingEmailData,
+export async function sendReservationSeated(
+  data: ReservationEmailData,
 ): Promise<void> {
-  const slot = fmtSlot(data.slotStartsAt);
+  const time = fmtTime(data.startsAt);
 
-  await notifyOnce(`${data.bookingId}:confirmed:diner`, () =>
+  await notifyOnce(`${data.reservationId}:seated:diner`, () =>
     sendEmail({
       from: env.EMAIL_FROM,
       to: data.dinerEmail,
-      subject: `Booking confirmed — ${data.restaurantName} ✓`,
+      subject: `You're seated — ${data.restaurantName}`,
       html: `
-        <h2>Your booking is confirmed!</h2>
-        <p>The restaurant has confirmed your reservation.</p>
-        <p><strong>Restaurant:</strong> ${data.restaurantName}</p>
-        <p><strong>Date &amp; time:</strong> ${slot}</p>
+        <h2>Welcome!</h2>
+        <p>Your party has been seated at ${data.restaurantName}.</p>
+        <p><strong>Reservation time:</strong> ${time}</p>
         <p><strong>Party size:</strong> ${data.partySize}</p>
-        <p>See you there!</p>
       `,
     }),
   );
 }
 
-export async function sendBookingCancelledByDiner(
-  data: BookingEmailData,
+export async function sendReservationCancelledByDiner(
+  data: ReservationEmailData,
 ): Promise<void> {
-  const slot = fmtSlot(data.slotStartsAt);
-  const ref = bookingRef(data.bookingId);
+  const time = fmtTime(data.startsAt);
+  const ref = reservationRef(data.reservationId);
 
-  await notifyOnce(`${data.bookingId}:cancelled-by-diner:diner`, () =>
+  await notifyOnce(`${data.reservationId}:cancelled-by-diner:diner`, () =>
     sendEmail({
       from: env.EMAIL_FROM,
       to: data.dinerEmail,
-      subject: `Booking cancelled — ${data.restaurantName}`,
+      subject: `Reservation cancelled — ${data.restaurantName}`,
       html: `
-        <h2>Booking cancelled</h2>
+        <h2>Reservation cancelled</h2>
         <p>Your cancellation has been processed.</p>
         <p><strong>Restaurant:</strong> ${data.restaurantName}</p>
-        <p><strong>Original time:</strong> ${slot}</p>
+        <p><strong>Original time:</strong> ${time}</p>
         <p style="color:#6b7280;font-size:13px">Reference: ${ref}</p>
-        <p>We hope to see you again soon.</p>
       `,
     }),
   );
 
-  await notifyOnce(`${data.bookingId}:cancelled-by-diner:owner`, () =>
+  await notifyOnce(`${data.reservationId}:cancelled-by-diner:owner`, () =>
     sendEmail({
       from: env.EMAIL_FROM,
       to: data.ownerEmail,
-      subject: `Booking cancelled by guest — ${data.restaurantName}`,
+      subject: `Reservation cancelled by guest — ${data.restaurantName}`,
       html: `
-        <h2>A guest has cancelled their booking</h2>
-        <p><strong>Original time:</strong> ${slot}</p>
+        <h2>A guest has cancelled their reservation</h2>
+        <p><strong>Original time:</strong> ${time}</p>
         <p><strong>Party size:</strong> ${data.partySize}</p>
         <p style="color:#6b7280;font-size:13px">Reference: ${ref}</p>
-        <p>The seat capacity has been automatically restored.</p>
+        <p>The table has been automatically freed.</p>
       `,
     }),
   );
 }
 
-export async function sendBookingCancelledByOwner(
-  data: BookingEmailData,
+export async function sendReservationCancelledByOwner(
+  data: ReservationEmailData,
 ): Promise<void> {
-  const slot = fmtSlot(data.slotStartsAt);
+  const time = fmtTime(data.startsAt);
 
-  await notifyOnce(`${data.bookingId}:cancelled-by-owner:diner`, () =>
+  await notifyOnce(`${data.reservationId}:cancelled-by-owner:diner`, () =>
     sendEmail({
       from: env.EMAIL_FROM,
       to: data.dinerEmail,
-      subject: `Your booking at ${data.restaurantName} has been cancelled`,
+      subject: `Your reservation at ${data.restaurantName} has been cancelled`,
       html: `
-        <h2>Booking cancelled by restaurant</h2>
+        <h2>Reservation cancelled by restaurant</h2>
         <p>We're sorry — the restaurant has had to cancel your reservation.</p>
         <p><strong>Restaurant:</strong> ${data.restaurantName}</p>
-        <p><strong>Original time:</strong> ${slot}</p>
-        <p>Please contact the restaurant directly or make a new reservation.</p>
+        <p><strong>Original time:</strong> ${time}</p>
       `,
     }),
   );
 }
+
+/** @deprecated Use sendReservationCreated */
+export async function sendBookingCreated(
+  data: BookingEmailData,
+): Promise<void> {
+  return sendReservationCreated({
+    ...data,
+    startsAt: data.startsAt ?? data.slotStartsAt!,
+    reservationId: data.reservationId ?? data.bookingId!,
+  });
+}
+
+/** @deprecated Use sendReservationSeated */
+export const sendBookingConfirmed = sendReservationSeated;
+
+/** @deprecated Use sendReservationCancelledByDiner */
+export const sendBookingCancelledByDiner = sendReservationCancelledByDiner;
+
+/** @deprecated Use sendReservationCancelledByOwner */
+export const sendBookingCancelledByOwner = sendReservationCancelledByOwner;
 
 export async function sendPasswordReset(opts: {
   toEmail: string;

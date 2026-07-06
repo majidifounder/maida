@@ -18,13 +18,22 @@
     "db:studio":  "pnpm --filter @restaurant/db db:studio",
     "db:reset":   "pnpm --filter @restaurant/db db:reset",
     "load-test":  "tsx scripts/load-test.ts",
-    "check-env":  "tsx scripts/check-env.ts"
+    "e2e":        "tsx scripts/e2e/run.ts",
+    "check-env":  "tsx scripts/check-env.ts",
+    "db:export":    "tsx scripts/export-backup.ts",
+    "db:restore":   "tsx scripts/restore-backup.ts",
+    "db:dev-reset": "tsx scripts/dev-data-reset.ts"
   },
   "devDependencies": {
     "@restaurant/db":                "workspace:*",
+    "@types/ws":                     "^8.18.1",
+    "bcryptjs":                      "^2.4.3",
     "dotenv":                        "^17.4.2",
+    "jsonwebtoken":                  "^9.0.3",
+    "otplib":                        "^12.0.1",
     "tsx":                           "^4.22.4",
     "undici":                        "^7.16.0",
+    "ws":                            "^8.18.3",
     "turbo":                           "latest",
     "typescript":                      "^5.4.0",
     "eslint":                          "^8.57.0",

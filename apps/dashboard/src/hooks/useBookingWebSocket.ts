@@ -2,9 +2,11 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 
 export interface BookingWsEvent {
   eventType: string;
+  reservationId?: string;
   bookingId?: string;
   restaurantId: string;
   partySize?: number;
+  startsAt?: string;
   cancelledBy?: string;
 }
 

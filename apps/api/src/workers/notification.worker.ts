@@ -3,23 +3,25 @@ import { prisma } from '@restaurant/db';
 import { env } from '../env.js';
 import {
   getBullmqConnection,
-  type BookingEventPayload,
+  type ReservationEventPayload,
 } from '../lib/queue.js';
 import {
-  sendBookingCreated,
-  sendBookingConfirmed,
-  sendBookingCancelledByDiner,
-  sendBookingCancelledByOwner,
-  type BookingEmailData,
+  sendReservationCreated,
+  sendReservationSeated,
+  sendReservationCancelledByDiner,
+  sendReservationCancelledByOwner,
+  type ReservationEmailData,
 } from '../services/email.service.js';
 
-async function fetchEmailData(bookingId: string): Promise<BookingEmailData> {
-  const booking = await prisma.booking.findUniqueOrThrow({
-    where: { id: bookingId },
+async function fetchEmailData(
+  reservationId: string,
+): Promise<ReservationEmailData> {
+  const reservation = await prisma.reservation.findUniqueOrThrow({
+    where: { id: reservationId },
     select: {
       id: true,
       partySize: true,
-      slot: { select: { startsAt: true } },
+      startsAt: true,
       diner: { select: { email: true } },
       restaurant: {
         select: {
@@ -31,52 +33,49 @@ async function fetchEmailData(bookingId: string): Promise<BookingEmailData> {
   });
 
   return {
-    bookingId: booking.id,
-    partySize: booking.partySize,
-    slotStartsAt: booking.slot.startsAt.toISOString(),
-    dinerEmail: booking.diner.email,
-    ownerEmail: booking.restaurant.owner.email,
-    restaurantName: booking.restaurant.name,
+    reservationId: reservation.id,
+    partySize: reservation.partySize,
+    startsAt: reservation.startsAt.toISOString(),
+    dinerEmail: reservation.diner?.email ?? 'guest@walk-in.local',
+    ownerEmail: reservation.restaurant.owner.email,
+    restaurantName: reservation.restaurant.name,
   };
 }
 
 async function processNotificationJob(
-  job: Job<BookingEventPayload>,
+  job: Job<ReservationEventPayload>,
 ): Promise<void> {
-  const { eventType, bookingId, cancelledBy } = job.data;
-  const data = await fetchEmailData(bookingId);
+  const { eventType, reservationId, cancelledBy } = job.data;
+  const data = await fetchEmailData(reservationId);
 
   switch (eventType) {
-    case 'booking.created':
-      await sendBookingCreated(data);
+    case 'reservation.created':
+      await sendReservationCreated(data);
       break;
 
-    case 'booking.confirmed':
-      await sendBookingConfirmed(data);
+    case 'reservation.seated':
+      await sendReservationSeated(data);
       break;
 
-    case 'booking.cancelled':
-      if (cancelledBy === 'owner') {
-        await sendBookingCancelledByOwner(data);
+    case 'reservation.cancelled':
+      if (cancelledBy === 'owner' || cancelledBy === 'staff') {
+        await sendReservationCancelledByOwner(data);
       } else {
-        await sendBookingCancelledByDiner(data);
+        await sendReservationCancelledByDiner(data);
       }
       break;
 
-    default: {
-      const unknown = eventType as string;
+    default:
       console.warn(
-        `[NotificationWorker] Unknown event type: "${unknown}" on job ${job.id} — skipping`,
+        `[NotificationWorker] No email handler for "${eventType}" on job ${job.id}`,
       );
-    }
   }
 }
 
-// Export for unit testing only — do not call from production code.
 export { processNotificationJob };
 
 export function startNotificationWorker(): () => Promise<void> {
-  const worker = new Worker<BookingEventPayload>(
+  const worker = new Worker<ReservationEventPayload>(
     env.QUEUE_NAME,
     processNotificationJob,
     {

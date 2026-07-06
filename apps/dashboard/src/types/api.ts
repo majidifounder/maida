@@ -1,3 +1,5 @@
+import type { Plan, SeatingMode } from '@restaurant/types';
+
 export const CUISINE_TYPES = [
   'ITALIAN',
   'FRENCH',
@@ -12,7 +14,8 @@ export const CUISINE_TYPES = [
 
 export type CuisineType = (typeof CUISINE_TYPES)[number];
 
-export interface PublicRestaurant {
+/** Owner-facing restaurant record (GET /restaurants/:id/config or create response). */
+export interface OwnerRestaurant {
   id: string;
   name: string;
   slug: string;
@@ -21,32 +24,66 @@ export interface PublicRestaurant {
   address: string;
   city: string;
   imageUrl: string | null;
+  isActive: boolean;
   createdAt: string;
+  updatedAt: string;
+  timezone: string;
+  seatingMode: SeatingMode;
+  defaultDurationMins: number;
+  openMinutes: number;
+  closeMinutes: number;
+  customFee: string | null;
+  extraHourFee: string | null;
+  feeCurrency: string;
 }
 
-export interface SlotRow {
+export interface DiningTableRow {
   id: string;
-  startsAt: string;
-  capacity: number;
-  available: number;
+  name: string;
+  minPartySize: number;
+  maxPartySize: number;
+  isActive: boolean;
 }
 
-export interface OwnerBooking {
+export interface TableCombinationRow {
   id: string;
   restaurantId: string;
-  dinerId: string;
-  slotId: string;
-  partySize: number;
-  status: string;
+  name: string;
+  minPartySize: number;
+  maxPartySize: number;
+  isActive: boolean;
+  tableIds: string[];
   createdAt: string;
-  cancelledAt: string | null;
-  slot: { startsAt: string; capacity: number };
-  diner: { email: string };
+  updatedAt: string;
 }
 
-export interface BookingsResponse {
-  bookings: OwnerBooking[];
+export interface TurnTimeRuleRow {
+  id: string;
+  restaurantId: string;
+  minPartySize: number;
+  maxPartySize: number;
+  durationMins: number;
+}
+
+export interface OwnerReservation {
+  id: string;
+  restaurantId: string;
+  dinerId: string | null;
+  partySize: number;
+  status: string;
+  startsAt: string;
+  endsAt: string;
+  createdAt: string;
+  cancelledAt: string | null;
+  guestName: string | null;
+  diner: { email: string } | null;
+}
+
+export interface ReservationsResponse {
+  reservations: OwnerReservation[];
   total: number;
   page: number;
   limit: number;
 }
+
+export type { Plan, SeatingMode };

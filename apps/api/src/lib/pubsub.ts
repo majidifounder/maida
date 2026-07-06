@@ -26,8 +26,13 @@ async function getSubscriber(): Promise<Redis> {
   return subscriber;
 }
 
+export function reservationChannel(restaurantId: string): string {
+  return `reservation:restaurant:${restaurantId}`;
+}
+
+/** @deprecated alias for reservationChannel */
 export function bookingChannel(restaurantId: string): string {
-  return `booking:restaurant:${restaurantId}`;
+  return reservationChannel(restaurantId);
 }
 
 export async function publishToRestaurantChannel(
@@ -36,7 +41,7 @@ export async function publishToRestaurantChannel(
 ): Promise<void> {
   try {
     const redis = getRedisClient();
-    await redis.publish(bookingChannel(restaurantId), JSON.stringify(payload));
+    await redis.publish(reservationChannel(restaurantId), JSON.stringify(payload));
   } catch (err) {
     console.warn('[PubSub] publish failed (non-fatal):', (err as Error).message);
   }
@@ -46,7 +51,7 @@ export async function subscribeToRestaurantChannel(
   restaurantId: string,
   handler: (payload: string) => void,
 ): Promise<() => Promise<void>> {
-  const channel = bookingChannel(restaurantId);
+  const channel = reservationChannel(restaurantId);
 
   if (!listeners.has(channel)) {
     listeners.set(channel, new Set());

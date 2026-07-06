@@ -188,8 +188,8 @@ export async function getStats() {
     totalOwners,
     totalDiners,
     totalRestaurants,
-    totalBookings,
-    bookingsThisMonth,
+    totalReservations,
+    reservationsThisMonth,
     starterCount,
     proCount,
     premiumCount,
@@ -198,8 +198,8 @@ export async function getStats() {
     prisma.user.count({ where: { role: 'OWNER', deletedAt: null } }),
     prisma.user.count({ where: { role: 'DINER', deletedAt: null } }),
     prisma.restaurant.count({ where: { deletedAt: null } }),
-    prisma.booking.count(),
-    prisma.booking.count({ where: { createdAt: { gte: monthStart } } }),
+    prisma.reservation.count(),
+    prisma.reservation.count({ where: { createdAt: { gte: monthStart } } }),
     prisma.subscription.count({ where: { plan: 'STARTER' } }),
     prisma.subscription.count({ where: { plan: 'PRO' } }),
     prisma.subscription.count({ where: { plan: 'PREMIUM' } }),
@@ -212,7 +212,7 @@ export async function getStats() {
       owners: totalOwners,
     },
     restaurants: { total: totalRestaurants },
-    bookings: { total: totalBookings, thisMonth: bookingsThisMonth },
+    reservations: { total: totalReservations, thisMonth: reservationsThisMonth },
     subscriptions: {
       starter: starterCount,
       pro: proCount,
@@ -368,7 +368,7 @@ export async function listRestaurants(input: AdminPaginationInput) {
         deletedAt: true,
         createdAt: true,
         owner: { select: { id: true, email: true } },
-        _count: { select: { bookings: true, slots: true } },
+        _count: { select: { reservations: true, tables: true } },
       },
       orderBy: { createdAt: 'desc' },
       skip: (input.page - 1) * input.limit,
@@ -380,27 +380,31 @@ export async function listRestaurants(input: AdminPaginationInput) {
   return { restaurants, total, page: input.page, limit: input.limit };
 }
 
-export async function listBookings(input: AdminPaginationInput) {
-  const [bookings, total] = await prisma.$transaction([
-    prisma.booking.findMany({
+export async function listReservations(input: AdminPaginationInput) {
+  const [reservations, total] = await prisma.$transaction([
+    prisma.reservation.findMany({
       select: {
         id: true,
         partySize: true,
         status: true,
+        startsAt: true,
+        endsAt: true,
         createdAt: true,
         restaurant: { select: { id: true, name: true } },
         diner: { select: { id: true, email: true } },
-        slot: { select: { startsAt: true } },
       },
       orderBy: { createdAt: 'desc' },
       skip: (input.page - 1) * input.limit,
       take: input.limit,
     }),
-    prisma.booking.count(),
+    prisma.reservation.count(),
   ]);
 
-  return { bookings, total, page: input.page, limit: input.limit };
+  return { reservations, total, page: input.page, limit: input.limit };
 }
+
+/** @deprecated Use listReservations */
+export const listBookings = listReservations;
 
 export async function listAuditLogs(input: AdminPaginationInput) {
   const [logs, total] = await prisma.$transaction([

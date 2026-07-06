@@ -38,8 +38,23 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   });
 
   if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new ApiError(res.status, body.error ?? res.statusText);
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      details?: {
+        fieldErrors?: Record<string, string[]>;
+        formErrors?: string[];
+      };
+    };
+    let message = body.error ?? res.statusText;
+    const fieldError = Object.entries(body.details?.fieldErrors ?? {}).find(
+      ([, messages]) => messages?.length,
+    );
+    if (fieldError) {
+      message = fieldError[1]![0] ?? message;
+    } else if (body.details?.formErrors?.[0]) {
+      message = body.details.formErrors[0];
+    }
+    throw new ApiError(res.status, message);
   }
 
   if (res.status === 204) return undefined as T;

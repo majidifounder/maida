@@ -46,7 +46,7 @@ export function isTotpVerify(r: LoginResponse): r is LoginTotpVerifyResponse {
 export interface AdminStats {
   users: { total: number; diners: number; owners: number };
   restaurants: { total: number };
-  bookings: { total: number; thisMonth: number };
+  reservations: { total: number; thisMonth: number };
   subscriptions: { starter: number; pro: number; premium: number };
 }
 
@@ -79,18 +79,22 @@ export interface AdminRestaurant {
   deletedAt: string | null;
   createdAt: string;
   owner: { id: string; email: string };
-  _count: { bookings: number; slots: number };
+  _count: { reservations: number; tables: number };
 }
 
-export interface AdminBooking {
+export interface AdminReservation {
   id: string;
   partySize: number;
-  status: 'PENDING' | 'CONFIRMED' | 'CANCELLED' | 'NO_SHOW';
+  status: string;
+  startsAt: string;
+  endsAt: string;
   createdAt: string;
   restaurant: { id: string; name: string };
-  diner: { id: string; email: string };
-  slot: { startsAt: string };
+  diner: { id: string; email: string } | null;
 }
+
+/** @deprecated Use AdminReservation */
+export type AdminBooking = AdminReservation & { slot?: { startsAt: string } };
 
 export interface AdminSubscription {
   id: string;
@@ -129,12 +133,17 @@ export interface PaginatedRestaurants {
   limit: number;
 }
 
-export interface PaginatedBookings {
-  bookings: AdminBooking[];
+export interface PaginatedReservations {
+  reservations: AdminReservation[];
   total: number;
   page: number;
   limit: number;
 }
+
+/** @deprecated Use PaginatedReservations */
+export type PaginatedBookings = PaginatedReservations & {
+  bookings?: AdminReservation[];
+};
 
 export interface PaginatedSubscriptions {
   subscriptions: AdminSubscription[];

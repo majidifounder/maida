@@ -14,10 +14,10 @@ export async function cleanupTestUsers(userIds: string[]): Promise<void> {
   const restaurantIds = ownedRestaurants.map((r) => r.id);
 
   if (restaurantIds.length > 0) {
-    await prisma.booking.deleteMany({
+    await prisma.reservation.deleteMany({
       where: { restaurantId: { in: restaurantIds } },
     });
-    await prisma.timeSlot.deleteMany({
+    await prisma.diningTable.deleteMany({
       where: { restaurantId: { in: restaurantIds } },
     });
     await prisma.restaurant.deleteMany({

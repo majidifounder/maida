@@ -1,28 +1,34 @@
 import type { Restaurant } from '@restaurant/types';
 
-/** Public restaurant fields returned by GET /restaurants and GET /restaurants/:id */
 export type PublicRestaurant = Restaurant & {
   city: string;
   slug: string;
   imageUrl: string | null;
+  seatingMode: 'LOCKED' | 'FLEXIBLE';
+  timezone: string;
+  defaultDurationMins: number;
+  openMinutes: number;
+  closeMinutes: number;
+  customFee: string | null;
+  extraHourFee: string | null;
+  feeCurrency: string;
 };
 
-export interface SlotWithAvailability {
-  id: string;
+export interface AvailabilityTime {
   startsAt: string;
-  capacity: number;
-  available: number;
+  endsAt: string;
+  durationMins: number;
 }
 
-export interface BookingWithDetails {
+export interface ReservationWithDetails {
   id: string;
   restaurantId: string;
-  slotId: string;
   partySize: number;
   status: string;
+  startsAt: string;
+  endsAt: string;
   createdAt: string;
   cancelledAt: string | null;
-  slot: { startsAt: string; capacity: number };
   restaurant: { name: string; city: string; cuisine: string };
 }
 
@@ -33,8 +39,8 @@ export interface RestaurantsListResponse {
   limit: number;
 }
 
-export interface BookingsListResponse {
-  bookings: BookingWithDetails[];
+export interface ReservationsListResponse {
+  reservations: ReservationWithDetails[];
   total: number;
   page: number;
   limit: number;

@@ -33,7 +33,7 @@ export function RestaurantsPage() {
     },
     {
       header: 'Bookings',
-      render: (r: AdminRestaurant) => r._count.bookings,
+      render: (r: AdminRestaurant) => r._count.reservations,
     },
     {
       header: 'Status',
