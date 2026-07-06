@@ -8,7 +8,7 @@ datasource db {
   url        = env("DATABASE_URL")
   // directUrl used for migrations only (bypasses PgBouncer pooling)
   directUrl  = env("DIRECT_DATABASE_URL")
-  extensions = [pgcrypto, pg_trgm, citext]
+  extensions = [pgcrypto, pg_trgm, citext, btree_gist]
 }
 
 // ─── ENUMS ────────────────────────────────────────────────────────────────────
@@ -17,13 +17,6 @@ enum Role {
   DINER
   OWNER
   ADMIN
-}
-
-enum BookingStatus {
-  PENDING
-  CONFIRMED
-  CANCELLED
-  NO_SHOW
 }
 
 enum CuisineType {
@@ -54,6 +47,37 @@ enum SubscriptionStatus {
   EXPIRED
 }
 
+// LOCKED  — furniture is fixed; a table is fully occupied by its reservation.
+// FLEXIBLE — owner-predefined combinations of tables are additionally bookable.
+enum SeatingMode {
+  LOCKED
+  FLEXIBLE
+}
+
+enum ReservationStatus {
+  SCHEDULED
+  SEATED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+// STANDARD — duration derived from the restaurant's turn-time configuration.
+// CUSTOM   — diner or staff explicitly chose the duration (plan-gated, may carry fees).
+enum ReservationType {
+  STANDARD
+  CUSTOM
+}
+
+// ONLINE  — created by a diner through the diner app.
+// WALK_IN — created by staff for a party physically present (seated immediately).
+// STAFF   — created by staff on behalf of a guest for a future time (incl. overrides).
+enum ReservationSource {
+  ONLINE
+  WALK_IN
+  STAFF
+}
+
 // ─── USER ─────────────────────────────────────────────────────────────────────
 
 model User {
@@ -67,7 +91,7 @@ model User {
   totpSecret String?                      // null until admin completes TOTP setup
 
   // Relations
-  bookings     Booking[]
+  reservations Reservation[]
   restaurants  Restaurant[]
   sessions     RefreshToken[]
   subscription Subscription?
@@ -110,14 +134,27 @@ model Restaurant {
   phone       String?     @db.VarChar(20)
   imageUrl    String?
   isActive    Boolean     @default(true)             // owner can deactivate without deleting
-  maxCapacity Int                                    // max party size per booking
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
   deletedAt   DateTime?
 
+  // ── Reservation engine configuration ──────────────────────────────────────
+  timezone             String      @default("UTC") @db.VarChar(64) // IANA, e.g. America/New_York
+  seatingMode          SeatingMode @default(LOCKED)
+  defaultDurationMins  Int         @default(90)      // fallback turn time for standard reservations
+  openMinutes          Int         @default(660)     // service window start, minutes from local midnight
+  closeMinutes         Int         @default(1380)    // service window end, minutes from local midnight
+  // Informational fees — displayed to the diner, charged AT the restaurant.
+  // Maida never collects, processes, holds, or disburses this money.
+  customFee    Decimal? @db.Decimal(10, 2)           // flat fee for a custom-duration reservation
+  extraHourFee Decimal? @db.Decimal(10, 2)           // rate per additional hour beyond the standard turn time
+  feeCurrency  String   @default("USD") @db.VarChar(3)
+
   // Relations
-  slots    TimeSlot[]
-  bookings Booking[]
+  tables        DiningTable[]
+  combinations  TableCombination[]
+  turnTimeRules TurnTimeRule[]
+  reservations  Reservation[]
 
   @@index([ownerId])
   @@index([isActive])
@@ -127,53 +164,150 @@ model Restaurant {
   @@map("restaurants")
 }
 
-// ─── TIME SLOT ────────────────────────────────────────────────────────────────
+// ─── DINING TABLE (atomic physical unit) ──────────────────────────────────────
+// The discrete bookable resource. Availability is computed by real interval
+// overlap against these units — never by pooled seat/table counters.
 
-model TimeSlot {
+model DiningTable {
   id           String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   restaurantId String     @db.Uuid
   restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
-  startsAt     DateTime                            // full datetime, not just time — timezone aware
-  durationMins Int        @default(90)            // slot duration in minutes
-  capacity     Int                                // max bookable seats in this slot
-  booked       Int        @default(0)             // current booked seats — updated atomically
-  isActive     Boolean    @default(true)          // owner can disable a slot without deleting
+  name         String     @db.VarChar(60)     // e.g. "Table 5", "Booth A", "Patio 2"
+  minPartySize Int        @default(1)         // owner-configured smallest party this unit serves
+  maxPartySize Int                            // owner-configured largest party this unit serves
+  isActive     Boolean    @default(true)
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
-  // Relations
-  bookings Booking[]
+  combinationMembers TableCombinationMember[]
+  reservationTables  ReservationTable[]
 
-  // Unique: one slot definition per restaurant per start time
-  @@unique([restaurantId, startsAt])
-  @@index([restaurantId, startsAt, isActive])    // primary availability query
-  @@index([startsAt])                            // for time-range queries across restaurants
-  @@map("time_slots")
+  @@unique([restaurantId, name])
+  @@index([restaurantId, isActive])
+  @@map("dining_tables")
 }
 
-// ─── BOOKING ──────────────────────────────────────────────────────────────────
+// ─── TABLE COMBINATION (owner-predefined merge, FLEXIBLE mode only) ───────────
+// A bookable unit in its own right. Reserving it locks every member table for
+// the reservation interval. Combinations are pre-defined by the owner — never
+// computed dynamically at booking time.
 
-model Booking {
-  id           String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  restaurantId String        @db.Uuid
-  restaurant   Restaurant    @relation(fields: [restaurantId], references: [id], onDelete: Restrict)
-  dinerId      String        @db.Uuid
-  diner        User          @relation(fields: [dinerId], references: [id], onDelete: Restrict)
-  slotId       String        @db.Uuid
-  slot         TimeSlot      @relation(fields: [slotId], references: [id], onDelete: Restrict)
-  partySize    Int
-  status       BookingStatus @default(PENDING)
-  notes        String?       @db.VarChar(500)   // special requests from diner
-  cancelledAt  DateTime?
-  cancelReason String?       @db.VarChar(300)
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+model TableCombination {
+  id           String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  restaurantId String     @db.Uuid
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  name         String     @db.VarChar(60)     // e.g. "Tables 4+5 (window row)"
+  minPartySize Int        @default(1)
+  maxPartySize Int
+  isActive     Boolean    @default(true)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
 
-  @@index([dinerId, status])                    // diner booking history
-  @@index([restaurantId, status])               // owner dashboard query
-  @@index([slotId])                             // conflict detection query
-  @@index([restaurantId, createdAt(sort: Desc)]) // owner dashboard sorted list
-  @@map("bookings")
+  members TableCombinationMember[]
+
+  @@unique([restaurantId, name])
+  @@index([restaurantId, isActive])
+  @@map("table_combinations")
+}
+
+model TableCombinationMember {
+  id            String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  combinationId String           @db.Uuid
+  combination   TableCombination @relation(fields: [combinationId], references: [id], onDelete: Cascade)
+  tableId       String           @db.Uuid
+  table         DiningTable      @relation(fields: [tableId], references: [id], onDelete: Cascade)
+
+  @@unique([combinationId, tableId])
+  @@index([tableId])
+  @@map("table_combination_members")
+}
+
+// ─── TURN TIME RULE (default duration by party size band) ─────────────────────
+// Standard reservations derive their end time from the first matching rule;
+// the restaurant's defaultDurationMins is the fallback.
+
+model TurnTimeRule {
+  id           String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  restaurantId String     @db.Uuid
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  minPartySize Int
+  maxPartySize Int
+  durationMins Int
+  createdAt    DateTime   @default(now())
+
+  @@index([restaurantId])
+  @@map("turn_time_rules")
+}
+
+// ─── RESERVATION (time-range occupation of physical resources) ────────────────
+
+model Reservation {
+  id           String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  restaurantId String            @db.Uuid
+  restaurant   Restaurant        @relation(fields: [restaurantId], references: [id], onDelete: Restrict)
+  dinerId      String?           @db.Uuid      // null for staff-created walk-ins without an account
+  diner        User?             @relation(fields: [dinerId], references: [id], onDelete: Restrict)
+
+  partySize Int
+  startsAt  DateTime @db.Timestamptz(3)
+  endsAt    DateTime @db.Timestamptz(3)
+
+  status          ReservationStatus @default(SCHEDULED)
+  reservationType ReservationType   @default(STANDARD)
+  source          ReservationSource @default(ONLINE)
+
+  guestName String? @db.VarChar(120)           // walk-in / staff-created party name
+  notes     String? @db.VarChar(500)
+
+  // Informational fee snapshot taken at booking time (see Restaurant fee fields).
+  customFeeSnapshot    Decimal? @db.Decimal(10, 2)
+  extraHourFeeSnapshot Decimal? @db.Decimal(10, 2)
+  feeCurrency          String?  @db.VarChar(3)
+
+  isOverride Boolean @default(false)           // created via the explicit staff override path
+
+  seatedAt     DateTime? @db.Timestamptz(3)
+  completedAt  DateTime? @db.Timestamptz(3)
+  cancelledAt  DateTime? @db.Timestamptz(3)
+  cancelReason String?   @db.VarChar(300)
+  noShowAt     DateTime? @db.Timestamptz(3)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tables ReservationTable[]
+
+  @@index([dinerId, status])
+  @@index([restaurantId, startsAt])
+  @@index([restaurantId, status])
+  @@index([restaurantId, createdAt(sort: Desc)])
+  @@map("reservations")
+}
+
+// ─── RESERVATION TABLE HOLD ───────────────────────────────────────────────────
+// One row per atomic table a reservation occupies, carrying the occupied
+// interval. Protected by a PostgreSQL GiST EXCLUSION constraint (added in raw
+// migration SQL — Prisma cannot express it):
+//
+//   EXCLUDE USING gist ("tableId" WITH =, tstzrange("startsAt","endsAt",'[)') WITH &&)
+//   WHERE ("releasedAt" IS NULL)
+//
+// This makes overlapping holds on the same physical table IMPOSSIBLE BY
+// CONSTRUCTION at the database layer, regardless of code path or concurrency.
+
+model ReservationTable {
+  id            String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  reservationId String      @db.Uuid
+  reservation   Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+  tableId       String      @db.Uuid
+  table         DiningTable @relation(fields: [tableId], references: [id], onDelete: Restrict)
+  startsAt      DateTime  @db.Timestamptz(3)    // kept in lockstep with the parent reservation
+  endsAt        DateTime  @db.Timestamptz(3)
+  releasedAt    DateTime? @db.Timestamptz(3)     // set on cancel/no-show — frees the interval
+
+  @@unique([reservationId, tableId])
+  @@index([tableId, startsAt])
+  @@map("reservation_tables")
 }
 
 // ─── AUDIT LOG ────────────────────────────────────────────────────────────────
@@ -183,8 +317,8 @@ model AuditLog {
   id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   actorId    String?  @db.Uuid           // null for system events or unauthenticated actions
   actorRole  Role?
-  action     String   @db.VarChar(100)   // e.g. "booking.created", "auth.login.failed"
-  entityType String   @db.VarChar(50)    // e.g. "booking", "user", "restaurant"
+  action     String   @db.VarChar(100)   // e.g. "reservation.created", "auth.login.failed"
+  entityType String   @db.VarChar(50)    // e.g. "reservation", "user", "restaurant"
   entityId   String?  @db.Uuid
   metadata   Json?                        // any extra context (IP, user agent, diff)
   ipAddress  String?  @db.VarChar(45)    // IPv6-safe

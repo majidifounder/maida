@@ -61,10 +61,10 @@ export function DashboardPage() {
           color="green"
         />
         <StatCard
-          label="Total Bookings"
-          value={data?.bookings.total ?? 0}
+          label="Total Reservations"
+          value={data?.reservations.total ?? 0}
           color="amber"
-          sub={`${data?.bookings.thisMonth ?? 0} this month`}
+          sub={`${data?.reservations.thisMonth ?? 0} this month`}
         />
         <StatCard
           label="Paid Plans"

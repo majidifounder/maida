@@ -5,12 +5,11 @@ import { cleanupTestUsers } from './helpers/db.js';
 import { loginUser } from './helpers/auth.js';
 import {
   futureDate,
-  futureDatetime,
   createTestRestaurant,
-  createTestSlots,
+  createTestTables,
   cleanupTestRestaurants,
   type TestRestaurant,
-  type TestSlot,
+  type TestTable,
 } from './helpers/restaurant.js';
 
 const createdUserIds: string[] = [];
@@ -210,11 +209,10 @@ describe('GET /restaurants (public search)', () => {
     searchRestaurantId = r.id;
     createdRestaurantIds.push(searchRestaurantId);
 
-    await createTestSlots(server, searchRestaurantId, ownerToken, {
-      date: futureDate(5),
-      count: 2,
-      capacity: 8,
-    });
+    await createTestTables(server, searchRestaurantId, ownerToken, [
+      { name: 'Search Table 1', maxPartySize: 8 },
+      { name: 'Search Table 2', maxPartySize: 8 },
+    ]);
   });
 
   it('200 — returns paginated result with total', async () => {
@@ -273,7 +271,7 @@ describe('GET /restaurants (public search)', () => {
     expect(body.restaurants.some((r) => r.id === searchRestaurantId)).toBe(true);
   });
 
-  it('200 — date + partySize availability filter finds restaurant with slots', async () => {
+  it('200 — date + partySize availability filter finds restaurant with tables', async () => {
     const res = await server.inject({
       method: 'GET',
       url: `/restaurants?date=${futureDate(5)}&partySize=4&city=${encodeURIComponent(searchCity)}`,
@@ -283,7 +281,7 @@ describe('GET /restaurants (public search)', () => {
     expect(body.restaurants.some((r) => r.id === searchRestaurantId)).toBe(true);
   });
 
-  it('200 — partySize larger than any slot capacity returns 0 for that city', async () => {
+  it('200 — partySize larger than any table capacity returns 0 for that city', async () => {
     const res = await server.inject({
       method: 'GET',
       url: `/restaurants?date=${futureDate(5)}&partySize=999&city=${encodeURIComponent(searchCity)}`,
@@ -293,10 +291,17 @@ describe('GET /restaurants (public search)', () => {
     expect(body.total).toBe(0);
   });
 
-  it('200 — far-future date with no slots returns 0', async () => {
+  it('200 — restaurant with no tables returns 0 for availability filter', async () => {
+    const noTableCity = `NoTableCity-${Math.random().toString(36).slice(2, 8)}`;
+    const r = await createTestRestaurant(server, ownerToken, {
+      name: 'No Tables Place',
+      city: noTableCity,
+    });
+    createdRestaurantIds.push(r.id);
+
     const res = await server.inject({
       method: 'GET',
-      url: `/restaurants?date=2099-01-01&partySize=2&city=${encodeURIComponent(searchCity)}`,
+      url: `/restaurants?date=${futureDate(5)}&partySize=2&city=${encodeURIComponent(noTableCity)}`,
     });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body) as { total: number };
@@ -483,7 +488,7 @@ describe('DELETE /restaurants/:id', () => {
   });
 });
 
-describe('POST /restaurants/:id/slots', () => {
+describe('POST /restaurants/:id/tables', () => {
   let restaurantId: string;
 
   beforeAll(async () => {
@@ -492,177 +497,64 @@ describe('POST /restaurants/:id/slots', () => {
     createdRestaurantIds.push(restaurantId);
   });
 
-  it('201 — bulk creates slots; returns correct count and shape', async () => {
-    const date = futureDate(10);
+  it('201 — creates a dining table', async () => {
     const res = await server.inject({
       method: 'POST',
-      url: `/restaurants/${restaurantId}/slots`,
+      url: `/restaurants/${restaurantId}/tables`,
       headers: { authorization: `Bearer ${ownerToken}` },
-      payload: {
-        slots: [
-          { startsAt: `${date}T12:00:00.000Z`, capacity: 10 },
-          { startsAt: `${date}T14:00:00.000Z`, capacity: 6 },
-        ],
-      },
+      payload: { name: 'Table A', minPartySize: 1, maxPartySize: 4 },
     });
 
     expect(res.statusCode).toBe(201);
-    const body = JSON.parse(res.body) as { slots: TestSlot[] };
-    expect(body.slots).toHaveLength(2);
-    expect(body.slots[0]!.capacity).toBe(10);
-    expect(body.slots[0]!.id).toBeDefined();
+    const body = JSON.parse(res.body) as { table: TestTable };
+    expect(body.table.name).toBe('Table A');
+    expect(body.table.maxPartySize).toBe(4);
   });
 
-  it('403 — cross-owner slot creation is rejected', async () => {
+  it('404 — cross-owner table creation is rejected (IDOR-safe)', async () => {
     const res = await server.inject({
       method: 'POST',
-      url: `/restaurants/${restaurantId}/slots`,
+      url: `/restaurants/${restaurantId}/tables`,
       headers: { authorization: `Bearer ${owner2Token}` },
-      payload: { slots: [{ startsAt: futureDatetime(10, 16), capacity: 5 }] },
+      payload: { name: 'Hacked', maxPartySize: 4 },
     });
-    // Returns 404 (not 403) for IDOR safety — 403 would reveal the resource exists.
     expect(res.statusCode).toBe(404);
-  });
-
-  it('422 — empty slots array is rejected', async () => {
-    const res = await server.inject({
-      method: 'POST',
-      url: `/restaurants/${restaurantId}/slots`,
-      headers: { authorization: `Bearer ${ownerToken}` },
-      payload: { slots: [] },
-    });
-    expect(res.statusCode).toBe(422);
-  });
-
-  it('422 — more than 50 slots in one request is rejected', async () => {
-    const tooMany = Array.from({ length: 51 }, (_, i) => ({
-      startsAt: futureDatetime(20, i % 12),
-      capacity: 5,
-    }));
-    const res = await server.inject({
-      method: 'POST',
-      url: `/restaurants/${restaurantId}/slots`,
-      headers: { authorization: `Bearer ${ownerToken}` },
-      payload: { slots: tooMany },
-    });
-    expect(res.statusCode).toBe(422);
-  });
-
-  it('422 — capacity of 0 is rejected', async () => {
-    const res = await server.inject({
-      method: 'POST',
-      url: `/restaurants/${restaurantId}/slots`,
-      headers: { authorization: `Bearer ${ownerToken}` },
-      payload: { slots: [{ startsAt: futureDatetime(10, 18), capacity: 0 }] },
-    });
-    expect(res.statusCode).toBe(422);
   });
 });
 
-describe('GET /restaurants/:id/slots', () => {
+describe('GET /restaurants/:id/availability', () => {
   let restaurantId: string;
-  let slotId: string;
-  const slotDate = futureDate(15);
+  const availDate = futureDate(15);
 
   beforeAll(async () => {
     const r = await createTestRestaurant(server, ownerToken);
     restaurantId = r.id;
     createdRestaurantIds.push(restaurantId);
 
-    const slots = await createTestSlots(server, restaurantId, ownerToken, {
-      date: slotDate,
-      count: 3,
-      capacity: 8,
-    });
-    slotId = slots[0]!.id;
+    await createTestTables(server, restaurantId, ownerToken, [
+      { name: 'Avail Table 1', maxPartySize: 4 },
+      { name: 'Avail Table 2', maxPartySize: 4 },
+    ]);
   });
 
-  it('200 — returns slots with correct shape', async () => {
+  it('200 — returns available times for party size', async () => {
     const res = await server.inject({
       method: 'GET',
-      url: `/restaurants/${restaurantId}/slots?date=${slotDate}`,
+      url: `/restaurants/${restaurantId}/availability?date=${availDate}&partySize=2`,
     });
     expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body) as { slots: Array<Record<string, unknown>> };
-    expect(body.slots).toHaveLength(3);
-    expect(body.slots[0]!.id).toBeDefined();
-    expect(body.slots[0]!.startsAt).toBeDefined();
-    expect(body.slots[0]!.capacity).toBe(8);
-    expect(body.slots[0]!.available).toBe(8);
-  });
-
-  it('SECURITY — booked field is NEVER present in public slot response', async () => {
-    const res = await server.inject({
-      method: 'GET',
-      url: `/restaurants/${restaurantId}/slots?date=${slotDate}`,
-    });
-    expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body) as { slots: Array<Record<string, unknown>> };
-
-    body.slots.forEach((slot) => {
-      expect(slot).not.toHaveProperty('booked');
-    });
-  });
-
-  it('200 — second identical request returns consistent data (cache layer)', async () => {
-    const first = await server.inject({
-      method: 'GET',
-      url: `/restaurants/${restaurantId}/slots?date=${slotDate}`,
-    });
-    const second = await server.inject({
-      method: 'GET',
-      url: `/restaurants/${restaurantId}/slots?date=${slotDate}`,
-    });
-
-    expect(first.statusCode).toBe(200);
-    expect(second.statusCode).toBe(200);
-    expect(JSON.parse(first.body)).toEqual(JSON.parse(second.body));
-  });
-
-  it('200 — cache is invalidated after slot update (PATCH changes capacity)', async () => {
-    const before = await server.inject({
-      method: 'GET',
-      url: `/restaurants/${restaurantId}/slots?date=${slotDate}`,
-    });
-    const beforeBody = JSON.parse(before.body) as {
-      slots: Array<{ id: string; capacity: number }>;
+    const body = JSON.parse(res.body) as {
+      times: Array<{ startsAt: string; endsAt: string }>;
     };
-    const originalCapacity = beforeBody.slots.find((s) => s.id === slotId)!.capacity;
-
-    await server.inject({
-      method: 'PATCH',
-      url: `/restaurants/${restaurantId}/slots/${slotId}`,
-      headers: { authorization: `Bearer ${ownerToken}` },
-      payload: { capacity: originalCapacity + 5 },
-    });
-
-    const after = await server.inject({
-      method: 'GET',
-      url: `/restaurants/${restaurantId}/slots?date=${slotDate}`,
-    });
-    const afterBody = JSON.parse(after.body) as {
-      slots: Array<{ id: string; capacity: number; available: number }>;
-    };
-    const updatedSlot = afterBody.slots.find((s) => s.id === slotId)!;
-
-    expect(updatedSlot.capacity).toBe(originalCapacity + 5);
-    expect(updatedSlot.available).toBe(originalCapacity + 5);
+    expect(body.times.length).toBeGreaterThan(0);
+    expect(body.times[0]!.startsAt).toBeDefined();
+    expect(body.times[0]!.endsAt).toBeDefined();
   });
 
-  it('200 — slots for a date with no slots returns empty array', async () => {
+  it('404 — non-existent restaurant', async () => {
     const res = await server.inject({
       method: 'GET',
-      url: `/restaurants/${restaurantId}/slots?date=2099-12-31`,
-    });
-    expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body) as { slots: unknown[] };
-    expect(body.slots).toHaveLength(0);
-  });
-
-  it('404 — non-existent restaurant ID', async () => {
-    const res = await server.inject({
-      method: 'GET',
-      url: '/restaurants/00000000-0000-0000-0000-000000000000/slots?date=2099-01-01',
+      url: `/restaurants/00000000-0000-0000-0000-000000000000/availability?date=${availDate}&partySize=2`,
     });
     expect(res.statusCode).toBe(404);
   });
@@ -670,69 +562,50 @@ describe('GET /restaurants/:id/slots', () => {
   it('422 — missing date query param', async () => {
     const res = await server.inject({
       method: 'GET',
-      url: `/restaurants/${restaurantId}/slots`,
-    });
-    expect(res.statusCode).toBe(422);
-  });
-
-  it('422 — malformed date (not YYYY-MM-DD)', async () => {
-    const res = await server.inject({
-      method: 'GET',
-      url: `/restaurants/${restaurantId}/slots?date=tomorrow`,
+      url: `/restaurants/${restaurantId}/availability?partySize=2`,
     });
     expect(res.statusCode).toBe(422);
   });
 });
 
-describe('PATCH /restaurants/:id/slots/:slotId', () => {
+describe('PATCH /restaurants/:id/tables/:tableId', () => {
   let restaurantId: string;
-  let slotId: string;
+  let tableId: string;
 
   beforeAll(async () => {
     const r = await createTestRestaurant(server, ownerToken);
     restaurantId = r.id;
     createdRestaurantIds.push(restaurantId);
-    const slots = await createTestSlots(server, restaurantId, ownerToken, {
-      count: 1,
-    });
-    slotId = slots[0]!.id;
+    const tables = await createTestTables(server, restaurantId, ownerToken, [
+      { name: 'Patch Table', maxPartySize: 4 },
+    ]);
+    tableId = tables[0]!.id;
   });
 
-  it('200 — owner updates slot capacity', async () => {
+  it('200 — owner updates table capacity', async () => {
     const res = await server.inject({
       method: 'PATCH',
-      url: `/restaurants/${restaurantId}/slots/${slotId}`,
+      url: `/restaurants/${restaurantId}/tables/${tableId}`,
       headers: { authorization: `Bearer ${ownerToken}` },
-      payload: { capacity: 25 },
+      payload: { maxPartySize: 6 },
     });
     expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body) as { slot: { capacity: number } };
-    expect(body.slot.capacity).toBe(25);
+    const body = JSON.parse(res.body) as { table: { maxPartySize: number } };
+    expect(body.table.maxPartySize).toBe(6);
   });
 
-  it('403 — cross-owner slot update is rejected', async () => {
+  it('404 — cross-owner table update is rejected', async () => {
     const res = await server.inject({
       method: 'PATCH',
-      url: `/restaurants/${restaurantId}/slots/${slotId}`,
+      url: `/restaurants/${restaurantId}/tables/${tableId}`,
       headers: { authorization: `Bearer ${owner2Token}` },
-      payload: { capacity: 1 },
-    });
-    // Returns 404 (not 403) for IDOR safety — 403 would reveal the resource exists.
-    expect(res.statusCode).toBe(404);
-  });
-
-  it('404 — non-existent slot ID', async () => {
-    const res = await server.inject({
-      method: 'PATCH',
-      url: `/restaurants/${restaurantId}/slots/00000000-0000-0000-0000-000000000000`,
-      headers: { authorization: `Bearer ${ownerToken}` },
-      payload: { capacity: 5 },
+      payload: { maxPartySize: 1 },
     });
     expect(res.statusCode).toBe(404);
   });
 });
 
-describe('DELETE /restaurants/:id/slots/:slotId', () => {
+describe('DELETE /restaurants/:id/tables/:tableId', () => {
   let restaurantId: string;
 
   beforeAll(async () => {
@@ -741,51 +614,29 @@ describe('DELETE /restaurants/:id/slots/:slotId', () => {
     createdRestaurantIds.push(restaurantId);
   });
 
-  it('204 — owner soft-deletes a slot', async () => {
-    const slots = await createTestSlots(server, restaurantId, ownerToken, {
-      count: 1,
-    });
-    const deletedSlotId = slots[0]!.id;
-    const date = futureDate(1);
+  it('204 — owner soft-deletes a table', async () => {
+    const tables = await createTestTables(server, restaurantId, ownerToken, [
+      { name: 'Delete Me', maxPartySize: 2 },
+    ]);
+    const deletedTableId = tables[0]!.id;
 
     const res = await server.inject({
       method: 'DELETE',
-      url: `/restaurants/${restaurantId}/slots/${deletedSlotId}`,
+      url: `/restaurants/${restaurantId}/tables/${deletedTableId}`,
       headers: { authorization: `Bearer ${ownerToken}` },
     });
     expect(res.statusCode).toBe(204);
 
     const listing = await server.inject({
       method: 'GET',
-      url: `/restaurants/${restaurantId}/slots?date=${date}`,
-    });
-    const body = JSON.parse(listing.body) as { slots: Array<{ id: string }> };
-    expect(body.slots.every((s) => s.id !== deletedSlotId)).toBe(true);
-  });
-
-  it('403 — cross-owner slot delete is rejected', async () => {
-    const slots = await createTestSlots(server, restaurantId, ownerToken, {
-      count: 1,
-      date: futureDate(2),
-    });
-    const deletedSlotId = slots[0]!.id;
-
-    const res = await server.inject({
-      method: 'DELETE',
-      url: `/restaurants/${restaurantId}/slots/${deletedSlotId}`,
-      headers: { authorization: `Bearer ${owner2Token}` },
-    });
-    // Returns 404 (not 403) for IDOR safety — 403 would reveal the resource exists.
-    expect(res.statusCode).toBe(404);
-  });
-
-  it('404 — non-existent slot returns 404', async () => {
-    const res = await server.inject({
-      method: 'DELETE',
-      url: `/restaurants/${restaurantId}/slots/00000000-0000-0000-0000-000000000000`,
+      url: `/restaurants/${restaurantId}/tables`,
       headers: { authorization: `Bearer ${ownerToken}` },
     });
-    expect(res.statusCode).toBe(404);
+    const body = JSON.parse(listing.body) as {
+      tables: Array<{ id: string; isActive: boolean }>;
+    };
+    const deleted = body.tables.find((t) => t.id === deletedTableId);
+    expect(deleted?.isActive).toBe(false);
   });
 });
 
@@ -843,15 +694,15 @@ describe('Security invariants', () => {
       { method: 'DELETE', url: `/restaurants/${restaurantId}` },
       {
         method: 'POST',
-        url: `/restaurants/${restaurantId}/slots`,
-        payload: { slots: [] },
+        url: `/restaurants/${restaurantId}/tables`,
+        payload: { name: 'x', maxPartySize: 2 },
       },
       {
         method: 'PATCH',
-        url: `/restaurants/${restaurantId}/slots/fake-id`,
+        url: `/restaurants/${restaurantId}/tables/fake-id`,
         payload: {},
       },
-      { method: 'DELETE', url: `/restaurants/${restaurantId}/slots/fake-id` },
+      { method: 'DELETE', url: `/restaurants/${restaurantId}/tables/fake-id` },
     ];
 
     for (const ep of endpoints) {

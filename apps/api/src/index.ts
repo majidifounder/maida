@@ -18,7 +18,7 @@ import { cloudflareOnlyPlugin } from './plugins/cloudflareOnly.js';
 import wsPlugin from './plugins/websocket.js';
 import { authRoutes } from './modules/auth/auth.routes.js';
 import { restaurantRoutes } from './modules/restaurant/restaurant.routes.js';
-import { bookingRoutes } from './modules/booking/booking.routes.js';
+import { reservationRoutes } from './modules/reservation/reservation.routes.js';
 import { adminRoutes } from './modules/admin/admin.routes.js';
 import { webhookRoutes } from './modules/subscription/webhook.routes.js';
 import { subscriptionRoutes } from './modules/subscription/subscription.routes.js';
@@ -36,7 +36,7 @@ const BLOCKED_UA_PATTERNS = [
 
 async function buildServer() {
   const fastify = Fastify({
-    logger: logger as unknown as FastifyBaseLogger,
+    loggerInstance: logger as unknown as FastifyBaseLogger,
     genReqId: () => randomUUID(),
     trustProxy: true,
     requestTimeout: 30_000,
@@ -165,7 +165,7 @@ async function buildServer() {
   await fastify.register(wsPlugin);
   await fastify.register(authRoutes);
   await fastify.register(restaurantRoutes);
-  await fastify.register(bookingRoutes);
+  await fastify.register(reservationRoutes);
   await fastify.register(subscriptionRoutes);
   await fastify.register(adminRoutes);
 

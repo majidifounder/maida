@@ -2,25 +2,26 @@ import { Queue } from 'bullmq';
 import { env } from '../env.js';
 import { getRedisClient } from './redis.js';
 
-export type BookingEventType =
-  | 'booking.created'
-  | 'booking.cancelled'
-  | 'booking.confirmed';
+export type ReservationEventType =
+  | 'reservation.created'
+  | 'reservation.seated'
+  | 'reservation.extended'
+  | 'reservation.freed_early'
+  | 'reservation.cancelled'
+  | 'reservation.no_show';
 
-export interface BookingEventPayload {
-  eventType: BookingEventType;
+export interface ReservationEventPayload {
+  eventType: ReservationEventType;
   publishedAt: string;
-  bookingId: string;
+  reservationId: string;
   dinerId?: string;
   restaurantId?: string;
-  slotId?: string;
   partySize?: number;
-  cancelledBy?: 'diner' | 'owner';
+  startsAt?: string;
+  cancelledBy?: 'diner' | 'owner' | 'staff';
 }
 
 export function getBullmqConnection() {
-  // TLS is handled automatically by BullMQ/ioredis for rediss:// URLs.
-  // Upstash uses a CA-signed cert; no rejectUnauthorized override needed.
   return {
     url: env.REDIS_URL,
     maxRetriesPerRequest: null,
@@ -48,13 +49,11 @@ function getQueue(): Queue {
 const PUBLISH_RATE_LIMIT = 60;
 const PUBLISH_RATE_WINDOW_SECONDS = 60;
 
-export async function publishBookingEvent(
-  eventType: 'booking.created' | 'booking.cancelled' | 'booking.confirmed',
+export async function publishReservationEvent(
+  eventType: ReservationEventType,
   payload: Record<string, unknown>,
 ): Promise<void> {
   try {
-    // Rate cap: 60 booking events per restaurant per minute.
-    // Prevents queue flooding from rapid create/cancel cycles.
     const restaurantId = String(payload.restaurantId ?? 'unknown');
     if (restaurantId !== 'unknown') {
       const redis = getRedisClient();
@@ -77,7 +76,7 @@ export async function publishBookingEvent(
       publishedAt: new Date().toISOString(),
     });
     console.info(
-      `[Queue] Enqueued ${eventType} job ${job.id} for booking ${String(payload.bookingId ?? 'unknown')}`,
+      `[Queue] Enqueued ${eventType} job ${job.id} for reservation ${String(payload.reservationId ?? 'unknown')}`,
     );
   } catch (err) {
     console.warn(
@@ -86,3 +85,9 @@ export async function publishBookingEvent(
     );
   }
 }
+
+/** @deprecated Use publishReservationEvent */
+export const publishBookingEvent = publishReservationEvent;
+
+export type BookingEventType = ReservationEventType;
+export type BookingEventPayload = ReservationEventPayload;

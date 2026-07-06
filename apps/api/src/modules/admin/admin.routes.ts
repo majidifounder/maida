@@ -332,6 +332,20 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
 
 
+  fastify.get('/admin/reservations', adminHooks, async (request, reply) => {
+
+    const query = AdminPaginationSchema.safeParse(request.query);
+
+    if (!query.success) {
+
+      return reply.code(422).send({ error: 'Validation failed' });
+
+    }
+
+    return reply.send(await AdminService.listReservations(query.data));
+
+  });
+
   fastify.get('/admin/bookings', adminHooks, async (request, reply) => {
 
     const query = AdminPaginationSchema.safeParse(request.query);
@@ -342,7 +356,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
     }
 
-    return reply.send(await AdminService.listBookings(query.data));
+    const result = await AdminService.listReservations(query.data);
+    return reply.send({ ...result, bookings: result.reservations });
 
   });
 

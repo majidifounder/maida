@@ -1,15 +1,36 @@
-import type { Plan } from '@restaurant/types';
+import type { Plan, PlanLimits } from '@restaurant/types';
 
-export const PLAN_LIMITS: Record<
-  Plan,
-  { restaurants: number; bookingsPerMonth: number }
-> = {
-  STARTER: { restaurants: 1, bookingsPerMonth: 200 },
-  PRO: { restaurants: 5, bookingsPerMonth: 1_000 },
-  PREMIUM: { restaurants: Infinity, bookingsPerMonth: Infinity },
+export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
+  STARTER: {
+    restaurants: 1,
+    reservationsPerMonth: 200,
+    tablesPerRestaurant: 10,
+    combinationsPerRestaurant: 0,
+    turnTimeRulesPerRestaurant: 1,
+    flexibleSeating: false,
+    customReservations: false,
+  },
+  PRO: {
+    restaurants: 5,
+    reservationsPerMonth: 1_000,
+    tablesPerRestaurant: 30,
+    combinationsPerRestaurant: 5,
+    turnTimeRulesPerRestaurant: 5,
+    flexibleSeating: true,
+    customReservations: true,
+  },
+  PREMIUM: {
+    restaurants: Infinity,
+    reservationsPerMonth: Infinity,
+    tablesPerRestaurant: Infinity,
+    combinationsPerRestaurant: Infinity,
+    turnTimeRulesPerRestaurant: Infinity,
+    flexibleSeating: true,
+    customReservations: true,
+  },
 };
 
-export function getPlanLimits(plan: Plan) {
+export function getPlanLimits(plan: Plan): PlanLimits {
   return PLAN_LIMITS[plan];
 }
 

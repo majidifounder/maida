@@ -20,7 +20,7 @@
 | Shared types | `packages/types` |
 | Shared config | `packages/config` (ESLint, Prettier, tsconfig) |
 | Shared UI | `packages/ui` |
-| Auth | JWT (RS256) — Access token (15 min) + Refresh token (7 days); API live at `http://localhost:3001`; 169 Vitest tests |
+| Auth | JWT (RS256) — Access token (15 min) + Refresh token (7 days); API live at `http://localhost:3001`; 123 Vitest tests |
 | Real-time | WebSocket (owner dashboard) via Redis pub/sub |
 | Security layers | TLS, rate-limit (Redis counter, real client IP via CF-Connecting-IP), Turnstile bot check on register, CF-origin secret guard, JWT validation, RBAC, optimistic locking |
 | CI/CD | GitHub Actions → staging (auto) → production (manual gate) |
@@ -33,8 +33,8 @@
 
 - `user_id` is **always** read from the verified JWT, never from the request body.
 - `owner_id` in JWT must match `restaurant.owner_id` in DB — enforced server-side only.
-- Booking uses **optimistic locking** (`SELECT FOR UPDATE`) to prevent double-booking.
-- Slot cache is invalidated in Redis after every successful booking.
+- Reservations use **PostgreSQL GiST EXCLUSION constraint** on `reservation_tables` — overlapping holds on the same physical table are impossible by construction (SQLSTATE 23P01).
+- Availability cache is invalidated synchronously after every reservation state change.
 - Notifications (email diner + alert owner) fire **async** via queue after `201` is returned; per-recipient idempotency in Redis prevents duplicate emails on BullMQ retries.
 - Gateway handles: TLS termination, rate-limit (`429`), JWT verify (`401`), request logging.
 - Services communicate internally over **mTLS** — gateway never touches DB directly.
@@ -61,6 +61,8 @@
 | 9 | Admin + Subscriptions | ✅ Done (2 of 2 tasks done) | Admin API, TOTP 2FA, plan enforcement, subscription schema, admin SPA |
 | 10 | Password Reset | ✅ Done (1 of 1 tasks done) | Forgot-password flow, reset email, session invalidation, frontend pages |
 | 11 | Billing & Subscription Lifecycle | ✅ Done (2 of 2 tasks done) | LS webhook, checkout, plan enforcement, billing UI, cancel/resume |
+| 12 | Reservation Engine | ✅ Done (3 of 3 tasks done) | Timeline-based capacity model, GiST exclusion, tables/combinations, plan gates, E2E suite, owner onboarding UI |
+| 14 | Local Backup & Restore | ✅ Done (1 of 1 tasks done) | export-backup.ts, restore-backup.ts, backups/ folder, gitignore, pnpm scripts |
 
 ---
 
@@ -795,6 +797,28 @@
 - Upgrade/downgrade via POST /subscriptions/checkout → redirect to Lemon Squeezy
 - Sidebar shows current plan badge (5 min staleTime)
 
+### ✅ Phase 14 · Task 1 — Local Backup & Restore System
+**Date:** 2026-06-30
+**Files created / modified:**
+- `scripts/export-backup.ts` — reads all 6 tables via Prisma in parallel; writes timestamped JSON to `backups/`; SHA-256 checksum on data section
+- `scripts/restore-backup.ts` — validates checksum; shows backup summary + age warning; requires typing "RESTORE"; wipes DB in FK-safe order; re-inserts in batches of 200; verifies counts post-restore
+- `backups/.gitkeep` — tracks folder in git without committing backup files
+- `.gitignore` — added `backups/*.json` and `backups/*.json.bak` (user data never goes to GitHub)
+- `package.json` (root) — added `db:export` and `db:restore` scripts (via `tsx`, same pattern as `load-test` and `check-env`)
+**No new dependencies added**
+**Commands:**
+- `pnpm db:export` — create a full backup right now
+- `pnpm db:restore --file=backups/<filename>.json` — restore from a backup
+**Notes:**
+- Backup files are plain pretty-printed JSON — human readable, stored locally only
+- SHA-256 checksum verified before a single row is touched; detects corruption or tampering
+- Restore requires typing "RESTORE" exactly — impossible to run accidentally
+- Batch inserts (200 per batch) — handles large tables without crashing Supabase pooler
+- Restore verifies row counts after completion — reports any mismatch and exits 1
+- Sessions (`refresh_tokens`) cleared on restore — users log in again after recovery
+- `dotenv` loaded at top of each script (same pattern as `check-env.ts`)
+- Run `pnpm db:export` before EVERY Cursor prompt, migration, or deployment
+
 ### ✅ Security audit PASS 2 — Ban enforcement, rate limits, webhook guard, deps
 **Date:** 2026-06-27
 **Files created / modified:**
@@ -819,85 +843,185 @@
 - 169/169 API tests pass; typecheck clean
 - Fastify 5 / Vite 6 / Prisma 7 upgrades deferred (major)
 
+### ✅ Phase 12 · Task 1 — Reservation engine core rebuild (timeline-based capacity model)
+**Date:** 2026-07-05
+**Files created / modified:**
+- `packages/db/prisma/schema.prisma` — retired TimeSlot/Booking; added DiningTable, TableCombination, TurnTimeRule, Reservation, ReservationTable; restaurant engine config fields
+- `packages/db/prisma/migrations/20260705000000_reservation_engine/migration.sql` — GiST EXCLUSION constraint `reservation_tables_no_overlap`
+- `packages/db/src/seed.ts` — seed tables + reservations (no slots/bookings)
+- `packages/types/src/index.ts` — Reservation, DiningTable, TableCombination, TurnTimeRule, PlanLimits
+- `apps/api/src/lib/reservation-engine.ts` — best-fit allocation, day occupancy cache, availability computation, next-available search
+- `apps/api/src/lib/plan.ts` — extended PlanLimits (tables, combinations, turn-time rules, flexible seating, custom reservations)
+- `apps/api/src/modules/reservation/` — schema, service, routes (diner + owner lifecycle)
+- `apps/api/src/modules/restaurant/` — tables/combinations/turn-time CRUD; GET /availability; reservation-config
+- `apps/api/src/lib/queue.ts`, `pubsub.ts`, `workers/notification.worker.ts`, `services/email.service.ts` — reservation events
+- `apps/api/src/modules/admin/admin.service.ts` — listReservations, stats use reservations count
+- `apps/api/src/__tests__/reservation.test.ts` — includes concurrency / exclusion test
+- `apps/web`, `apps/dashboard`, `apps/admin` — functional UI against new API
+- Removed `apps/api/src/modules/booking/` entirely
+**Interfaces / types added:**
+- `SeatingMode`, `ReservationStatus`, `ReservationType`, `ReservationSource`, `Reservation`, `DiningTable`, `TableCombination`, `TurnTimeRule`, extended `PlanLimits`
+**API endpoints added:**
+- `GET /restaurants/:id/availability` — 15-min slots with real table availability
+- `POST/GET/PATCH/DELETE /restaurants/:id/tables` — physical unit CRUD
+- `POST/PATCH/DELETE /restaurants/:id/combinations` — owner-predefined merges (PRO+)
+- `POST/GET/DELETE /restaurants/:id/turn-time-rules` — duration by party-size band
+- `PATCH /restaurants/:id/reservation-config`, `GET /restaurants/:id/config`
+- `POST/GET /reservations`, `GET /reservations/:id`, `PATCH /reservations/:id/cancel`
+- `GET /restaurants/:id/reservations`, seat/cancel/no-show/extend/free-early, walk-in/staff/override
+- `GET /admin/reservations`
+**API endpoints removed:**
+- All `/bookings` and `/restaurants/:id/slots` routes
+**Environment variables added:** None
+**Notes:**
+- **Schema:** `Reservation` holds time range + status; `ReservationTable` rows carry per-table intervals with optional `releasedAt`. Combinations lock all member atomic tables.
+- **Overlap prevention:** `EXCLUDE USING gist ("tableId" WITH =, tstzrange("startsAt","endsAt",'[)') WITH &&) WHERE ("releasedAt" IS NULL)`. App catches 23P01 → 409 + `suggestedNextAvailableAt`.
+- **Plan gates:** STARTER — 10 tables, 1 turn-time rule, LOCKED only, no custom duration. PRO — 30 tables, 5 combinations, flexible seating + custom reservations. PREMIUM — unlimited. Monthly reservation counts: 200/1000/unlimited (replaces bookingsPerMonth).
+- **Fees:** `customFee` / `extraHourFee` on Restaurant are informational only — never processed by Maida.
+- **COMPLETED status** derived at read time when `endsAt <= now` for SCHEDULED/SEATED.
+- **123/123** API Vitest tests pass; monorepo typecheck clean; admin lint has pre-existing errors unrelated to this phase.
+- Run `pnpm db:migrate` (or `prisma migrate deploy`) before starting API after pulling this branch.
+
+### ✅ Phase 12 · Task 1b — Correctness & timezone hardening (pre-commit fixes)
+**Date:** 2026-07-05
+**Files created / modified:**
+- `packages/db/prisma/migrations/20260705120000_reservation_timestamptz_timezone/migration.sql` — `TIMESTAMPTZ` on reservation lifecycle columns; `Restaurant.timezone`; `tstzrange` exclusion constraint
+- `packages/db/prisma/schema.prisma` — `@db.Timestamptz(3)` on reservation hold columns; `Restaurant.timezone` (IANA, default `UTC`)
+- `apps/api/src/lib/timezone.ts` — IANA validation, local-day bounds, zoned wall-clock → UTC conversion
+- `apps/api/src/lib/reservation-engine.ts` — `tstzrange` overlap queries; service windows anchored to restaurant timezone
+- `apps/api/src/modules/restaurant/restaurant.schema.ts` — optional `timezone` on create/update/reservation-config
+- `apps/api/src/modules/restaurant/restaurant.service.ts` — timezone in selects; passed to availability/search
+- `apps/api/src/modules/reservation/reservation.service.ts` — owner date filter uses local-day bounds
+- `apps/api/src/__tests__/reservation.test.ts` — concurrency test uses single-table restaurant; asserts exactly one `reservation_tables` row
+- `packages/db/src/seed.ts` — sample restaurants seeded with city-appropriate IANA timezones
+- `PROJECT_CONTEXT.md` — Section 5 admin alias; design-decision note (below)
+**Notes:**
+- **Overlap prevention** now uses `tstzrange` on `TIMESTAMPTZ` columns — timezone correctness enforced at the DB type layer, not app convention alone.
+- **Service windows** (`openMinutes`/`closeMinutes`) are minutes from **local midnight** in the restaurant's IANA timezone.
+- **Design decision (intentional):** The old `PENDING → CONFIRMED` owner approval step was removed. Online reservations are `SCHEDULED` immediately on successful allocation; the GiST exclusion constraint replaces manual double-booking review. This is deliberate — not a missing feature.
+- **Design question (not implemented):** Optional owner review queue for large parties or `CUSTOM` reservations may be worth a future phase — flagged for product input, not decided here.
+- **123/123** API tests pass; monorepo typecheck clean after migration applied.
+
+### ✅ Phase 12 · Task 2 — Full-platform automated E2E suite
+**Date:** 2026-07-05
+**Files created / modified:**
+- `scripts/e2e/run.ts` — main runner; preflight health check; journey orchestration; pass/fail summary
+- `scripts/e2e/preload-env.ts` — loads root `.env` before any API module imports
+- `scripts/e2e/lib/` — HTTP client, auth helpers, webhook signer, WebSocket client, FK-safe cleanup, reporter
+- `scripts/e2e/journeys/` — 10 journey modules (diner, owner, plan enforcement, admin, subscription, WebSocket, concurrency, timezone, security, regression)
+- `package.json` — `pnpm e2e` script; devDeps: `ws`, `otplib`, `bcryptjs`, `jsonwebtoken`
+- `apps/api/src/index.ts` — `loggerInstance` (Fastify 5.9 compat; fixes dev server boot)
+**Coverage (24 assertions, real HTTP + WebSocket against live API, Supabase + Upstash):**
+- Diner: register → search → availability → STANDARD book → list → cancel; CUSTOM fee snapshots (informational only)
+- Owner: LOCKED + FLEXIBLE seating; tables/combinations/turn-time; seat/extend/free-early/walk-in/no-show/cancel/override + audit log
+- Plan gates: STARTER restaurant/table/FLEXIBLE/CUSTOM limits → 403/422 + upgrade messaging
+- Admin: TOTP login → list resources → ban/unban with immediate 401 restoration
+- Subscription: checkout initiation → LS webhook upgrade/cancel/expire/resume → downgrade enforcement on over-limit restaurants
+- WebSocket: live reservation events; wrong-owner subscription rejected (close 4004)
+- Concurrency: **25×** double-booking race loop — each iteration exactly one 201 + one 409 + one `reservation_tables` hold
+- Timezone: `America/New_York` late-night slot filed under correct local calendar day (owner date filter)
+- Security: IDOR-safe 404 on restaurant mutations, 403 on reservation routes, JWT tamper/expiry/revoke, injection payloads, webhook sig + idempotency, register rate limit 429
+- Regression: health, auth lifecycle, restaurant CRUD, notification path smoke (201 + Redis reachable)
+**How to run:**
+```bash
+pnpm --filter @restaurant/api dev   # terminal 1 — API on :3001
+pnpm e2e                          # terminal 2 — ~17 min full suite
+```
+Optional: `E2E_CONCURRENCY_ITERATIONS=25` (default), `API_URL=http://localhost:3001`
+**Cleanup:** all `@e2e-test.local` users/restaurants/reservations hard-deleted in FK-safe order after every run (success or failure)
+**Current status:** **24/24 passed** on 2026-07-05 against Supabase + Upstash + live API (~998 s). Does not replace the 123 Vitest integration tests — additional layer on top.
+**Notes:**
+- Requires running API server (not in-process Fastify inject)
+- Concurrency assertion uses Prisma count with 3× retry for transient Supabase pooler blips
+- `scripts/load-test.ts` still targets retired `/bookings` API — use `pnpm e2e` for reservation concurrency proof instead
+- UI click-through of the three SPAs remains a separate manual pass (out of scope per task)
+
+### ✅ Phase 12 · Task 3 — Owner onboarding & reservation engine configuration UI
+**Date:** 2026-07-05
+**Files created / modified:**
+- `apps/dashboard/src/types/api.ts` — `OwnerRestaurant`, `TableCombinationRow`, `TurnTimeRuleRow`; full engine fields for owner UI
+- `apps/dashboard/src/lib/plan-limits.ts`, `lib/restaurant-time.ts` — plan mirror + minutes/timezone helpers
+- `apps/dashboard/src/hooks/useOwnerPlan.ts` — subscription plan + limits for UI gating
+- `apps/dashboard/src/components/PlanGateNotice.tsx` — upgrade CTA (links to `/billing`)
+- `apps/dashboard/src/components/restaurant/` — `SeatingModeChoice`, `ReservationConfigPanel`, `TablesPanel`, `CombinationsPanel`, `TurnTimeRulesPanel`
+- `apps/dashboard/src/pages/CreateRestaurantPage.tsx` — 4-step onboarding (basics → seating/timezone → service defaults → review)
+- `apps/dashboard/src/pages/RestaurantDetailPage.tsx` — config panels + intact reservation lifecycle/WS section; loads `GET /restaurants/:id/config`
+- `apps/dashboard/src/pages/RestaurantListPage.tsx` — copy updated for reservation engine
+- `apps/api/src/modules/restaurant/restaurant.service.ts` — public restaurant select includes seating/fees/hours; `formatPublicRestaurant()` for JSON-safe decimals
+- `apps/web/src/types/api.ts`, `lib/restaurant-display.ts`, `pages/RestaurantDetailPage.tsx` — diner-facing seating, hours, fee disclosure from owner config
+**Interfaces / types added:** None at package level (dashboard-local types extended)
+**API endpoints added:** None (UI wired to existing owner config/table/combination/turn-time routes)
+**Environment variables added:** None
+**Notes:**
+- **Onboarding flow:** create restaurant (profile + timezone) → `PATCH reservation-config` (seating mode, hours, default duration). Service hours/duration have sensible defaults editable on review step; fees/turn-time/combinations configured post-create on detail page.
+- **Plan gating in UI:** FLEXIBLE seating, combinations, custom fees show disabled state + Billing upgrade link mirroring API enforcement (STARTER locked to LOCKED, 0 combinations, no custom fee fields on save).
+- **Table management:** full CRUD via existing API — edit name/min/max, active toggle, deactivate (soft).
+- **Design decision:** Timezone + seating mode required at signup; hours/duration default to 11:00–23:00 / 90 min with clear post-create edit path — avoids overwhelming first screen while eliminating silent UTC/LOCKED defaults.
+- **Diner app:** `GET /restaurants/:id` now returns engine config fields; detail page shows seating mode, service window, typical duration, and informational custom fees when set.
+- **Section 8 correction:** owner dashboard description updated from slot/booking to reservation-engine configuration + live reservation ops.
+- Dashboard + web typecheck clean; no new API tests (UI-only; server validation unchanged).
+
 ---
 
 ## 4 · SHARED TYPE CONTRACTS (`packages/types`)
 <!-- Cursor updates this section when types are added or changed -->
 
-> **Note:** Prisma enums `Role`, `BookingStatus`, and `CuisineType` in `packages/db/prisma/schema.prisma` are now the source of truth for database-layer types. The TypeScript `Role` type in `packages/types` should import from `@prisma/client` going forward.
+> **Note:** Prisma enums in `packages/db/prisma/schema.prisma` are the source of truth for database-layer types.
 
 ```ts
 export type Role = 'diner' | 'owner' | 'admin';
-
 export type Plan = 'STARTER' | 'PRO' | 'PREMIUM';
+export type SeatingMode = 'LOCKED' | 'FLEXIBLE';
+export type ReservationStatus = 'SCHEDULED' | 'SEATED' | 'COMPLETED' | 'CANCELLED' | 'NO_SHOW';
+export type ReservationType = 'STANDARD' | 'CUSTOM';
+export type ReservationSource = 'ONLINE' | 'WALK_IN' | 'STAFF';
 
 export interface PlanLimits {
   restaurants: number;
-  bookingsPerMonth: number;
+  reservationsPerMonth: number;
+  tablesPerRestaurant: number;
+  combinationsPerRestaurant: number;
+  turnTimeRulesPerRestaurant: number;
+  flexibleSeating: boolean;
+  customReservations: boolean;
 }
 
-export type SubscriptionStatus =
-  | 'TRIALING'
-  | 'ACTIVE'
-  | 'PAUSED'
-  | 'PAST_DUE'
-  | 'CANCELLED'
-  | 'EXPIRED';
-
-export interface Subscription {
-  id: string | null;
-  userId: string;
-  plan: Plan;
-  status: SubscriptionStatus;
-  currentPeriodEnd: string | null;
-  renewsAt: string | null;
-  cancelAtPeriodEnd: boolean;
-  lemonSqueezyId: string | null;
-  createdAt: string | null;
-  updatedAt: string | null;
-}
-
-export interface JWTPayload {
-  sub: string;       // user_id
-  role: Role;
-  jti: string;
-  iat: number;
-  exp: number;
-}
-
-export interface Booking {
+export interface Reservation {
   id: string;
   restaurantId: string;
-  dinerId: string;
-  slotId: string;
   partySize: number;
-  status: 'pending' | 'confirmed' | 'cancelled';
-  createdAt: string;
+  startsAt: string;
+  endsAt: string;
+  status: ReservationStatus;
+  reservationType: ReservationType;
+  source: ReservationSource;
 }
 
-export interface TimeSlot {
+export interface DiningTable {
   id: string;
-  startsAt: string;   // ISO 8601
-  capacity: number;
-  booked: number;
-}
-
-export interface Restaurant {
-  id: string;
-  ownerId: string;
+  restaurantId: string;
   name: string;
-  cuisine: string;
-  description: string;
-  address: string;
-  imageUrl?: string;
-  createdAt: string;
+  minPartySize: number;
+  maxPartySize: number;
+  isActive: boolean;
 }
 
-export interface User {
+export interface TableCombination {
   id: string;
-  email: string;
-  role: Role;
-  createdAt: string;
+  restaurantId: string;
+  name: string;
+  minPartySize: number;
+  maxPartySize: number;
+  isActive: boolean;
+  tableIds: string[];
+}
+
+export interface TurnTimeRule {
+  id: string;
+  restaurantId: string;
+  minPartySize: number;
+  maxPartySize: number;
+  durationMins: number;
 }
 ```
 
@@ -919,20 +1043,28 @@ export interface User {
 | GET | `/restaurants` | api | None | ✅ Live |
 | GET | `/restaurants/mine` | api | Bearer JWT + role=owner | ✅ Live |
 | GET | `/restaurants/:id` | api | None | ✅ Live |
-| GET | `/restaurants/:id/slots` | api | None | ✅ Live (upcoming slots only; past filtered) |
 | POST | `/restaurants` | api | Bearer JWT + role=owner | ✅ Live |
 | PATCH | `/restaurants/:id` | api | Bearer JWT + role=owner | ✅ Live |
 | DELETE | `/restaurants/:id` | api | Bearer JWT + role=owner | ✅ Live |
-| POST | `/restaurants/:id/slots` | api | Bearer JWT + role=owner | ✅ Live |
-| PATCH | `/restaurants/:id/slots/:slotId` | api | Bearer JWT + role=owner | ✅ Live |
-| DELETE | `/restaurants/:id/slots/:slotId` | api | Bearer JWT + role=owner | ✅ Live |
-| POST | `/bookings` | api | Bearer JWT + role=diner | ✅ Live |
-| GET | `/bookings` | api | Bearer JWT + role=diner | ✅ Live |
-| GET | `/bookings/:id` | api | Bearer JWT + role=diner | ✅ Live |
-| PATCH | `/bookings/:id/cancel` | api | Bearer JWT + role=diner | ✅ Live |
-| GET | `/restaurants/:id/bookings` | api | Bearer JWT + role=owner | ✅ Live |
-| PATCH | `/restaurants/:id/bookings/:bookingId/confirm` | api | Bearer JWT + role=owner | ✅ Live |
-| PATCH | `/restaurants/:id/bookings/:bookingId/cancel` | api | Bearer JWT + role=owner | ✅ Live |
+| GET | `/restaurants/:id/availability` | api | None | ✅ Live (real table-based times; 15-min steps) |
+| GET | `/restaurants/:id/config` | api | Bearer JWT + role=owner | ✅ Live |
+| PATCH | `/restaurants/:id/reservation-config` | api | Bearer JWT + role=owner | ✅ Live |
+| GET/POST/PATCH/DELETE | `/restaurants/:id/tables` | api | Bearer JWT + role=owner | ✅ Live |
+| GET/POST/PATCH/DELETE | `/restaurants/:id/combinations` | api | Bearer JWT + role=owner (PRO+) | ✅ Live |
+| GET/POST/DELETE | `/restaurants/:id/turn-time-rules` | api | Bearer JWT + role=owner | ✅ Live |
+| POST | `/reservations` | api | Bearer JWT + role=diner | ✅ Live |
+| GET | `/reservations` | api | Bearer JWT + role=diner | ✅ Live |
+| GET | `/reservations/:id` | api | Bearer JWT + role=diner | ✅ Live |
+| PATCH | `/reservations/:id/cancel` | api | Bearer JWT + role=diner | ✅ Live |
+| GET | `/restaurants/:id/reservations` | api | Bearer JWT + role=owner | ✅ Live |
+| PATCH | `/restaurants/:id/reservations/:id/seat` | api | Bearer JWT + role=owner | ✅ Live |
+| PATCH | `/restaurants/:id/reservations/:id/cancel` | api | Bearer JWT + role=owner | ✅ Live |
+| PATCH | `/restaurants/:id/reservations/:id/no-show` | api | Bearer JWT + role=owner | ✅ Live |
+| PATCH | `/restaurants/:id/reservations/:id/extend` | api | Bearer JWT + role=owner | ✅ Live |
+| PATCH | `/restaurants/:id/reservations/:id/free-early` | api | Bearer JWT + role=owner | ✅ Live |
+| POST | `/restaurants/:id/reservations/walk-in` | api | Bearer JWT + role=owner | ✅ Live |
+| POST | `/restaurants/:id/reservations/staff` | api | Bearer JWT + role=owner | ✅ Live |
+| POST | `/restaurants/:id/reservations/override` | api | Bearer JWT + role=owner | ✅ Live (audit logged) |
 | GET | `/ws` | api | Bearer JWT (query param) + role=owner | ✅ Live |
 | POST | `/admin/auth/login` | api | None | ✅ Live (email+password+TOTP; QR on first login) |
 | POST | `/admin/auth/totp/setup` | api | None | ✅ Live (pendingToken + 6-digit code) |
@@ -943,7 +1075,8 @@ export interface User {
 | PATCH | `/admin/users/:id/unban` | api | Bearer JWT + role=admin | ✅ Live |
 | PATCH | `/admin/users/:id/plan` | api | Bearer JWT + role=admin | ✅ Live |
 | GET | `/admin/restaurants` | api | Bearer JWT + role=admin | ✅ Live |
-| GET | `/admin/bookings` | api | Bearer JWT + role=admin | ✅ Live |
+| GET | `/admin/reservations` | api | Bearer JWT + role=admin | ✅ Live |
+| GET | `/admin/bookings` | api | Bearer JWT + role=admin | ✅ Live (legacy alias → same data as `/admin/reservations`) |
 | GET | `/admin/subscriptions` | api | Bearer JWT + role=admin | ✅ Live |
 | GET | `/admin/audit-logs` | api | Bearer JWT + role=admin | ✅ Live |
 | POST | `/webhooks/lemon-squeezy` | api | None (HMAC-SHA256 guard) | ✅ Live |
@@ -960,9 +1093,12 @@ export interface User {
 All models defined in `packages/db/prisma/schema.prisma`:
 - `User` — id (uuid), email (citext), password (bcrypt), role (DINER | OWNER | ADMIN), totpSecret (nullable), soft-delete
 - `RefreshToken` — jti, tokenHash (SHA-256), expiresAt, revokedAt
-- `Restaurant` — id, ownerId, name, slug, cuisine, city, isActive, soft-delete
-- `TimeSlot` — id, restaurantId, startsAt, capacity, booked, isActive
-- `Booking` — id, restaurantId, dinerId, slotId, partySize, status, cancelledAt
+- `Restaurant` — id, ownerId, name, slug, cuisine, city, **timezone (IANA)**, seatingMode, defaultDurationMins, openMinutes, closeMinutes (local), customFee, extraHourFee (informational), isActive, soft-delete
+- `DiningTable` — atomic physical unit; minPartySize, maxPartySize
+- `TableCombination` + `TableCombinationMember` — owner-predefined merges (FLEXIBLE mode)
+- `TurnTimeRule` — durationMins by party-size band
+- `Reservation` — time range, status, type, source, fee snapshots, isOverride
+- `ReservationTable` — per-table hold interval (`TIMESTAMPTZ`); GiST EXCLUSION `tstzrange` prevents overlap when releasedAt IS NULL
 - `AuditLog` — id, actorId, action, entityType, entityId, metadata, ipAddress (append-only)
 - `Subscription` — userId (unique FK), plan (STARTER/PRO/PREMIUM), status (SubscriptionStatus enum), lemonSqueezyId, lemonSqueezyVariantId, currentPeriodEnd, renewsAt, cancelAtPeriodEnd
 RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (not applied on Supabase; API enforces access)
@@ -1016,10 +1152,15 @@ RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (no
 ## 8 · WHAT DOES NOT EXIST YET
 <!-- Read this before writing any prompt — prevents calling things that aren't built -->
 
-- ✅ Monorepo scaffold created (Phase 1 · Task 1)
+- ❌ TimeSlot / Booking slot-counter model — **retired** (Phase 12)
+- ❌ POST /bookings, GET /restaurants/:id/slots — **removed**
 - ✅ Shared TypeScript types written (packages/types)
 - ✅ CI/CD pipeline created (.github/workflows/) — deploy steps stubbed, to be filled in Phase 7
-- ✅ Full Prisma schema written (packages/db) — User, RefreshToken, Restaurant, TimeSlot, Booking, AuditLog
+- ✅ Full Prisma schema — reservation engine (DiningTable, Reservation, GiST exclusion); TimeSlot/Booking retired
+- ✅ Reservation engine complete — best-fit allocation, 409 + suggestedNextAvailableAt, owner lifecycle, plan gates
+- ✅ Reservation integration tests (11 tests; concurrency proves exclusion constraint); **123/123** API tests pass
+- ✅ Full-platform E2E suite (`pnpm e2e`) — 24 journey assertions against live API + Supabase + Upstash; self-cleaning; **24/24 passed** (2026-07-05)
+- ✅ Diner web + owner dashboard + admin updated for reservations API; owner dashboard now includes full engine configuration UI (Phase 12 · Task 3)
 - ✅ docker-compose.yml exists (for future Docker users) — dev machine uses Supabase + Upstash instead
 - ✅ Supabase PostgreSQL connected and migrated (Phase 1 verified)
 - ✅ Upstash Redis connected (Phase 1 verified)
@@ -1036,7 +1177,7 @@ RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (no
 - ✅ Notification service consumer built (Phase 5 · Task 1) — BullMQ Worker + Resend email functions
 - ✅ Notification service tests written (Phase 5 · Task 2) — vi.mock; 24 unit tests for all event paths; combined suite 148
 - ✅ Diner web app built (Phase 6 · Task 1) — React SPA; auth, restaurant browse, slot booking, my bookings (`apps/web`, port 5173)
-- ✅ Owner dashboard built (Phase 6 · Task 2) — React SPA; restaurant/slot/booking management; live WS feed (`apps/dashboard`, port 5174)
+- ✅ Owner dashboard built (Phase 6 · Task 2; expanded Phase 12 · Task 3) — React SPA; multi-step restaurant onboarding; reservation config (seating, timezone, hours, fees, turn-time rules); table + combination management; live reservation lifecycle + WS feed (`apps/dashboard`, port 5174)
 - ✅ WebSocket server complete (/ws; Redis pub/sub fan-out; JWT auth; `@fastify/websocket@^10` for Fastify 4)
 - ✅ Email idempotency (`notify-once.ts`) — all booking notification types deduped on BullMQ retry
 - ✅ Load test script complete (`scripts/load-test.ts`)
@@ -1057,6 +1198,7 @@ RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (no
 - ✅ Billing UI complete in owner dashboard (plan card, comparison, upgrade/downgrade, cancel/resume)
 - ✅ Security audit remediation complete (Phase 12) — all HIGH/MEDIUM findings resolved; 169 tests pass
 - ✅ FORTRESS hardening complete (Phase 13) — Fastify 5 + Vite 6 upgrade, constant-time auth, pino redaction, threat detector, account lockout, __Host- cookie, security headers, request timeout, CI audit pipeline, security.txt; 169 tests pass
+- ✅ Local backup & restore system complete (Phase 14) — `pnpm db:export` / `pnpm db:restore`; SHA-256 integrity check; FK-safe wipe + batch insert; count verification; backups/*.json gitignored; zero new dependencies
 
 ---
 

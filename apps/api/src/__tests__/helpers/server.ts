@@ -6,7 +6,7 @@ import sensible from '@fastify/sensible';
 import authenticatePlugin from '../../plugins/authenticate.js';
 import { authRoutes } from '../../modules/auth/auth.routes.js';
 import { restaurantRoutes } from '../../modules/restaurant/restaurant.routes.js';
-import { bookingRoutes } from '../../modules/booking/booking.routes.js';
+import { reservationRoutes } from '../../modules/reservation/reservation.routes.js';
 import { webhookRoutes } from '../../modules/subscription/webhook.routes.js';
 import { subscriptionRoutes } from '../../modules/subscription/subscription.routes.js';
 
@@ -21,7 +21,7 @@ export async function buildTestServer(): Promise<FastifyInstance> {
   await fastify.register(webhookRoutes);
   await fastify.register(authRoutes);
   await fastify.register(restaurantRoutes);
-  await fastify.register(bookingRoutes);
+  await fastify.register(reservationRoutes);
   await fastify.register(subscriptionRoutes);
 
   fastify.get('/health', () => ({ status: 'ok' }));

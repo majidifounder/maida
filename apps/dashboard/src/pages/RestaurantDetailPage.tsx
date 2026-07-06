@@ -3,19 +3,22 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { format, parseISO } from 'date-fns';
 import toast from 'react-hot-toast';
-import { api, ApiError } from '../lib/api.js';
+import { api } from '../lib/api.js';
 import { useAuth } from '../context/AuthContext.js';
-import { useBookingWebSocket, type BookingWsEvent } from '../hooks/useBookingWebSocket.js';
-import type { BookingsResponse, PublicRestaurant, SlotRow } from '../types/api.js';
+import {
+  useBookingWebSocket,
+  type BookingWsEvent,
+} from '../hooks/useBookingWebSocket.js';
+import type { OwnerRestaurant, ReservationsResponse } from '../types/api.js';
+import { CombinationsPanel } from '../components/restaurant/CombinationsPanel.js';
+import { ReservationConfigPanel } from '../components/restaurant/ReservationConfigPanel.js';
+import { TablesPanel } from '../components/restaurant/TablesPanel.js';
+import { TurnTimeRulesPanel } from '../components/restaurant/TurnTimeRulesPanel.js';
 import { Card } from '../components/ui/Card.js';
 import { Button } from '../components/ui/Button.js';
 import { Input } from '../components/ui/Input.js';
 import { Badge } from '../components/ui/Badge.js';
 import { Spinner } from '../components/ui/Spinner.js';
-
-function todayIso(): string {
-  return format(new Date(), 'yyyy-MM-dd');
-}
 
 function formatCuisine(cuisine: string): string {
   return cuisine.charAt(0) + cuisine.slice(1).toLowerCase();
@@ -27,38 +30,28 @@ export function RestaurantDetailPage() {
   const queryClient = useQueryClient();
   const { token } = useAuth();
 
-  const [slotDate, setSlotDate] = useState(todayIso);
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState('');
   const [editDesc, setEditDesc] = useState('');
-  const [showAddSlots, setShowAddSlots] = useState(false);
-  const [newSlotTime, setNewSlotTime] = useState('19:00');
-  const [newSlotCapacity, setNewSlotCapacity] = useState(10);
   const [statusFilter, setStatusFilter] = useState('');
 
   const restaurantQuery = useQuery({
-    queryKey: ['restaurant', id],
-    queryFn: () => api.get<PublicRestaurant>(`/restaurants/${id!}`),
-    enabled: Boolean(id),
-  });
-
-  const slotsQuery = useQuery({
-    queryKey: ['slots', id, slotDate],
+    queryKey: ['restaurant-config', id],
     queryFn: () =>
-      api.get<{ slots: SlotRow[] }>(
-        `/restaurants/${id!}/slots?date=${slotDate}`,
-      ),
+      api
+        .get<{ config: OwnerRestaurant }>(`/restaurants/${id!}/config`)
+        .then((r) => r.config),
     enabled: Boolean(id),
   });
 
-  const bookingsQuery = useQuery({
-    queryKey: ['bookings', id, statusFilter],
+  const reservationsQuery = useQuery({
+    queryKey: ['reservations', id, statusFilter],
     queryFn: () => {
       const params = new URLSearchParams();
       if (statusFilter) params.set('status', statusFilter.toUpperCase());
       const qs = params.toString();
-      return api.get<BookingsResponse>(
-        `/restaurants/${id!}/bookings${qs ? `?${qs}` : ''}`,
+      return api.get<ReservationsResponse>(
+        `/restaurants/${id!}/reservations${qs ? `?${qs}` : ''}`,
       );
     },
     enabled: Boolean(id),
@@ -66,19 +59,15 @@ export function RestaurantDetailPage() {
 
   const onWsEvent = useCallback(
     (event: BookingWsEvent) => {
-      void queryClient.invalidateQueries({ queryKey: ['bookings', id] });
-      void queryClient.invalidateQueries({ queryKey: ['slots', id] });
+      void queryClient.invalidateQueries({ queryKey: ['reservations', id] });
+      void queryClient.invalidateQueries({ queryKey: ['tables', id] });
 
-      if (event.eventType === 'booking.created') {
-        toast.success(`New booking — party of ${event.partySize ?? '?'}`);
-      } else if (event.eventType === 'booking.confirmed') {
-        toast.success('Booking confirmed');
-      } else if (event.eventType === 'booking.cancelled') {
-        toast(
-          event.cancelledBy === 'owner'
-            ? 'Booking cancelled (by you)'
-            : 'Booking cancelled by guest',
-        );
+      if (event.eventType === 'reservation.created') {
+        toast.success(`New reservation — party of ${event.partySize ?? '?'}`);
+      } else if (event.eventType === 'reservation.seated') {
+        toast.success('Guest seated');
+      } else if (event.eventType === 'reservation.cancelled') {
+        toast('Reservation cancelled');
       }
     },
     [queryClient, id],
@@ -95,7 +84,7 @@ export function RestaurantDetailPage() {
     mutationFn: (body: { name: string; description: string }) =>
       api.patch(`/restaurants/${id!}`, body),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['restaurant', id] });
+      void queryClient.invalidateQueries({ queryKey: ['restaurant-config', id] });
       setEditing(false);
       toast.success('Restaurant updated');
     },
@@ -109,53 +98,35 @@ export function RestaurantDetailPage() {
     },
   });
 
-  const addSlotsMutation = useMutation({
-    mutationFn: () => {
-      const startsAt = `${slotDate}T${newSlotTime}:00.000Z`;
-      return api.post(`/restaurants/${id!}/slots`, {
-        slots: [{ startsAt, capacity: newSlotCapacity }],
-      });
-    },
+  const seatMutation = useMutation({
+    mutationFn: (reservationId: string) =>
+      api.patch(`/restaurants/${id!}/reservations/${reservationId}/seat`),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['slots', id] });
-      setShowAddSlots(false);
-      toast.success('Slots added');
-    },
-    onError: (err: unknown) => {
-      toast.error(err instanceof ApiError ? err.message : 'Failed to add slots');
+      void queryClient.invalidateQueries({ queryKey: ['reservations', id] });
+      toast.success('Guest seated');
     },
   });
 
-  const deleteSlotMutation = useMutation({
-    mutationFn: (slotId: string) =>
-      api.delete(`/restaurants/${id!}/slots/${slotId}`),
+  const cancelReservationMutation = useMutation({
+    mutationFn: (reservationId: string) =>
+      api.patch(`/restaurants/${id!}/reservations/${reservationId}/cancel`, {}),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['slots', id] });
-      toast.success('Slot removed');
+      void queryClient.invalidateQueries({ queryKey: ['reservations', id] });
+      toast.success('Reservation cancelled');
     },
   });
 
-  const confirmMutation = useMutation({
-    mutationFn: (bookingId: string) =>
-      api.patch(`/restaurants/${id!}/bookings/${bookingId}/confirm`),
+  const noShowMutation = useMutation({
+    mutationFn: (reservationId: string) =>
+      api.patch(`/restaurants/${id!}/reservations/${reservationId}/no-show`),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['bookings', id] });
-      toast.success('Booking confirmed');
-    },
-  });
-
-  const cancelBookingMutation = useMutation({
-    mutationFn: (bookingId: string) =>
-      api.patch(`/restaurants/${id!}/bookings/${bookingId}/cancel`),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['bookings', id] });
-      toast.success('Booking cancelled');
+      void queryClient.invalidateQueries({ queryKey: ['reservations', id] });
+      toast.success('Marked no-show');
     },
   });
 
   const restaurant = restaurantQuery.data;
-  const slots = slotsQuery.data?.slots ?? [];
-  const bookings = bookingsQuery.data?.bookings ?? [];
+  const reservations = reservationsQuery.data?.reservations ?? [];
 
   if (restaurantQuery.isLoading) {
     return (
@@ -189,6 +160,10 @@ export function RestaurantDetailPage() {
             <p className="text-gray-600">
               {restaurant.address}, {restaurant.city}
             </p>
+            <p className="mt-2 text-xs text-gray-500">
+              {restaurant.seatingMode === 'FLEXIBLE' ? 'Flexible seating' : 'Fixed tables'}{' '}
+              · {restaurant.timezone}
+            </p>
             {!editing && (
               <p className="mt-3 text-gray-700">{restaurant.description}</p>
             )}
@@ -196,7 +171,7 @@ export function RestaurantDetailPage() {
           <div className="flex gap-2">
             {!editing && (
               <Button variant="secondary" size="sm" onClick={startEdit}>
-                Edit
+                Edit profile
               </Button>
             )}
             <Button
@@ -240,87 +215,15 @@ export function RestaurantDetailPage() {
         )}
       </Card>
 
-      <Card>
-        <div className="mb-4 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-          <h2 className="text-xl font-semibold">Slots</h2>
-          <div className="flex flex-wrap items-end gap-3">
-            <Input
-              label="Date"
-              type="date"
-              value={slotDate}
-              onChange={(e) => setSlotDate(e.target.value)}
-            />
-            <Button size="sm" onClick={() => setShowAddSlots((v) => !v)}>
-              Add slots
-            </Button>
-          </div>
-        </div>
-
-        {showAddSlots && (
-          <div className="mb-4 rounded-lg border border-blue-100 bg-blue-50 p-4">
-            <div className="flex flex-wrap items-end gap-3">
-              <Input
-                label="Time (UTC)"
-                type="time"
-                value={newSlotTime}
-                onChange={(e) => setNewSlotTime(e.target.value)}
-              />
-              <Input
-                label="Capacity"
-                type="number"
-                min={1}
-                value={newSlotCapacity}
-                onChange={(e) => setNewSlotCapacity(Number(e.target.value))}
-              />
-              <Button
-                size="sm"
-                loading={addSlotsMutation.isPending}
-                onClick={() => addSlotsMutation.mutate()}
-              >
-                Create slot
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {slotsQuery.isLoading && <Spinner />}
-        {!slotsQuery.isLoading && slots.length === 0 && (
-          <p className="text-gray-500">No slots for this date.</p>
-        )}
-        <ul className="divide-y">
-          {slots.map((slot) => (
-            <li
-              key={slot.id}
-              className="flex items-center justify-between py-3 text-sm"
-            >
-              <div>
-                <p className="font-medium">
-                  {format(parseISO(slot.startsAt), 'h:mm a')}
-                </p>
-                <p className="text-gray-500">
-                  {slot.available} / {slot.capacity} available
-                </p>
-              </div>
-              <Button
-                variant="danger"
-                size="sm"
-                onClick={() => {
-                  if (window.confirm('Remove this slot?')) {
-                    deleteSlotMutation.mutate(slot.id);
-                  }
-                }}
-              >
-                Delete
-              </Button>
-            </li>
-          ))}
-        </ul>
-      </Card>
+      <ReservationConfigPanel restaurantId={id!} config={restaurant} />
+      <TablesPanel restaurantId={id!} />
+      <CombinationsPanel restaurantId={id!} seatingMode={restaurant.seatingMode} />
+      <TurnTimeRulesPanel restaurantId={id!} />
 
       <Card>
         <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-2">
-            <h2 className="text-xl font-semibold">Bookings</h2>
+            <h2 className="text-xl font-semibold">Reservations</h2>
             <span className="flex items-center gap-1.5 text-xs text-gray-500">
               <span
                 className={`h-2 w-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-gray-300'}`}
@@ -334,48 +237,58 @@ export function RestaurantDetailPage() {
             onChange={(e) => setStatusFilter(e.target.value)}
           >
             <option value="">All statuses</option>
-            <option value="PENDING">Pending</option>
-            <option value="CONFIRMED">Confirmed</option>
+            <option value="SCHEDULED">Scheduled</option>
+            <option value="SEATED">Seated</option>
+            <option value="COMPLETED">Completed</option>
             <option value="CANCELLED">Cancelled</option>
+            <option value="NO_SHOW">No-show</option>
           </select>
         </div>
 
-        {bookingsQuery.isLoading && <Spinner />}
-        {!bookingsQuery.isLoading && bookings.length === 0 && (
-          <p className="text-gray-500">No bookings yet.</p>
+        {reservationsQuery.isLoading && <Spinner />}
+        {!reservationsQuery.isLoading && reservations.length === 0 && (
+          <p className="text-gray-500">No reservations yet.</p>
         )}
 
         <ul className="divide-y">
-          {bookings.map((b) => (
+          {reservations.map((r) => (
             <li
-              key={b.id}
+              key={r.id}
               className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between"
             >
               <div>
                 <p className="font-medium">
-                  {format(parseISO(b.slot.startsAt), 'EEE MMM d · h:mm a')}
+                  {format(parseISO(r.startsAt), 'EEE MMM d · h:mm a')}
                 </p>
                 <p className="text-sm text-gray-600">
-                  Party of {b.partySize} · {b.diner.email}
+                  Party of {r.partySize} ·{' '}
+                  {r.diner?.email ?? r.guestName ?? 'Walk-in'}
                 </p>
               </div>
-              <div className="flex items-center gap-2">
-                <Badge status={b.status} />
-                {b.status === 'PENDING' && (
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge status={r.status} />
+                {r.status === 'SCHEDULED' && (
                   <>
                     <Button
                       size="sm"
-                      loading={confirmMutation.isPending}
-                      onClick={() => confirmMutation.mutate(b.id)}
+                      loading={seatMutation.isPending}
+                      onClick={() => seatMutation.mutate(r.id)}
                     >
-                      Confirm
+                      Seat
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => noShowMutation.mutate(r.id)}
+                    >
+                      No-show
                     </Button>
                     <Button
                       variant="danger"
                       size="sm"
                       onClick={() => {
-                        if (window.confirm('Cancel this booking?')) {
-                          cancelBookingMutation.mutate(b.id);
+                        if (window.confirm('Cancel this reservation?')) {
+                          cancelReservationMutation.mutate(r.id);
                         }
                       }}
                     >
@@ -383,13 +296,13 @@ export function RestaurantDetailPage() {
                     </Button>
                   </>
                 )}
-                {b.status === 'CONFIRMED' && (
+                {r.status === 'SEATED' && (
                   <Button
                     variant="danger"
                     size="sm"
                     onClick={() => {
-                      if (window.confirm('Cancel this booking?')) {
-                        cancelBookingMutation.mutate(b.id);
+                      if (window.confirm('Cancel this reservation?')) {
+                        cancelReservationMutation.mutate(r.id);
                       }
                     }}
                   >

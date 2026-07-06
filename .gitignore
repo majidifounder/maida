@@ -11,3 +11,7 @@ coverage
 .next
 build
 *.tsbuildinfo
+
+# Local database backups — contain user data, never commit to GitHub
+backups/*.json
+backups/*.json.bak

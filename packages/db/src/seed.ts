@@ -1,141 +1,192 @@
-import { PrismaClient, Role, CuisineType, BookingStatus } from '@prisma/client';
+import { PrismaClient, Role, CuisineType, ReservationStatus } from '@prisma/client';
 import { faker } from '@faker-js/faker';
 
 const prisma = new PrismaClient();
 
-// In dev only — a real bcrypt hash of "Password123!"
-// Generated with: bcrypt.hash("Password123!", 12)
 const DEV_PASSWORD_HASH =
   '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LdmvwBJp9VG0GXrCy';
 
 async function main(): Promise<void> {
   console.log('🌱 Seeding database...');
 
-  // ── Owners ─────────────────────────────────────────────────────────────────
   const owners = await Promise.all(
     ['alice@example.com', 'bob@example.com'].map((email) =>
       prisma.user.upsert({
         where: { email },
         update: {},
         create: { email, password: DEV_PASSWORD_HASH, role: Role.OWNER },
-      })
-    )
+      }),
+    ),
   );
 
-  // ── Diners ─────────────────────────────────────────────────────────────────
   const diners = await Promise.all(
-    Array.from({ length: 10 }, (_, i) => `diner${i + 1}@example.com`).map((email) =>
-      prisma.user.upsert({
-        where: { email },
-        update: {},
-        create: { email, password: DEV_PASSWORD_HASH, role: Role.DINER },
-      })
-    )
+    Array.from({ length: 10 }, (_, i) => `diner${i + 1}@example.com`).map(
+      (email) =>
+        prisma.user.upsert({
+          where: { email },
+          update: {},
+          create: { email, password: DEV_PASSWORD_HASH, role: Role.DINER },
+        }),
+    ),
   );
 
-  // ── Restaurants ─────────────────────────────────────────────────────────────
   const restaurantDefs = [
-    { name: 'Bistro Parisien',    cuisine: CuisineType.FRENCH,    city: 'Paris',      maxCapacity: 8,  owner: owners[0]! },
-    { name: 'Sakura Garden',      cuisine: CuisineType.JAPANESE,  city: 'Tokyo',      maxCapacity: 6,  owner: owners[0]! },
-    { name: 'Casa del Sole',      cuisine: CuisineType.ITALIAN,   city: 'Rome',       maxCapacity: 10, owner: owners[1]! },
-    { name: 'Spice of India',     cuisine: CuisineType.INDIAN,    city: 'Mumbai',     maxCapacity: 12, owner: owners[1]! },
+    {
+      name: 'Bistro Parisien',
+      cuisine: CuisineType.FRENCH,
+      city: 'Paris',
+      timezone: 'Europe/Paris',
+      owner: owners[0]!,
+      tables: [
+        { name: 'Table 1', minPartySize: 1, maxPartySize: 2 },
+        { name: 'Table 2', minPartySize: 1, maxPartySize: 2 },
+        { name: 'Booth A', minPartySize: 2, maxPartySize: 4 },
+        { name: 'Booth B', minPartySize: 2, maxPartySize: 6 },
+      ],
+    },
+    {
+      name: 'Sakura Garden',
+      cuisine: CuisineType.JAPANESE,
+      city: 'Tokyo',
+      timezone: 'Asia/Tokyo',
+      owner: owners[0]!,
+      tables: [
+        { name: 'Tatami 1', minPartySize: 1, maxPartySize: 4 },
+        { name: 'Tatami 2', minPartySize: 1, maxPartySize: 4 },
+      ],
+    },
+    {
+      name: 'Casa del Sole',
+      cuisine: CuisineType.ITALIAN,
+      city: 'Rome',
+      timezone: 'Europe/Rome',
+      owner: owners[1]!,
+      tables: [
+        { name: 'Patio 1', minPartySize: 2, maxPartySize: 4 },
+        { name: 'Patio 2', minPartySize: 2, maxPartySize: 4 },
+        { name: 'Indoor 1', minPartySize: 1, maxPartySize: 6 },
+      ],
+    },
+    {
+      name: 'Spice of India',
+      cuisine: CuisineType.INDIAN,
+      city: 'Mumbai',
+      timezone: 'Asia/Kolkata',
+      owner: owners[1]!,
+      seatingMode: 'FLEXIBLE' as const,
+      tables: [
+        { name: 'Table 1', minPartySize: 2, maxPartySize: 4 },
+        { name: 'Table 2', minPartySize: 2, maxPartySize: 4 },
+        { name: 'Table 3', minPartySize: 2, maxPartySize: 4 },
+      ],
+    },
   ];
 
-  const restaurants = await Promise.all(
-    restaurantDefs.map((r) =>
-      prisma.restaurant.upsert({
-        where: { slug: r.name.toLowerCase().replace(/\s+/g, '-') },
+  const restaurants = [];
+  for (const r of restaurantDefs) {
+    const restaurant = await prisma.restaurant.upsert({
+      where: { slug: r.name.toLowerCase().replace(/\s+/g, '-') },
+      update: {},
+      create: {
+        ownerId: r.owner.id,
+        name: r.name,
+        slug: r.name.toLowerCase().replace(/\s+/g, '-'),
+        cuisine: r.cuisine,
+        description: faker.lorem.paragraph(),
+        address: faker.location.streetAddress(),
+        city: r.city,
+        timezone: 'timezone' in r ? r.timezone : 'UTC',
+        seatingMode: 'seatingMode' in r ? r.seatingMode : 'LOCKED',
+        defaultDurationMins: 90,
+        openMinutes: 660,
+        closeMinutes: 1380,
+      },
+    });
+    restaurants.push({ ...restaurant, tableDefs: r.tables });
+  }
+
+  for (const restaurant of restaurants) {
+    for (const t of restaurant.tableDefs) {
+      await prisma.diningTable.upsert({
+        where: {
+          restaurantId_name: { restaurantId: restaurant.id, name: t.name },
+        },
         update: {},
         create: {
-          ownerId:     r.owner.id,
-          name:        r.name,
-          slug:        r.name.toLowerCase().replace(/\s+/g, '-'),
-          cuisine:     r.cuisine,
-          description: faker.lorem.paragraph(),
-          address:     faker.location.streetAddress(),
-          city:        r.city,
-          maxCapacity: r.maxCapacity,
+          restaurantId: restaurant.id,
+          name: t.name,
+          minPartySize: t.minPartySize,
+          maxPartySize: t.maxPartySize,
         },
-      })
-    )
-  );
-
-  // ── Time Slots (next 7 days, 4 slots/day per restaurant) ──────────────────
-  const slots = [];
-  for (const restaurant of restaurants) {
-    for (let day = 1; day <= 7; day++) {
-      for (const hour of [12, 14, 19, 21]) {
-        const startsAt = new Date();
-        startsAt.setDate(startsAt.getDate() + day);
-        startsAt.setHours(hour, 0, 0, 0);
-
-        const slot = await prisma.timeSlot.upsert({
-          where: { restaurantId_startsAt: { restaurantId: restaurant.id, startsAt } },
-          update: {},
-          create: {
-            restaurantId: restaurant.id,
-            startsAt,
-            capacity: restaurant.maxCapacity,
-            durationMins: 90,
-          },
-        });
-        slots.push(slot);
-      }
+      });
     }
   }
 
-  // ── Bookings (mix of statuses — covers edge cases) ──────────────────────────
-  const statusMix: BookingStatus[] = [
-    BookingStatus.CONFIRMED, BookingStatus.CONFIRMED, BookingStatus.CONFIRMED,
-    BookingStatus.PENDING,   BookingStatus.PENDING,
-    BookingStatus.CANCELLED,
+  const statusMix: ReservationStatus[] = [
+    ReservationStatus.SCHEDULED,
+    ReservationStatus.SCHEDULED,
+    ReservationStatus.SEATED,
+    ReservationStatus.CANCELLED,
+    ReservationStatus.NO_SHOW,
   ];
 
-  let bookingCount = 0;
+  let reservationCount = 0;
   for (const diner of diners.slice(0, 6)) {
     for (let i = 0; i < 2; i++) {
-      const slot = slots[Math.floor(Math.random() * slots.length)]!;
-      const status = statusMix[bookingCount % statusMix.length]!;
-      const partySize = Math.min(2, slot.capacity - slot.booked);
-      if (partySize < 1) continue;
+      const restaurant = restaurants[reservationCount % restaurants.length]!;
+      const tables = await prisma.diningTable.findMany({
+        where: { restaurantId: restaurant.id, isActive: true },
+        orderBy: { maxPartySize: 'asc' },
+      });
+      if (tables.length === 0) continue;
 
-      await prisma.booking.create({
+      const table = tables[reservationCount % tables.length]!;
+      const startsAt = new Date();
+      startsAt.setDate(startsAt.getDate() + 1 + (reservationCount % 5));
+      startsAt.setUTCHours(12 + (reservationCount % 4) * 2, 0, 0, 0);
+      const endsAt = new Date(startsAt.getTime() + 90 * 60_000);
+      const status = statusMix[reservationCount % statusMix.length]!;
+      const partySize = Math.min(2, table.maxPartySize);
+
+      const reservation = await prisma.reservation.create({
         data: {
-          restaurantId: slot.restaurantId,
-          dinerId:      diner.id,
-          slotId:       slot.id,
+          restaurantId: restaurant.id,
+          dinerId: diner.id,
           partySize,
+          startsAt,
+          endsAt,
           status,
+          reservationType: 'STANDARD',
+          source: 'ONLINE',
+          ...(status === 'CANCELLED' && { cancelledAt: new Date() }),
+          ...(status === 'NO_SHOW' && { noShowAt: new Date() }),
+          ...(status === 'SEATED' && { seatedAt: new Date() }),
         },
       });
 
-      if (status !== BookingStatus.CANCELLED) {
-        await prisma.timeSlot.update({
-          where: { id: slot.id },
-          data:  { booked: { increment: partySize } },
+      if (status === 'SCHEDULED' || status === 'SEATED' || status === 'COMPLETED') {
+        await prisma.reservationTable.create({
+          data: {
+            reservationId: reservation.id,
+            tableId: table.id,
+            startsAt,
+            endsAt,
+          },
         });
       }
-      bookingCount++;
+
+      reservationCount++;
     }
   }
 
-  // ── Fully booked slot (for testing 409 conflict) ──────────────────────────
-  const fullSlot = slots[0]!;
-  await prisma.timeSlot.update({
-    where: { id: fullSlot.id },
-    data:  { booked: fullSlot.capacity },
-  });
-
-  console.log(`✅ Seed complete:
-  - ${owners.length} owners
-  - ${diners.length} diners
-  - ${restaurants.length} restaurants
-  - ${slots.length} time slots (next 7 days, 4 slots/day)
-  - ${bookingCount} bookings (mix of CONFIRMED/PENDING/CANCELLED)
-  - 1 fully-booked slot for 409 testing (slot id: ${fullSlot.id})
-  `);
+  console.log(`✅ Seeded ${owners.length} owners, ${diners.length} diners`);
+  console.log(`✅ Seeded ${restaurants.length} restaurants with dining tables`);
+  console.log(`✅ Seeded ${reservationCount} reservations`);
 }
 
 main()
-  .catch((e: unknown) => { console.error(e); process.exit(1); })
-  .finally(() => { void prisma.$disconnect(); });
+  .catch((e) => {
+    console.error(e);
+    process.exit(1);
+  })
+  .finally(() => void prisma.$disconnect());

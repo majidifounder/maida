@@ -1,11 +1,15 @@
 import type { FastifyInstance } from 'fastify';
 import {
+  CreateCombinationSchema,
   CreateRestaurantSchema,
-  UpdateRestaurantSchema,
+  CreateTableSchema,
+  CreateTurnTimeRuleSchema,
+  GetAvailabilityQuerySchema,
   SearchRestaurantsSchema,
-  GetSlotsQuerySchema,
-  CreateSlotsSchema,
-  UpdateSlotSchema,
+  UpdateCombinationSchema,
+  UpdateReservationConfigSchema,
+  UpdateRestaurantSchema,
+  UpdateTableSchema,
 } from './restaurant.schema.js';
 import * as RestaurantService from './restaurant.service.js';
 import { assertOwnerRestaurantPlanLimit } from '../subscription/subscription.service.js';
@@ -52,20 +56,21 @@ export async function restaurantRoutes(fastify: FastifyInstance): Promise<void> 
     }
   });
 
-  fastify.get('/restaurants/:id/slots', async (request, reply) => {
+  fastify.get('/restaurants/:id/availability', async (request, reply) => {
     const { id } = request.params as { id: string };
-    const query = GetSlotsQuerySchema.safeParse(request.query);
+    const query = GetAvailabilityQuerySchema.safeParse(request.query);
     if (!query.success) {
       return reply
         .code(422)
         .send({ error: 'Validation failed', details: query.error.flatten() });
     }
     try {
-      const slots = await RestaurantService.getAvailableSlots(
+      const availability = await RestaurantService.getAvailability(
         id,
         query.data.date,
+        query.data.partySize,
       );
-      return reply.code(200).send({ slots });
+      return reply.code(200).send(availability);
     } catch (err) {
       return handleRouteError(err, reply);
     }
@@ -125,6 +130,47 @@ export async function restaurantRoutes(fastify: FastifyInstance): Promise<void> 
     }
   });
 
+  fastify.patch(
+    '/restaurants/:id/reservation-config',
+    ownerHooks,
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const body = UpdateReservationConfigSchema.safeParse(request.body);
+      if (!body.success) {
+        return reply
+          .code(422)
+          .send({ error: 'Validation failed', details: body.error.flatten() });
+      }
+      try {
+        const config = await RestaurantService.updateReservationConfig(
+          id,
+          request.user!.sub,
+          body.data,
+        );
+        return reply.code(200).send({ config });
+      } catch (err) {
+        return handleRouteError(err, reply);
+      }
+    },
+  );
+
+  fastify.get(
+    '/restaurants/:id/config',
+    ownerHooks,
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      try {
+        const config = await RestaurantService.getRestaurantConfig(
+          id,
+          request.user!.sub,
+        );
+        return reply.code(200).send({ config });
+      } catch (err) {
+        return handleRouteError(err, reply);
+      }
+    },
+  );
+
   fastify.delete('/restaurants/:id', ownerHooks, async (request, reply) => {
     const { id } = request.params as { id: string };
     try {
@@ -135,45 +181,57 @@ export async function restaurantRoutes(fastify: FastifyInstance): Promise<void> 
     }
   });
 
-  fastify.post('/restaurants/:id/slots', ownerHooks, async (request, reply) => {
+  // ── Tables ──────────────────────────────────────────────────────────────────
+
+  fastify.get('/restaurants/:id/tables', ownerHooks, async (request, reply) => {
     const { id } = request.params as { id: string };
-    const body = CreateSlotsSchema.safeParse(request.body);
+    try {
+      const tables = await RestaurantService.listTables(id, request.user!.sub);
+      return reply.code(200).send({ tables });
+    } catch (err) {
+      return handleRouteError(err, reply);
+    }
+  });
+
+  fastify.post('/restaurants/:id/tables', ownerHooks, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = CreateTableSchema.safeParse(request.body);
     if (!body.success) {
       return reply
         .code(422)
         .send({ error: 'Validation failed', details: body.error.flatten() });
     }
     try {
-      const slots = await RestaurantService.createSlots(
+      const table = await RestaurantService.createTable(
         id,
         request.user!.sub,
         body.data,
       );
-      return reply.code(201).send({ slots });
+      return reply.code(201).send({ table });
     } catch (err) {
       return handleRouteError(err, reply);
     }
   });
 
   fastify.patch(
-    '/restaurants/:id/slots/:slotId',
+    '/restaurants/:id/tables/:tableId',
     ownerHooks,
     async (request, reply) => {
-      const { id, slotId } = request.params as { id: string; slotId: string };
-      const body = UpdateSlotSchema.safeParse(request.body);
+      const { id, tableId } = request.params as { id: string; tableId: string };
+      const body = UpdateTableSchema.safeParse(request.body);
       if (!body.success) {
         return reply
           .code(422)
           .send({ error: 'Validation failed', details: body.error.flatten() });
       }
       try {
-        const slot = await RestaurantService.updateSlot(
+        const table = await RestaurantService.updateTable(
           id,
-          slotId,
+          tableId,
           request.user!.sub,
           body.data,
         );
-        return reply.code(200).send({ slot });
+        return reply.code(200).send({ table });
       } catch (err) {
         return handleRouteError(err, reply);
       }
@@ -181,12 +239,165 @@ export async function restaurantRoutes(fastify: FastifyInstance): Promise<void> 
   );
 
   fastify.delete(
-    '/restaurants/:id/slots/:slotId',
+    '/restaurants/:id/tables/:tableId',
     ownerHooks,
     async (request, reply) => {
-      const { id, slotId } = request.params as { id: string; slotId: string };
+      const { id, tableId } = request.params as { id: string; tableId: string };
       try {
-        await RestaurantService.deleteSlot(id, slotId, request.user!.sub);
+        await RestaurantService.deleteTable(id, tableId, request.user!.sub);
+        return reply.code(204).send();
+      } catch (err) {
+        return handleRouteError(err, reply);
+      }
+    },
+  );
+
+  // ── Combinations ────────────────────────────────────────────────────────────
+
+  fastify.get(
+    '/restaurants/:id/combinations',
+    ownerHooks,
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      try {
+        const combinations = await RestaurantService.listCombinations(
+          id,
+          request.user!.sub,
+        );
+        return reply.code(200).send({ combinations });
+      } catch (err) {
+        return handleRouteError(err, reply);
+      }
+    },
+  );
+
+  fastify.post(
+    '/restaurants/:id/combinations',
+    ownerHooks,
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const body = CreateCombinationSchema.safeParse(request.body);
+      if (!body.success) {
+        return reply
+          .code(422)
+          .send({ error: 'Validation failed', details: body.error.flatten() });
+      }
+      try {
+        const combination = await RestaurantService.createCombination(
+          id,
+          request.user!.sub,
+          body.data,
+        );
+        return reply.code(201).send({ combination });
+      } catch (err) {
+        return handleRouteError(err, reply);
+      }
+    },
+  );
+
+  fastify.patch(
+    '/restaurants/:id/combinations/:combinationId',
+    ownerHooks,
+    async (request, reply) => {
+      const { id, combinationId } = request.params as {
+        id: string;
+        combinationId: string;
+      };
+      const body = UpdateCombinationSchema.safeParse(request.body);
+      if (!body.success) {
+        return reply
+          .code(422)
+          .send({ error: 'Validation failed', details: body.error.flatten() });
+      }
+      try {
+        const combination = await RestaurantService.updateCombination(
+          id,
+          combinationId,
+          request.user!.sub,
+          body.data,
+        );
+        return reply.code(200).send({ combination });
+      } catch (err) {
+        return handleRouteError(err, reply);
+      }
+    },
+  );
+
+  fastify.delete(
+    '/restaurants/:id/combinations/:combinationId',
+    ownerHooks,
+    async (request, reply) => {
+      const { id, combinationId } = request.params as {
+        id: string;
+        combinationId: string;
+      };
+      try {
+        await RestaurantService.deleteCombination(
+          id,
+          combinationId,
+          request.user!.sub,
+        );
+        return reply.code(204).send();
+      } catch (err) {
+        return handleRouteError(err, reply);
+      }
+    },
+  );
+
+  // ── Turn-time rules ─────────────────────────────────────────────────────────
+
+  fastify.get(
+    '/restaurants/:id/turn-time-rules',
+    ownerHooks,
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      try {
+        const rules = await RestaurantService.listTurnTimeRules(
+          id,
+          request.user!.sub,
+        );
+        return reply.code(200).send({ rules });
+      } catch (err) {
+        return handleRouteError(err, reply);
+      }
+    },
+  );
+
+  fastify.post(
+    '/restaurants/:id/turn-time-rules',
+    ownerHooks,
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const body = CreateTurnTimeRuleSchema.safeParse(request.body);
+      if (!body.success) {
+        return reply
+          .code(422)
+          .send({ error: 'Validation failed', details: body.error.flatten() });
+      }
+      try {
+        const rule = await RestaurantService.createTurnTimeRule(
+          id,
+          request.user!.sub,
+          body.data,
+        );
+        return reply.code(201).send({ rule });
+      } catch (err) {
+        return handleRouteError(err, reply);
+      }
+    },
+  );
+
+  fastify.delete(
+    '/restaurants/:id/turn-time-rules/:ruleId',
+    ownerHooks,
+    async (request, reply) => {
+      const { id, ruleId } = request.params as { id: string; ruleId: string };
+      try {
+        await RestaurantService.deleteTurnTimeRule(
+          id,
+          ruleId,
+          request.user!.sub,
+        );
         return reply.code(204).send();
       } catch (err) {
         return handleRouteError(err, reply);
