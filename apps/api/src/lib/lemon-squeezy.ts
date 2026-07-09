@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { SubscriptionStatus } from '@restaurant/db';
 import { env } from '../env.js';
+import { logger } from './logger.js';
 
 export function verifyLemonSqueezySignature(
   rawBody: Buffer | string,
@@ -42,9 +43,7 @@ export function lsStatusToInternal(lsStatus: string): SubscriptionStatus {
     case 'expired':
       return SubscriptionStatus.EXPIRED;
     default:
-      console.warn(
-        `[LemonSqueezy] Unknown LS status: "${lsStatus}" — defaulting to PAST_DUE`,
-      );
+      logger.warn({ lsStatus }, '[LemonSqueezy] Unknown LS status — defaulting to PAST_DUE');
       return SubscriptionStatus.PAST_DUE;
   }
 }

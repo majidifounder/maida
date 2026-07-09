@@ -1,4 +1,4 @@
-import { getRedisClient } from './redis.js';
+import { ensureRedisConnected } from './redis.js';
 import { logger } from './logger.js';
 
 const THREAT_WINDOWS = {
@@ -20,7 +20,7 @@ export async function recordThreatSignal(
   const key = `${config.key}${ip}`;
 
   try {
-    const redis = getRedisClient();
+    const redis = await ensureRedisConnected(1_500);
     const count = await redis.incr(key);
     if (count === 1) await redis.expire(key, config.windowSec);
 
@@ -37,7 +37,7 @@ export async function isExtendedBanned(ip: string): Promise<boolean> {
   if (process.env.NODE_ENV === 'test') return false;
 
   try {
-    const redis = getRedisClient();
+    const redis = await ensureRedisConnected(1_500);
     const banned = await redis.get(`${EXTENDED_BAN_PREFIX}${ip}`);
     return banned !== null;
   } catch {

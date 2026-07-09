@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
+import { prisma } from '@restaurant/db';
 import { buildTestServer } from './helpers/server.js';
 import { cleanupTestUsers } from './helpers/db.js';
 import { uniqueEmail, registerUser, loginUser } from './helpers/auth.js';
@@ -49,6 +50,13 @@ describe('POST /auth/register', () => {
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body) as { user: { id: string; role: string } };
     expect(body.user.role).toMatch(/owner/i);
+
+    const sub = await prisma.subscription.findUnique({
+      where: { userId: body.user.id },
+    });
+    expect(sub?.status).toBe('TRIALING');
+    expect(sub?.trialStartedAt).toBeTruthy();
+
     createdUserIds.push(body.user.id);
   });
 

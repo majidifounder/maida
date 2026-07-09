@@ -2,10 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { prisma } from '@restaurant/db';
 import { getRedisClient } from '../../lib/redis.js';
 import { NotFoundError, UnprocessableError } from '../../errors/index.js';
-import { getPlanLimits } from '../../lib/plan.js';
-import { getCurrentPlan } from '../subscription/subscription.service.js';
+import { validateLogoBuffer } from '../../lib/image-validation.js';
+import { isLogoUploadAvailable, uploadRestaurantLogo as putLogoInR2 } from '../../lib/r2-storage.js';
+import {
+  assertOwnerCanOperate,
+  getEffectiveLimitsForOwner,
+} from '../subscription/subscription.service.js';
 import {
   computeAvailabilityTimes,
+  resolveDurationMins,
   serviceWindowBounds,
 } from '../../lib/reservation-engine.js';
 import type {
@@ -20,11 +25,9 @@ import type {
   UpdateTableInput,
 } from './restaurant.schema.js';
 
-const AVAILABILITY_CACHE_TTL = 300;
+import { availabilityCacheKey, writeAvailabilityCache } from '../../lib/availability-cache.js';
 
-function availabilityCacheKey(restaurantId: string, date: string): string {
-  return `restaurant:${restaurantId}:availability:${date}`;
-}
+const AVAILABILITY_CACHE_TTL = 300;
 
 async function assertRestaurantOwner(restaurantId: string, callerId: string) {
   const restaurant = await prisma.restaurant.findFirst({
@@ -67,6 +70,7 @@ const PUBLIC_RESTAURANT_SELECT = {
   customFee: true,
   extraHourFee: true,
   feeCurrency: true,
+  maxExtraHours: true,
 } as const;
 
 const OWNER_RESTAURANT_SELECT = {
@@ -89,8 +93,8 @@ function formatPublicRestaurant<T extends {
 }
 
 async function assertRestaurantPlanLimit(ownerId: string): Promise<void> {
-  const plan = await getCurrentPlan(ownerId);
-  const limits = getPlanLimits(plan as import('@restaurant/types').Plan);
+  await assertOwnerCanOperate(ownerId);
+  const limits = await getEffectiveLimitsForOwner(ownerId);
   if (limits.restaurants === Infinity) return;
 
   const count = await prisma.restaurant.count({
@@ -99,7 +103,7 @@ async function assertRestaurantPlanLimit(ownerId: string): Promise<void> {
 
   if (count >= limits.restaurants) {
     throw new UnprocessableError(
-      `Your ${plan} plan allows up to ${limits.restaurants} restaurant(s). Upgrade to add more.`,
+      `You've reached your plan limit of ${limits.restaurants} restaurant(s). Upgrade your plan on Billing to add another.`,
     );
   }
 }
@@ -108,8 +112,8 @@ async function assertTablePlanLimit(
   restaurantId: string,
   ownerId: string,
 ): Promise<void> {
-  const plan = await getCurrentPlan(ownerId);
-  const limits = getPlanLimits(plan as import('@restaurant/types').Plan);
+  await assertOwnerCanOperate(ownerId);
+  const limits = await getEffectiveLimitsForOwner(ownerId);
   if (limits.tablesPerRestaurant === Infinity) return;
 
   const count = await prisma.diningTable.count({
@@ -118,7 +122,7 @@ async function assertTablePlanLimit(
 
   if (count >= limits.tablesPerRestaurant) {
     throw new UnprocessableError(
-      `Your plan allows up to ${limits.tablesPerRestaurant} active table(s) per restaurant.`,
+      `You've reached your plan limit of ${limits.tablesPerRestaurant} active table(s) for this restaurant. Remove a table or upgrade your plan on Billing.`,
     );
   }
 }
@@ -127,11 +131,11 @@ async function assertCombinationPlanLimit(
   restaurantId: string,
   ownerId: string,
 ): Promise<void> {
-  const plan = await getCurrentPlan(ownerId);
-  const limits = getPlanLimits(plan as import('@restaurant/types').Plan);
+  await assertOwnerCanOperate(ownerId);
+  const limits = await getEffectiveLimitsForOwner(ownerId);
   if (!limits.flexibleSeating) {
     throw new UnprocessableError(
-      'Flexible seating and table combinations require a Pro or Premium plan.',
+      'Flexible seating and table combinations need a Pro or Premium plan. Upgrade on Billing to unlock this.',
     );
   }
   if (limits.combinationsPerRestaurant === Infinity) return;
@@ -142,7 +146,7 @@ async function assertCombinationPlanLimit(
 
   if (count >= limits.combinationsPerRestaurant) {
     throw new UnprocessableError(
-      `Your plan allows up to ${limits.combinationsPerRestaurant} table combination(s) per restaurant.`,
+      `You've reached your plan limit of ${limits.combinationsPerRestaurant} table combination(s). Upgrade on Billing to add more.`,
     );
   }
 }
@@ -151,8 +155,8 @@ async function assertTurnTimeRulePlanLimit(
   restaurantId: string,
   ownerId: string,
 ): Promise<void> {
-  const plan = await getCurrentPlan(ownerId);
-  const limits = getPlanLimits(plan as import('@restaurant/types').Plan);
+  await assertOwnerCanOperate(ownerId);
+  const limits = await getEffectiveLimitsForOwner(ownerId);
   if (limits.turnTimeRulesPerRestaurant === Infinity) return;
 
   const count = await prisma.turnTimeRule.count({
@@ -161,7 +165,7 @@ async function assertTurnTimeRulePlanLimit(
 
   if (count >= limits.turnTimeRulesPerRestaurant) {
     throw new UnprocessableError(
-      `Your plan allows up to ${limits.turnTimeRulesPerRestaurant} turn-time rule(s) per restaurant.`,
+      `You've reached your plan limit of ${limits.turnTimeRulesPerRestaurant} turn-time rule(s). Upgrade on Billing to add more, or delete an existing rule.`,
     );
   }
 }
@@ -272,38 +276,52 @@ export async function getAvailability(
   });
   if (!restaurant) throw new NotFoundError('Restaurant not found');
 
-  const cacheKey = `${availabilityCacheKey(restaurantId, date)}:${partySize}`;
+  const cacheKey = availabilityCacheKey(restaurantId, date, partySize);
+  let times: Awaited<ReturnType<typeof computeAvailabilityTimes>> | null = null;
   try {
     const redis = getRedisClient();
     const cached = await redis.get(cacheKey);
-    if (cached) return JSON.parse(cached) as { times: unknown[] };
+    if (cached) {
+      const parsed = JSON.parse(cached) as { times: typeof times };
+      times = parsed.times;
+    }
   } catch {
     /* non-fatal */
   }
 
-  const times = await computeAvailabilityTimes(restaurant, date, partySize);
-  const result = {
-    times,
-    serviceWindow: serviceWindowBounds(
-      date,
-      restaurant.openMinutes,
-      restaurant.closeMinutes,
-      restaurant.timezone,
-    ),
-  };
-
-  try {
-    const redis = getRedisClient();
-    await redis.set(cacheKey, JSON.stringify({ times }), 'EX', AVAILABILITY_CACHE_TTL);
-  } catch {
-    /* non-fatal */
+  if (!times) {
+    times = await computeAvailabilityTimes(restaurant, date, partySize);
+    try {
+      await writeAvailabilityCache(
+        restaurantId,
+        date,
+        partySize,
+        JSON.stringify({ times }),
+        AVAILABILITY_CACHE_TTL,
+      );
+    } catch {
+      /* non-fatal */
+    }
   }
+
+  const standardDurationMins = await resolveDurationMins(
+    restaurant.id,
+    partySize,
+    restaurant.defaultDurationMins,
+  );
+  const serviceWindow = serviceWindowBounds(
+    date,
+    restaurant.openMinutes,
+    restaurant.closeMinutes,
+    restaurant.timezone,
+  );
 
   return {
     times,
+    standardDurationMins,
     serviceWindow: {
-      open: result.serviceWindow.windowStart.toISOString(),
-      close: result.serviceWindow.windowEnd.toISOString(),
+      open: serviceWindow.windowStart.toISOString(),
+      close: serviceWindow.windowEnd.toISOString(),
     },
   };
 }
@@ -323,11 +341,11 @@ async function assertFlexibleSeatingAllowed(
 ): Promise<void> {
   if (seatingMode !== 'FLEXIBLE') return;
 
-  const plan = await getCurrentPlan(ownerId);
-  const limits = getPlanLimits(plan as import('@restaurant/types').Plan);
+  await assertOwnerCanOperate(ownerId);
+  const limits = await getEffectiveLimitsForOwner(ownerId);
   if (!limits.flexibleSeating) {
     throw new UnprocessableError(
-      'Flexible seating mode requires a Pro or Premium plan.',
+      'Flexible seating needs a Pro or Premium plan. Upgrade on Billing, then switch seating mode here — your tables and hours stay as they are.',
     );
   }
 }
@@ -373,6 +391,7 @@ export async function updateRestaurant(
   callerId: string,
   input: UpdateRestaurantInput,
 ) {
+  await assertOwnerCanOperate(callerId);
   await assertRestaurantOwner(restaurantId, callerId);
 
   const data: Record<string, unknown> = {};
@@ -398,13 +417,13 @@ export async function updateReservationConfig(
   input: UpdateReservationConfigInput,
 ) {
   const { ownerId } = await assertRestaurantOwner(restaurantId, callerId);
+  await assertOwnerCanOperate(ownerId);
 
   if (input.seatingMode === 'FLEXIBLE') {
-    const plan = await getCurrentPlan(ownerId);
-    const limits = getPlanLimits(plan as import('@restaurant/types').Plan);
+    const limits = await getEffectiveLimitsForOwner(ownerId);
     if (!limits.flexibleSeating) {
       throw new UnprocessableError(
-        'Flexible seating mode requires a Pro or Premium plan.',
+        'Flexible seating needs a Pro or Premium plan. Upgrade on Billing, then switch seating mode here — your tables and hours stay as they are.',
       );
     }
   }
@@ -419,6 +438,15 @@ export async function updateReservationConfig(
   if (input.customFee !== undefined) data.customFee = input.customFee;
   if (input.extraHourFee !== undefined) data.extraHourFee = input.extraHourFee;
   if (input.feeCurrency !== undefined) data.feeCurrency = input.feeCurrency;
+  if (input.maxExtraHours !== undefined) {
+    const limits = await getEffectiveLimitsForOwner(ownerId);
+    if (!limits.customReservations) {
+      throw new UnprocessableError(
+        'Maximum extra time for diners needs a Pro or Premium plan. Upgrade on Billing to configure it.',
+      );
+    }
+    data.maxExtraHours = input.maxExtraHours;
+  }
 
   const updated = await prisma.restaurant.update({
     where: { id: restaurantId },
@@ -435,6 +463,7 @@ export async function updateReservationConfig(
 }
 
 export async function deleteRestaurant(restaurantId: string, callerId: string) {
+  await assertOwnerCanOperate(callerId);
   await assertRestaurantOwner(restaurantId, callerId);
 
   await prisma.restaurant.update({
@@ -481,6 +510,7 @@ export async function updateTable(
   callerId: string,
   input: UpdateTableInput,
 ) {
+  await assertOwnerCanOperate(callerId);
   await assertRestaurantOwner(restaurantId, callerId);
 
   const existing = await prisma.diningTable.findFirst({
@@ -504,6 +534,7 @@ export async function deleteTable(
   tableId: string,
   callerId: string,
 ) {
+  await assertOwnerCanOperate(callerId);
   await assertRestaurantOwner(restaurantId, callerId);
 
   const existing = await prisma.diningTable.findFirst({
@@ -555,7 +586,7 @@ export async function createCombination(
   });
   if (restaurant?.seatingMode !== 'FLEXIBLE') {
     throw new UnprocessableError(
-      'Table combinations require FLEXIBLE seating mode.',
+      'Table combinations only work in Flexible seating mode. Change seating mode in Reservation settings first.',
     );
   }
 
@@ -594,6 +625,7 @@ export async function updateCombination(
   callerId: string,
   input: UpdateCombinationInput,
 ) {
+  await assertOwnerCanOperate(callerId);
   await assertRestaurantOwner(restaurantId, callerId);
 
   const existing = await prisma.tableCombination.findFirst({
@@ -639,6 +671,7 @@ export async function deleteCombination(
   combinationId: string,
   callerId: string,
 ) {
+  await assertOwnerCanOperate(callerId);
   await assertRestaurantOwner(restaurantId, callerId);
 
   const existing = await prisma.tableCombination.findFirst({
@@ -692,6 +725,7 @@ export async function deleteTurnTimeRule(
   ruleId: string,
   callerId: string,
 ) {
+  await assertOwnerCanOperate(callerId);
   await assertRestaurantOwner(restaurantId, callerId);
 
   const existing = await prisma.turnTimeRule.findFirst({
@@ -700,4 +734,37 @@ export async function deleteTurnTimeRule(
   if (!existing) throw new NotFoundError('Turn-time rule not found');
 
   await prisma.turnTimeRule.delete({ where: { id: ruleId } });
+}
+
+export async function setRestaurantLogo(
+  restaurantId: string,
+  callerId: string,
+  fileBuffer: Buffer,
+): Promise<{ imageUrl: string }> {
+  await assertOwnerCanOperate(callerId);
+  await assertRestaurantOwner(restaurantId, callerId);
+
+  if (!isLogoUploadAvailable()) {
+    throw new UnprocessableError(
+      'Logo upload is not configured on this server. Please try again later.',
+    );
+  }
+
+  let image;
+  try {
+    image = validateLogoBuffer(fileBuffer);
+  } catch (err) {
+    throw new UnprocessableError(
+      err instanceof Error ? err.message : 'Invalid image file',
+    );
+  }
+
+  const imageUrl = await putLogoInR2(restaurantId, fileBuffer, image);
+
+  await prisma.restaurant.update({
+    where: { id: restaurantId },
+    data: { imageUrl },
+  });
+
+  return { imageUrl };
 }

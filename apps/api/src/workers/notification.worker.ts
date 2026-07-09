@@ -1,6 +1,7 @@
 import { Worker, type Job } from 'bullmq';
 import { prisma } from '@restaurant/db';
 import { env } from '../env.js';
+import { logger } from '../lib/logger.js';
 import {
   getBullmqConnection,
   type ReservationEventPayload,
@@ -66,8 +67,9 @@ async function processNotificationJob(
       break;
 
     default:
-      console.warn(
-        `[NotificationWorker] No email handler for "${eventType}" on job ${job.id}`,
+      logger.warn(
+        { eventType, jobId: job.id },
+        '[NotificationWorker] No email handler for event',
       );
   }
 }
@@ -85,26 +87,27 @@ export function startNotificationWorker(): () => Promise<void> {
   );
 
   worker.on('completed', (job) => {
-    console.info(
-      `[NotificationWorker] ✓ job ${job.id} — event: ${job.data.eventType}`,
+    logger.info(
+      { jobId: job.id, eventType: job.data.eventType },
+      '[NotificationWorker] job completed',
     );
   });
 
   worker.on('failed', (job, err) => {
-    console.error(
-      `[NotificationWorker] ✗ job ${job?.id} — event: ${job?.data.eventType}`,
-      err,
+    logger.error(
+      { jobId: job?.id, eventType: job?.data.eventType, err },
+      '[NotificationWorker] job failed',
     );
   });
 
   worker.on('error', (err) => {
-    console.error('[NotificationWorker] Worker error', err);
+    logger.error({ err }, '[NotificationWorker] worker error');
   });
 
-  console.info(`[NotificationWorker] Listening on queue "${env.QUEUE_NAME}"`);
+  logger.info({ queue: env.QUEUE_NAME }, '[NotificationWorker] listening on queue');
 
   return async () => {
     await worker.close();
-    console.info('[NotificationWorker] Gracefully stopped');
+    logger.info('[NotificationWorker] gracefully stopped');
   };
 }

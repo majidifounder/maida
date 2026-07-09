@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { CuisineType, SeatingMode } from '@restaurant/db';
 import { isValidIanaTimezone } from '../../lib/timezone.js';
+import { validateServiceHours } from '../../lib/service-hours.js';
 
 const IanaTimezoneSchema = z
   .string()
@@ -22,14 +23,11 @@ export const CreateRestaurantSchema = z
     closeMinutes: z.number().int().min(1).max(1440).optional(),
   })
   .superRefine((data, ctx) => {
-    if (
-      data.openMinutes !== undefined &&
-      data.closeMinutes !== undefined &&
-      data.closeMinutes <= data.openMinutes
-    ) {
+    const err = validateServiceHours(data.openMinutes, data.closeMinutes);
+    if (err) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'Close time must be after open time',
+        message: err,
         path: ['closeMinutes'],
       });
     }
@@ -56,16 +54,14 @@ export const UpdateReservationConfigSchema = z
     customFee: z.number().min(0).nullable().optional(),
     extraHourFee: z.number().min(0).nullable().optional(),
     feeCurrency: z.string().length(3).optional(),
+    maxExtraHours: z.number().int().min(0).max(6).optional(),
   })
   .superRefine((data, ctx) => {
-    if (
-      data.openMinutes !== undefined &&
-      data.closeMinutes !== undefined &&
-      data.closeMinutes <= data.openMinutes
-    ) {
+    const err = validateServiceHours(data.openMinutes, data.closeMinutes);
+    if (err) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'Close time must be after open time',
+        message: err,
         path: ['closeMinutes'],
       });
     }

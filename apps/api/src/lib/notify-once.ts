@@ -1,4 +1,5 @@
 import { getRedisClient } from './redis.js';
+import { logger } from './logger.js';
 
 const NOTIFY_TTL_SECONDS = 86_400;
 const SENT_MARKER = 'sent';
@@ -23,16 +24,16 @@ export async function notifyOnce(
     const result = await redis.set(redisKey, SENT_MARKER, 'EX', NOTIFY_TTL_SECONDS, 'NX');
     acquired = result === 'OK';
   } catch (err) {
-    console.warn(
-      `[Notification] Redis SET NX failed, sending anyway (${key}):`,
-      (err as Error).message,
+    logger.warn(
+      { err, key },
+      '[Notification] Redis SET NX failed, sending anyway',
     );
     // Fail open: if Redis is unavailable, attempt the send rather than silently drop it.
     acquired = true;
   }
 
   if (!acquired) {
-    console.info(`[Notification] Skipping duplicate: ${key}`);
+    logger.info({ key }, '[Notification] Skipping duplicate');
     return;
   }
 

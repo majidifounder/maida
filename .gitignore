@@ -15,3 +15,6 @@ build
 # Local database backups — contain user data, never commit to GitHub
 backups/*.json
 backups/*.json.bak
+
+# Dev logo uploads (local fallback when R2 is not configured)
+apps/api/uploads/

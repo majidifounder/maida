@@ -14,6 +14,7 @@ import { CombinationsPanel } from '../components/restaurant/CombinationsPanel.js
 import { ReservationConfigPanel } from '../components/restaurant/ReservationConfigPanel.js';
 import { TablesPanel } from '../components/restaurant/TablesPanel.js';
 import { TurnTimeRulesPanel } from '../components/restaurant/TurnTimeRulesPanel.js';
+import { LogoUploadPanel } from '../components/restaurant/LogoUploadPanel.js';
 import { Card } from '../components/ui/Card.js';
 import { Button } from '../components/ui/Button.js';
 import { Input } from '../components/ui/Input.js';
@@ -187,6 +188,14 @@ export function RestaurantDetailPage() {
               Delete
             </Button>
           </div>
+        </div>
+
+        <div className="mt-6 border-t pt-6">
+          <LogoUploadPanel
+            restaurantId={restaurant.id}
+            imageUrl={restaurant.imageUrl}
+            restaurantName={restaurant.name}
+          />
         </div>
 
         {editing && (

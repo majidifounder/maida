@@ -29,6 +29,11 @@ const EnvSchema = z.object({
   LS_VARIANT_STARTER: z.string().min(1),
   LS_VARIANT_PRO: z.string().min(1),
   LS_VARIANT_PREMIUM: z.string().min(1),
+  R2_ACCOUNT_ID: z.string().min(1).optional(),
+  R2_ACCESS_KEY_ID: z.string().min(1).optional(),
+  R2_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+  R2_BUCKET_NAME: z.string().min(1).optional(),
+  R2_PUBLIC_URL: z.string().url().optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
@@ -36,6 +41,7 @@ export type Env = z.infer<typeof EnvSchema>;
 const parsed = EnvSchema.safeParse(process.env);
 
 if (!parsed.success) {
+  // eslint-disable-next-line no-console -- bootstrap validation before logger is available
   console.error(
     '❌ Invalid environment variables:\n',
     JSON.stringify(parsed.error.flatten().fieldErrors, null, 2),

@@ -2,6 +2,9 @@ export type Role = 'diner' | 'owner' | 'admin';
 
 export type Plan = 'STARTER' | 'PRO' | 'PREMIUM';
 
+/** Effective tier for limits and UI — trial is distinct from paid STARTER. */
+export type BillingTier = 'TRIAL' | Plan;
+
 export type SubscriptionStatus =
   | 'TRIALING'
   | 'ACTIVE'
@@ -25,12 +28,26 @@ export interface Subscription {
   userId: string;
   plan: Plan;
   status: SubscriptionStatus;
+  billingTier: BillingTier;
   currentPeriodEnd: string | null;
   renewsAt: string | null;
   cancelAtPeriodEnd: boolean;
   lemonSqueezyId: string | null;
+  trialStartedAt: string | null;
+  trialEndsAt: string | null;
+  trialDaysRemaining: number | null;
+  isTrialActive: boolean;
+  isTrialExpired: boolean;
+  canOperate: boolean;
   createdAt: string | null;
   updatedAt: string | null;
+}
+
+export interface PlanComparisonRow {
+  tier: BillingTier;
+  label: string;
+  price: string | null;
+  limits: PlanLimits;
 }
 
 export interface JWTPayload {
@@ -68,6 +85,9 @@ export interface Reservation {
   customFeeSnapshot: string | null;
   extraHourFeeSnapshot: string | null;
   feeCurrency: string | null;
+  untilClose: boolean;
+  wasCapped?: boolean;
+  estimatedFee?: string | null;
   createdAt: string;
 }
 

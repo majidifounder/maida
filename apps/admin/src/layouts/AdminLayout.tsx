@@ -9,6 +9,7 @@ const NAV_ITEMS = [
   { to: '/bookings', label: 'Bookings', icon: '📅' },
   { to: '/subscriptions', label: 'Subscriptions', icon: '💳' },
   { to: '/audit-logs', label: 'Audit Logs', icon: '📋' },
+  { to: '/feedback', label: 'Feedback', icon: '💬' },
 ];
 
 export function AdminLayout() {

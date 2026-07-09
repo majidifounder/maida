@@ -1,6 +1,7 @@
 import { Link, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.js';
 import { Button } from '../components/ui/Button.js';
+import { FeedbackForm } from '../components/FeedbackForm.js';
 
 export function RootLayout() {
   const { user, logout, loading } = useAuth();
@@ -16,7 +17,7 @@ export function RootLayout() {
       <header className="border-b border-gray-200 bg-white">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4">
           <Link to="/restaurants" className="text-xl font-bold text-brand-700">
-            Restaurant Booking
+            Maida
           </Link>
           <nav className="flex items-center gap-4">
             <Link
@@ -27,10 +28,10 @@ export function RootLayout() {
             </Link>
             {!loading && user && (
               <Link
-                to="/bookings"
+                to="/reservations"
                 className="text-sm font-medium text-gray-600 hover:text-brand-600"
               >
-                My Bookings
+                My reservations
               </Link>
             )}
             {!loading && user ? (
@@ -53,6 +54,13 @@ export function RootLayout() {
       <main className="mx-auto max-w-6xl px-4 py-8">
         <Outlet />
       </main>
+      {!loading && user && (
+        <footer className="border-t border-gray-200 bg-gray-50">
+          <div className="mx-auto max-w-6xl px-4 py-8">
+            <FeedbackForm />
+          </div>
+        </footer>
+      )}
     </div>
   );
 }

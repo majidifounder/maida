@@ -46,19 +46,48 @@ export async function loginUser(
     email?: string;
     password?: string;
     role?: 'diner' | 'owner';
-    /** Owner subscription plan; 'none' skips subscription row (defaults to virtual STARTER). */
-    subscriptionPlan?: 'STARTER' | 'PRO' | 'PREMIUM' | 'none';
+    /** Owner subscription override; 'none' skips row (lazy trial on first access). */
+    subscriptionPlan?:
+      | 'STARTER'
+      | 'PRO'
+      | 'PREMIUM'
+      | 'TRIAL'
+      | 'TRIAL_EXPIRED'
+      | 'none';
   } = {},
 ): Promise<TestCredentials> {
   const { email, password, userId } = await registerUser(server, opts);
 
   if (opts.role === 'owner') {
     const plan = opts.subscriptionPlan ?? 'PREMIUM';
-    if (plan !== 'none') {
+
+    if (plan === 'none') {
+      await prisma.subscription.deleteMany({ where: { userId } });
+    } else if (plan === 'TRIAL' || plan === 'TRIAL_EXPIRED') {
+      const trialStartedAt =
+        plan === 'TRIAL_EXPIRED'
+          ? new Date(Date.now() - 15 * 24 * 60 * 60 * 1000)
+          : new Date();
+      await prisma.subscription.upsert({
+        where: { userId },
+        create: {
+          userId,
+          plan: 'STARTER',
+          status: 'TRIALING',
+          trialStartedAt,
+        },
+        update: {
+          plan: 'STARTER',
+          status: 'TRIALING',
+          trialStartedAt,
+          lemonSqueezyId: null,
+        },
+      });
+    } else {
       await prisma.subscription.upsert({
         where: { userId },
         create: { userId, plan, status: 'ACTIVE' },
-        update: { plan, status: 'ACTIVE' },
+        update: { plan, status: 'ACTIVE', trialStartedAt: null },
       });
     }
   }
@@ -77,7 +106,6 @@ export async function loginUser(
     accessToken: string;
   };
 
-  // Refresh token is in the HttpOnly __Host-refresh cookie — extract from Set-Cookie header.
   const setCookieHeader = res.headers['set-cookie'];
   const cookieStr = Array.isArray(setCookieHeader)
     ? setCookieHeader.find((c) => c.startsWith('__Host-refresh='))

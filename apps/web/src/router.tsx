@@ -20,9 +20,10 @@ export const router = createBrowserRouter([
       { path: 'reset-password', element: <ResetPasswordPage /> },
       { path: 'restaurants', element: <RestaurantListPage /> },
       { path: 'restaurants/:id', element: <RestaurantDetailPage /> },
+      { path: 'bookings', element: <Navigate to="/reservations" replace /> },
       {
         element: <ProtectedRoute />,
-        children: [{ path: 'bookings', element: <MyBookingsPage /> }],
+        children: [{ path: 'reservations', element: <MyBookingsPage /> }],
       },
     ],
   },

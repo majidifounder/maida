@@ -63,6 +63,8 @@
 | 11 | Billing & Subscription Lifecycle | ✅ Done (2 of 2 tasks done) | LS webhook, checkout, plan enforcement, billing UI, cancel/resume |
 | 12 | Reservation Engine | ✅ Done (3 of 3 tasks done) | Timeline-based capacity model, GiST exclusion, tables/combinations, plan gates, E2E suite, owner onboarding UI |
 | 14 | Local Backup & Restore | ✅ Done (1 of 1 tasks done) | export-backup.ts, restore-backup.ts, backups/ folder, gitignore, pnpm scripts |
+| 15 | Trial & Plan Transitions | ✅ Done (2 of 2 tasks done) | 14-day owner trial, lazy expiry, billing UI, onboarding UX, logo upload, feedback, diner booking UX |
+| 16 | Custom reservation duration | ✅ Done (2 of 2 tasks done) | Extended + until-close backend; diner smart-defaults booking UX + duration picker |
 
 ---
 
@@ -963,6 +965,162 @@ Optional: `E2E_CONCURRENCY_ITERATIONS=25` (default), `API_URL=http://localhost:3
 
 ---
 
+### ✅ Phase 15 · Task 1 — Trial period & plan-tier transition integrity
+**Date:** 2026-07-06
+**Files created / modified:**
+- `packages/db/prisma/schema.prisma` — `Subscription.trialStartedAt` (timestamptz, nullable)
+- `packages/db/prisma/migrations/20260706120000_subscription_trial_started_at/` — migration
+- `packages/types/src/index.ts` — `BillingTier`, extended `Subscription`, `PlanComparisonRow`
+- `apps/api/src/lib/plan.ts` — `TRIAL_LIMITS`, `TRIAL_DAYS=14`, `PLAN_COMPARISON`, trial date helpers
+- `apps/api/src/modules/subscription/subscription.service.ts` — `ensureOwnerSubscription`, `resolveOwnerBillingState`, `getEffectiveLimitsForOwner`, `assertOwnerCanOperate`, lazy trial expiry
+- `apps/api/src/modules/subscription/subscription.routes.ts` — `/subscriptions/me` returns trial metadata + `planComparison`
+- `apps/api/src/modules/auth/auth.service.ts` — owner register creates `TRIALING` subscription with `trialStartedAt`
+- `apps/api/src/modules/restaurant/restaurant.service.ts` — effective limits + trial-expiry block on all owner mutations; seating mode changeable post-create (plan-gated)
+- `apps/api/src/modules/reservation/reservation.service.ts` — effective limits + trial-expiry block on reservations
+- `apps/dashboard/src/components/TrialBanner.tsx`, `PlanComparisonTable.tsx` — trial banner + tier comparison table
+- `apps/dashboard/src/layouts/DashboardLayout.tsx`, `BillingPage.tsx`, `useOwnerPlan.ts`, `plan-limits.ts`, `SeatingModeChoice.tsx`, `PlanGateNotice.tsx`
+- `apps/api/src/__tests__/subscription.test.ts`, `auth.test.ts`, `helpers/auth.ts` — trial lifecycle tests
+**Interfaces / types added:**
+- `BillingTier` — `'TRIAL' | Plan`; distinct from paid plan for limits/UI
+- `PlanComparisonRow` — tier label, price, limits for billing comparison grid
+- Extended `Subscription` — `billingTier`, `trialStartedAt`, `trialEndsAt`, `trialDaysRemaining`, `isTrialActive`, `isTrialExpired`, `canOperate`
+**API endpoints changed:**
+- `GET /subscriptions/me` — now returns `{ subscription, limits, planComparison }` with derived trial state
+**Trial limits chosen (stricter than STARTER):**
+- 1 restaurant, 25 reservations/month, 5 tables/restaurant, LOCKED-only, no custom fees, 0 combinations, 1 turn-time rule
+- Rationale: enough to evaluate onboarding + a few bookings, not enough to run production volume indefinitely
+**Expiry model:**
+- Lazy derivation from server-stored `trialStartedAt` (+14 days), same pattern as reservation COMPLETED status — no cron
+- Legacy owners without a row: lazy-init `TRIALING` using `user.createdAt` as trial start
+- Unpaid trial end: data preserved; `assertOwnerCanOperate` blocks new reservations + config mutations with explicit subscribe message
+**Seating mode transition:**
+- Already supported via `PATCH /restaurants/:id/reservation-config`; gated by `getEffectiveLimitsForOwner` — upgrade to Pro unlocks FLEXIBLE without recreating restaurant
+**Notes:**
+- Trial never touches Lemon Squeezy; webhook upsert on subscribe replaces `TRIALING` with paid status
+- Run `pnpm db:migrate` to apply `trialStartedAt` column before testing
+
+---
+
+### ✅ Phase 15 · Task 2 — Onboarding UX, restaurant logo, product feedback
+**Date:** 2026-07-06 (owner/API first pass); diner-side completed 2026-07-07
+**Status:** Complete.
+
+**Owner / API / admin (first pass):**
+- 24h service hours, searchable timezone picker, logo upload (R2), product feedback, messaging audit — unchanged from first pass
+
+**Diner web (completed 2026-07-07):**
+- **§0b:** Availability cache invalidation — tracked Redis SET per date; booking clears all party-size keys (no KEYS/SCAN)
+- **§0a + serviceWindow:** Service hours and slot times display in restaurant IANA timezone; detail page uses API `serviceWindow` for hours label; API cache hit returns full payload including `serviceWindow` + `standardDurationMins`
+- **§0.5 badges:** `SCHEDULED` / `SEATED` / `COMPLETED` / `CANCELLED` / `NO_SHOW` each have distinct styling on My reservations
+- **§0.5 CUSTOM:** Three-step booking flow offers Standard vs Custom length when restaurant has fees configured; duration + estimated fee shown before confirm; sends `reservationType: 'CUSTOM'` + `durationMins`
+- **§0.75 booking redesign:** `ReservationBookingFlow` — party size → compact meal-period time pills → single confirmation summary (no per-row expand/confirm); 409 shows suggested next time with one-click accept
+- **Nav copy:** Brand "Maida", route `/reservations`, `/bookings` redirects; nav link "My reservations"
+
+**Files added (diner pass):**
+- `apps/web/src/lib/restaurant-time.ts`, `apps/web/src/components/ReservationBookingFlow.tsx`
+- `apps/api/src/lib/availability-cache.ts`, `apps/api/src/__tests__/availability-cache.test.ts`
+- `apps/web/src/lib/restaurant-time.test.ts`
+
+**Not in scope (unchanged):**
+- No diner table/combination picker; no guest checkout
+- Reservation engine allocation logic untouched
+
+**Environment variables added:**
+- `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, `R2_PUBLIC_URL` (optional until logo upload enabled)
+**API endpoints added:**
+- `POST /feedback` — Bearer JWT, diner or owner
+- `POST /restaurants/:id/logo` — Bearer JWT + owner, multipart field `logo`
+- `GET /admin/feedback` — Bearer JWT + admin
+**Notes:**
+- Run `pnpm db:migrate` for `product_feedback` table
+- Configure R2 in `.env` to enable logo uploads in dev/staging
+
+---
+
+### ✅ Phase 16 · Task 1 — Custom reservation duration: extended hours + reserve-until-close (backend)
+**Date:** 2026-07-08
+**Status:** Complete.
+
+**Goal:** Three diner-facing durations via existing `reservationType` + new `untilClose` flag — Standard unchanged; Extended (`CUSTOM` + `durationMins`); Reserve-until-close (`CUSTOM` + `untilClose: true`, server-computed `endsAt`).
+
+**Schema:**
+- `Restaurant.maxExtraHours` (Int, default 2) — shared cap for Extended and Until-close: `standardDurationMins + maxExtraHours * 60`
+- `Reservation.untilClose` (Boolean, default false)
+- Migration: `20260708120000_reservation_duration_controls`
+
+**Engine (`reservation-engine.ts`):**
+- `resolveCustomReservationWindow()` — best-fit allocation, cap/close/following-conflict resolution, `wasCapped`
+- `computeEstimatedFee()` — whole-hour billing: `Math.ceil(extraMinutes / 60)` beyond standard turn; reuses Phase 12 fee snapshots
+- `maxCustomDurationMins()`, `findEarliestFollowingReservationStart()` (all combination member tables)
+
+**API:**
+- `POST /reservations` — `untilClose` optional; cross-field validation (422); duration cap 422 with `maxDurationMins`; 201 returns `wasCapped`, `estimatedFee`, `untilClose`
+- `PATCH /restaurants/:id/reservation-config` + `GET /restaurants/:id/config` — `maxExtraHours` (0–6, PRO+ gate)
+- `GET /restaurants/:id` (public) — includes `maxExtraHours`
+- `UnprocessableError.details` surfaced in 422 responses
+
+**Dashboard:**
+- `ReservationConfigPanel` — "Maximum extra time diners can add (hours)" field, gated like custom fees
+
+**Files created / modified:**
+- `packages/db/prisma/schema.prisma`, migration `20260708120000_reservation_duration_controls`
+- `apps/api/src/lib/reservation-engine.ts`, `apps/api/src/errors/index.ts`, `apps/api/src/lib/handle-route-error.ts`
+- `apps/api/src/modules/reservation/reservation.schema.ts`, `reservation.service.ts`
+- `apps/api/src/modules/restaurant/restaurant.schema.ts`, `restaurant.service.ts`
+- `apps/dashboard/src/components/restaurant/ReservationConfigPanel.tsx`, `apps/dashboard/src/types/api.ts`
+- `packages/types/src/index.ts`, `apps/web/src/types/api.ts`
+- `apps/api/src/__tests__/reservation.test.ts` — Extended, Until-close, cap 422, concurrency, STARTER gate, config round-trip
+
+**Interfaces / types added:**
+- `Reservation.untilClose`, `wasCapped?`, `estimatedFee?` in `packages/types`
+- `OwnerRestaurant.maxExtraHours`, `PublicRestaurant.maxExtraHours`
+
+**Environment variables added:** None
+
+**Notes:**
+- **Shared cap:** Both Extended and Until-close capped at `standardDurationMins + maxExtraHours * 60`; Until-close may end earlier (close or following reservation) but never later.
+- **Whole-hour billing:** Extra time billed in whole hours rounded up — simplicity choice; merchants may revisit partial-hour proration later.
+- **GiST exclusion** remains sole correctness guarantee; pre-checks are UX only.
+- **`untilClose`** is a `CUSTOM` variant behind existing `customReservations` plan gate (PRO+).
+- **Out of scope (Task 2):** ~~Diner booking UI for Extended hour-picker and Until-close option~~ — completed in Phase 16 · Task 2.
+
+---
+
+### ✅ Phase 16 · Task 2 — Diner booking flow: smart defaults + duration picker
+**Date:** 2026-07-08
+**Status:** Complete.
+
+**Goal:** Replace the overwhelming full-slot grid on load with smart defaults (next available + quick chips), add a plan-gated duration step (Standard / Add time / Until close), and surface server-confirmed `wasCapped` after booking — frontend-only in `apps/web`.
+
+**When step (`TimeQuickPicks.tsx`):**
+- Primary **Next available** button scans 7 days of availability client-side
+- Up to 3 chips: In 30 min, Tonight, Tomorrow same time
+- **Pick a specific time** expands the existing meal-period grid (unchanged behavior, collapsed by default)
+- Auto-expands picker when no quick picks resolve
+
+**Duration step (`DurationPicker.tsx`):**
+- Shown only when `restaurantOffersCustomReservations` (fees configured on public payload)
+- Segmented control: Standard · Add time (1–`maxExtraHours` whole-hour stepper) · Until close
+- Fee copy always "added to your bill at the restaurant"; Maida never charges diners
+- Client-side until-close estimate; server `endsAt` + `wasCapped` shown on success
+
+**Confirm step:** Duration mode in summary; 409 retry preserves duration choice via existing one-click suggested-time flow
+
+**Files created / modified:**
+- `apps/web/src/components/ReservationBookingFlow.tsx` — 4-step flow (party → when → duration? → confirm)
+- `apps/web/src/components/TimeQuickPicks.tsx`, `DurationPicker.tsx` (new)
+- `apps/web/src/lib/booking-availability.ts`, `booking-availability.test.ts` (new)
+- `apps/web/src/lib/restaurant-time.ts` — `formatQuickPickWhen`, `restaurantLocalDateIso`
+- `apps/web/src/pages/RestaurantDetailPage.tsx` — capped-success toast variant
+
+**Notes:**
+- **Estimate client-side, confirm server-side** — until-close time and fees are previews; authoritative values come from `POST /reservations` response.
+- **Plan-gated duration step** — diners only see duration UI when restaurant has custom fees on the public payload (same signal as Phase 12).
+- **Fees at restaurant** — repeated disclaimer on duration step and confirm summary; trust requirement, not decorative copy.
+- No new API endpoints; no component test infra added beyond unit tests for availability helpers.
+
+---
+
 ## 4 · SHARED TYPE CONTRACTS (`packages/types`)
 <!-- Cursor updates this section when types are added or changed -->
 
@@ -971,6 +1129,7 @@ Optional: `E2E_CONCURRENCY_ITERATIONS=25` (default), `API_URL=http://localhost:3
 ```ts
 export type Role = 'diner' | 'owner' | 'admin';
 export type Plan = 'STARTER' | 'PRO' | 'PREMIUM';
+export type BillingTier = 'TRIAL' | Plan;
 export type SeatingMode = 'LOCKED' | 'FLEXIBLE';
 export type ReservationStatus = 'SCHEDULED' | 'SEATED' | 'COMPLETED' | 'CANCELLED' | 'NO_SHOW';
 export type ReservationType = 'STANDARD' | 'CUSTOM';
@@ -995,6 +1154,9 @@ export interface Reservation {
   status: ReservationStatus;
   reservationType: ReservationType;
   source: ReservationSource;
+  untilClose: boolean;
+  wasCapped?: boolean;
+  estimatedFee?: string | null;
 }
 
 export interface DiningTable {
@@ -1042,17 +1204,18 @@ export interface TurnTimeRule {
 | GET | `/auth/me` | api | Bearer JWT | ✅ Live |
 | GET | `/restaurants` | api | None | ✅ Live |
 | GET | `/restaurants/mine` | api | Bearer JWT + role=owner | ✅ Live |
-| GET | `/restaurants/:id` | api | None | ✅ Live |
+| GET | `/restaurants/:id` | api | None | ✅ Live (public payload includes `maxExtraHours`, fees, hours) |
 | POST | `/restaurants` | api | Bearer JWT + role=owner | ✅ Live |
 | PATCH | `/restaurants/:id` | api | Bearer JWT + role=owner | ✅ Live |
 | DELETE | `/restaurants/:id` | api | Bearer JWT + role=owner | ✅ Live |
-| GET | `/restaurants/:id/availability` | api | None | ✅ Live (real table-based times; 15-min steps) |
+| GET | `/restaurants/:id/availability` | api | None | ✅ Live (real table-based times; 15-min steps; `standardDurationMins` for party size) |
 | GET | `/restaurants/:id/config` | api | Bearer JWT + role=owner | ✅ Live |
-| PATCH | `/restaurants/:id/reservation-config` | api | Bearer JWT + role=owner | ✅ Live |
+| PATCH | `/restaurants/:id/reservation-config` | api | Bearer JWT + role=owner | ✅ Live (`maxExtraHours` 0–6, PRO+ gate) |
+| POST | `/restaurants/:id/logo` | api | Bearer JWT + role=owner | ✅ Live (multipart JPEG/PNG/WebP → R2) |
 | GET/POST/PATCH/DELETE | `/restaurants/:id/tables` | api | Bearer JWT + role=owner | ✅ Live |
 | GET/POST/PATCH/DELETE | `/restaurants/:id/combinations` | api | Bearer JWT + role=owner (PRO+) | ✅ Live |
 | GET/POST/DELETE | `/restaurants/:id/turn-time-rules` | api | Bearer JWT + role=owner | ✅ Live |
-| POST | `/reservations` | api | Bearer JWT + role=diner | ✅ Live |
+| POST | `/reservations` | api | Bearer JWT + role=diner | ✅ Live (`STANDARD` / `CUSTOM` + `durationMins` or `untilClose`; 201 includes `wasCapped`, `estimatedFee`) |
 | GET | `/reservations` | api | Bearer JWT + role=diner | ✅ Live |
 | GET | `/reservations/:id` | api | Bearer JWT + role=diner | ✅ Live |
 | PATCH | `/reservations/:id/cancel` | api | Bearer JWT + role=diner | ✅ Live |
@@ -1080,7 +1243,9 @@ export interface TurnTimeRule {
 | GET | `/admin/subscriptions` | api | Bearer JWT + role=admin | ✅ Live |
 | GET | `/admin/audit-logs` | api | Bearer JWT + role=admin | ✅ Live |
 | POST | `/webhooks/lemon-squeezy` | api | None (HMAC-SHA256 guard) | ✅ Live |
-| GET | `/subscriptions/me` | api | Bearer JWT + role=owner | ✅ Live |
+| GET | `/subscriptions/me` | api | Bearer JWT + role=owner | ✅ Live (subscription + effective limits + planComparison + trial metadata) |
+| POST | `/feedback` | api | Bearer JWT (diner or owner) | ✅ Live |
+| GET | `/admin/feedback` | api | Bearer JWT + role=admin | ✅ Live |
 | POST | `/subscriptions/checkout` | api | Bearer JWT + role=owner | ✅ Live |
 | POST | `/subscriptions/cancel` | api | Bearer JWT + role=owner | ✅ Live |
 | POST | `/subscriptions/resume` | api | Bearer JWT + role=owner | ✅ Live |
@@ -1093,14 +1258,15 @@ export interface TurnTimeRule {
 All models defined in `packages/db/prisma/schema.prisma`:
 - `User` — id (uuid), email (citext), password (bcrypt), role (DINER | OWNER | ADMIN), totpSecret (nullable), soft-delete
 - `RefreshToken` — jti, tokenHash (SHA-256), expiresAt, revokedAt
-- `Restaurant` — id, ownerId, name, slug, cuisine, city, **timezone (IANA)**, seatingMode, defaultDurationMins, openMinutes, closeMinutes (local), customFee, extraHourFee (informational), isActive, soft-delete
+- `Restaurant` — id, ownerId, name, slug, cuisine, city, **timezone (IANA)**, seatingMode, defaultDurationMins, openMinutes, closeMinutes (local), customFee, extraHourFee (informational), **maxExtraHours** (cap on diner-added time for CUSTOM), isActive, soft-delete
 - `DiningTable` — atomic physical unit; minPartySize, maxPartySize
 - `TableCombination` + `TableCombinationMember` — owner-predefined merges (FLEXIBLE mode)
 - `TurnTimeRule` — durationMins by party-size band
-- `Reservation` — time range, status, type, source, fee snapshots, isOverride
+- `Reservation` — time range, status, type, source, fee snapshots, **untilClose**, isOverride
 - `ReservationTable` — per-table hold interval (`TIMESTAMPTZ`); GiST EXCLUSION `tstzrange` prevents overlap when releasedAt IS NULL
 - `AuditLog` — id, actorId, action, entityType, entityId, metadata, ipAddress (append-only)
-- `Subscription` — userId (unique FK), plan (STARTER/PRO/PREMIUM), status (SubscriptionStatus enum), lemonSqueezyId, lemonSqueezyVariantId, currentPeriodEnd, renewsAt, cancelAtPeriodEnd
+- `ProductFeedback` — userId, role snapshot, message (admin-only internal feedback)
+- `Subscription` — userId (unique FK), plan (STARTER/PRO/PREMIUM), status (SubscriptionStatus enum), **trialStartedAt** (timestamptz; lazy expiry), lemonSqueezyId, lemonSqueezyVariantId, currentPeriodEnd, renewsAt, cancelAtPeriodEnd
 RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (not applied on Supabase; API enforces access)
 
 ---
@@ -1146,6 +1312,11 @@ RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (no
 | `LS_VARIANT_STARTER` | `apps/api` | `.env` | LS variant ID → STARTER plan |
 | `LS_VARIANT_PRO` | `apps/api` | `.env` | LS variant ID → PRO plan |
 | `LS_VARIANT_PREMIUM` | `apps/api` | `.env` | LS variant ID → PREMIUM plan |
+| `R2_ACCOUNT_ID` | `apps/api` | `.env` | Cloudflare account ID for R2 S3 endpoint |
+| `R2_ACCESS_KEY_ID` | `apps/api` | `.env` | R2 API token access key |
+| `R2_SECRET_ACCESS_KEY` | `apps/api` | `.env` | R2 API token secret |
+| `R2_BUCKET_NAME` | `apps/api` | `.env` | Bucket for restaurant logos |
+| `R2_PUBLIC_URL` | `apps/api` | `.env` | Public base URL for uploaded logo objects |
 
 ---
 
@@ -1195,10 +1366,13 @@ RLS policies optional — see `packages/db/sql/rls_self_hosted_optional.sql` (no
 - ✅ Lemon Squeezy webhook handler complete (Phase 11 · Task 1) — HMAC sig verify, LS events, Redis idempotency, Prisma upsert, plan downgrade on expiry
 - ✅ Checkout URL endpoint complete (POST /subscriptions/checkout)
 - ✅ Plan enforcement wired on POST /restaurants (403 on limit breach)
-- ✅ Billing UI complete in owner dashboard (plan card, comparison, upgrade/downgrade, cancel/resume)
+- ✅ Billing UI complete in owner dashboard (plan card, comparison, upgrade/downgrade, cancel/resume; **Phase 15** adds trial banner + full tier comparison table)
+- ✅ Owner 14-day trial complete (Phase 15 · Task 1) — TRIALING on register; stricter TRIAL_LIMITS; lazy expiry from trialStartedAt; blocks ops when expired; seating mode changeable post-create
+- ✅ Onboarding UX + logo + feedback complete (Phase 15 · Task 2) — 24h service hours; searchable IANA timezone picker; accurate party-size duration; R2 logo upload; internal product feedback; clearer limit messages
 - ✅ Security audit remediation complete (Phase 12) — all HIGH/MEDIUM findings resolved; 169 tests pass
 - ✅ FORTRESS hardening complete (Phase 13) — Fastify 5 + Vite 6 upgrade, constant-time auth, pino redaction, threat detector, account lockout, __Host- cookie, security headers, request timeout, CI audit pipeline, security.txt; 169 tests pass
 - ✅ Local backup & restore system complete (Phase 14) — `pnpm db:export` / `pnpm db:restore`; SHA-256 integrity check; FK-safe wipe + batch insert; count verification; backups/*.json gitignored; zero new dependencies
+- ✅ Custom reservation duration complete (Phase 16) — backend Extended/Until-close + diner smart-defaults booking UX with duration picker; **146** API tests unchanged
 
 ---
 

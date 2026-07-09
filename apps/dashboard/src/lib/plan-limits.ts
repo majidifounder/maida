@@ -1,6 +1,18 @@
-import type { Plan, PlanLimits } from '@restaurant/types';
+import type { BillingTier, PlanLimits, PlanComparisonRow } from '@restaurant/types';
 
-export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
+export const TRIAL_DAYS = 14;
+
+export const TRIAL_LIMITS: PlanLimits = {
+  restaurants: 1,
+  reservationsPerMonth: 25,
+  tablesPerRestaurant: 5,
+  combinationsPerRestaurant: 0,
+  turnTimeRulesPerRestaurant: 1,
+  flexibleSeating: false,
+  customReservations: false,
+};
+
+export const PLAN_LIMITS: Record<'STARTER' | 'PRO' | 'PREMIUM', PlanLimits> = {
   STARTER: {
     restaurants: 1,
     reservationsPerMonth: 200,
@@ -30,6 +42,46 @@ export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
   },
 };
 
-export function planLabel(plan: Plan): string {
+export const DEFAULT_PLAN_COMPARISON: PlanComparisonRow[] = [
+  {
+    tier: 'TRIAL',
+    label: 'Free trial',
+    price: '14 days free',
+    limits: TRIAL_LIMITS,
+  },
+  {
+    tier: 'STARTER',
+    label: 'Starter',
+    price: '€29/mo',
+    limits: PLAN_LIMITS.STARTER,
+  },
+  {
+    tier: 'PRO',
+    label: 'Pro',
+    price: '€79/mo',
+    limits: PLAN_LIMITS.PRO,
+  },
+  {
+    tier: 'PREMIUM',
+    label: 'Premium',
+    price: '€199/mo',
+    limits: PLAN_LIMITS.PREMIUM,
+  },
+];
+
+export function planLabel(plan: 'STARTER' | 'PRO' | 'PREMIUM'): string {
   return { STARTER: 'Starter', PRO: 'Pro', PREMIUM: 'Premium' }[plan];
+}
+
+export function billingTierLabel(tier: BillingTier): string {
+  if (tier === 'TRIAL') return 'Free trial';
+  return planLabel(tier);
+}
+
+export function formatLimit(value: number): string {
+  return value === Infinity ? 'Unlimited' : String(value);
+}
+
+export function yesNo(value: boolean): string {
+  return value ? 'Yes' : 'No';
 }

@@ -1,6 +1,7 @@
 import { Queue } from 'bullmq';
 import { env } from '../env.js';
 import { getRedisClient } from './redis.js';
+import { logger } from './logger.js';
 
 export type ReservationEventType =
   | 'reservation.created'
@@ -26,6 +27,10 @@ export function getBullmqConnection() {
     url: env.REDIS_URL,
     maxRetriesPerRequest: null,
     enableReadyCheck: false,
+    connectTimeout: 2_000,
+    family: 4,
+    enableOfflineQueue: false,
+    retryStrategy: () => null,
   };
 }
 
@@ -63,8 +68,9 @@ export async function publishReservationEvent(
         await redis.expire(rateLimitKey, PUBLISH_RATE_WINDOW_SECONDS);
       }
       if (count > PUBLISH_RATE_LIMIT) {
-        console.warn(
-          `[Queue] publish rate limit exceeded for restaurant ${restaurantId} — event dropped`,
+        logger.warn(
+          { restaurantId },
+          '[Queue] publish rate limit exceeded — event dropped',
         );
         return;
       }
@@ -75,14 +81,12 @@ export async function publishReservationEvent(
       eventType,
       publishedAt: new Date().toISOString(),
     });
-    console.info(
-      `[Queue] Enqueued ${eventType} job ${job.id} for reservation ${String(payload.reservationId ?? 'unknown')}`,
+    logger.info(
+      { eventType, jobId: job.id, reservationId: payload.reservationId },
+      '[Queue] Enqueued reservation event',
     );
   } catch (err) {
-    console.warn(
-      `[Queue] failed to publish ${eventType}:`,
-      (err as Error).message,
-    );
+    logger.warn({ err, eventType }, '[Queue] failed to publish reservation event');
   }
 }
 

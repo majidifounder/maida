@@ -1,5 +1,4 @@
 import { prisma, Prisma } from '@restaurant/db';
-import { getRedisClient } from '../../lib/redis.js';
 import { publishReservationEvent } from '../../lib/queue.js';
 import { publishToRestaurantChannel } from '../../lib/pubsub.js';
 import {
@@ -8,8 +7,11 @@ import {
   ConflictError,
   UnprocessableError,
 } from '../../errors/index.js';
-import { getPlanLimits, startOfCurrentMonth } from '../../lib/plan.js';
-import { getCurrentPlan } from '../subscription/subscription.service.js';
+import { startOfCurrentMonth } from '../../lib/plan.js';
+import {
+  assertOwnerCanOperate,
+  getEffectiveLimitsForOwner,
+} from '../subscription/subscription.service.js';
 import {
   addMinutes,
   deriveDisplayStatus,
@@ -17,9 +19,13 @@ import {
   findNextAvailableStart,
   isExclusionViolation,
   loadBookableUnits,
+  resolveCustomReservationWindow,
   resolveDurationMins,
+  computeEstimatedFee,
+  maxCustomDurationMins,
 } from '../../lib/reservation-engine.js';
 import { localDayBoundsUtc, formatLocalDate } from '../../lib/timezone.js';
+import { invalidateAvailabilityCacheForDate } from '../../lib/availability-cache.js';
 import type {
   CancelReservationSchema,
   CreateReservationInput,
@@ -40,6 +46,7 @@ const RESERVATION_SELECT = {
   endsAt: true,
   status: true,
   reservationType: true,
+  untilClose: true,
   source: true,
   customFeeSnapshot: true,
   extraHourFeeSnapshot: true,
@@ -69,28 +76,16 @@ const RESERVATION_SELECT_OWNER = {
 
 const TX_OPTIONS = { maxWait: 15_000, timeout: 20_000 } as const;
 
-function availabilityCacheKey(restaurantId: string, date: string): string {
-  return `restaurant:${restaurantId}:availability:${date}`;
-}
-
 async function invalidateAvailabilityCache(
   restaurantId: string,
   startsAt: Date,
 ): Promise<void> {
-  try {
-    const restaurant = await prisma.restaurant.findFirst({
-      where: { id: restaurantId },
-      select: { timezone: true },
-    });
-    const date = formatLocalDate(startsAt, restaurant?.timezone ?? 'UTC');
-    const redis = getRedisClient();
-    await redis.del(availabilityCacheKey(restaurantId, date));
-  } catch (err) {
-    console.warn(
-      '[Redis] availability cache invalidation failed (non-fatal):',
-      (err as Error).message,
-    );
-  }
+  const restaurant = await prisma.restaurant.findFirst({
+    where: { id: restaurantId },
+    select: { timezone: true },
+  });
+  const date = formatLocalDate(startsAt, restaurant?.timezone ?? 'UTC');
+  await invalidateAvailabilityCacheForDate(restaurantId, date);
 }
 
 function formatReservation<T extends { status: string; endsAt: Date }>(
@@ -102,20 +97,41 @@ function formatReservation<T extends { status: string; endsAt: Date }>(
   };
 }
 
-function serializeReservation<T extends Record<string, unknown>>(row: T) {
+function serializeReservation<T extends Record<string, unknown>>(
+  row: T,
+  extras?: { wasCapped?: boolean; standardDurationMins?: number },
+) {
   const formatted = formatReservation(
     row as T & { status: string; endsAt: Date },
   );
+  const startsAtDate =
+    formatted.startsAt instanceof Date
+      ? formatted.startsAt
+      : new Date(String(formatted.startsAt));
+  const endsAtDate =
+    formatted.endsAt instanceof Date
+      ? formatted.endsAt
+      : new Date(String(formatted.endsAt));
+
+  let estimatedFee: string | null = null;
+  if (
+    formatted.reservationType === 'CUSTOM' &&
+    extras?.standardDurationMins != null
+  ) {
+    const total = computeEstimatedFee(
+      formatted.customFeeSnapshot as { toString(): string } | null,
+      formatted.extraHourFeeSnapshot as { toString(): string } | null,
+      startsAtDate,
+      endsAtDate,
+      extras.standardDurationMins,
+    );
+    if (total > 0) estimatedFee = total.toFixed(2);
+  }
+
   return {
     ...formatted,
-    startsAt:
-      formatted.startsAt instanceof Date
-        ? formatted.startsAt.toISOString()
-        : formatted.startsAt,
-    endsAt:
-      formatted.endsAt instanceof Date
-        ? formatted.endsAt.toISOString()
-        : formatted.endsAt,
+    startsAt: startsAtDate.toISOString(),
+    endsAt: endsAtDate.toISOString(),
     customFeeSnapshot:
       formatted.customFeeSnapshot != null
         ? String(formatted.customFeeSnapshot)
@@ -136,6 +152,9 @@ function serializeReservation<T extends Record<string, unknown>>(row: T) {
       formatted.seatedAt instanceof Date
         ? formatted.seatedAt.toISOString()
         : formatted.seatedAt ?? null,
+    untilClose: Boolean(formatted.untilClose),
+    wasCapped: extras?.wasCapped ?? false,
+    estimatedFee,
   };
 }
 
@@ -146,8 +165,8 @@ async function assertReservationPlanLimit(restaurantId: string): Promise<void> {
   });
   if (!restaurant) return;
 
-  const plan = await getCurrentPlan(restaurant.ownerId);
-  const limits = getPlanLimits(plan as import('@restaurant/types').Plan);
+  await assertOwnerCanOperate(restaurant.ownerId);
+  const limits = await getEffectiveLimitsForOwner(restaurant.ownerId);
   if (limits.reservationsPerMonth === Infinity) return;
 
   const monthStart = startOfCurrentMonth();
@@ -161,8 +180,7 @@ async function assertReservationPlanLimit(restaurantId: string): Promise<void> {
 
   if (count >= limits.reservationsPerMonth) {
     throw new UnprocessableError(
-      `This restaurant has reached its monthly reservation limit (${limits.reservationsPerMonth}). ` +
-        `The owner must upgrade their plan.`,
+      `This restaurant has reached its monthly limit of ${limits.reservationsPerMonth} reservations. The owner needs to upgrade on Billing before more bookings can be accepted.`,
     );
   }
 }
@@ -170,11 +188,11 @@ async function assertReservationPlanLimit(restaurantId: string): Promise<void> {
 async function assertCustomReservationAllowed(
   ownerId: string,
 ): Promise<void> {
-  const plan = await getCurrentPlan(ownerId);
-  const limits = getPlanLimits(plan as import('@restaurant/types').Plan);
+  await assertOwnerCanOperate(ownerId);
+  const limits = await getEffectiveLimitsForOwner(ownerId);
   if (!limits.customReservations) {
     throw new UnprocessableError(
-      `Custom-duration reservations require a Pro or Premium plan.`,
+      'Custom-length reservations and fees need a Pro or Premium plan. Upgrade on Billing to offer them.',
     );
   }
 }
@@ -193,6 +211,7 @@ async function loadRestaurantForBooking(restaurantId: string) {
       customFee: true,
       extraHourFee: true,
       feeCurrency: true,
+      maxExtraHours: true,
     },
   });
   if (!restaurant) throw new NotFoundError('Restaurant not found');
@@ -200,6 +219,7 @@ async function loadRestaurantForBooking(restaurantId: string) {
 }
 
 async function assertOwnerAccess(restaurantId: string, ownerId: string) {
+  await assertOwnerCanOperate(ownerId);
   const restaurant = await prisma.restaurant.findFirst({
     where: { id: restaurantId, ownerId, deletedAt: null },
     select: { id: true },
@@ -224,6 +244,7 @@ type CreateHoldParams = {
     extraHourFeeSnapshot: Prisma.Decimal | null;
     feeCurrency: string | null;
   };
+  untilClose?: boolean;
   status?: 'SCHEDULED' | 'SEATED';
   seatedAt?: Date;
 };
@@ -251,6 +272,7 @@ async function createReservationWithHolds(
         customFeeSnapshot: params.feeSnapshots?.customFeeSnapshot ?? null,
         extraHourFeeSnapshot: params.feeSnapshots?.extraHourFeeSnapshot ?? null,
         feeCurrency: params.feeSnapshots?.feeCurrency ?? null,
+        untilClose: params.untilClose ?? false,
         tables: {
           create: params.tableIds.map((tableId) => ({
             tableId,
@@ -293,6 +315,7 @@ async function createWithAllocation(
     reservationType: 'STANDARD' | 'CUSTOM';
     source: 'ONLINE' | 'WALK_IN' | 'STAFF';
     durationMins?: number;
+    untilClose?: boolean;
     guestName?: string;
     notes?: string;
     tableIds?: string[];
@@ -300,65 +323,145 @@ async function createWithAllocation(
     status?: 'SCHEDULED' | 'SEATED';
   },
   actorId?: string,
-) {
+): Promise<{
+  row: Awaited<ReturnType<typeof createReservationWithHolds>>;
+  wasCapped: boolean;
+  standardDurationMins: number;
+}> {
+  if (params.startsAt <= new Date() && params.source === 'ONLINE') {
+    throw new ConflictError('Choose a reservation time in the future.');
+  }
+
   if (params.reservationType === 'CUSTOM') {
     await assertCustomReservationAllowed(restaurant.ownerId);
   }
 
-  const durationMins =
-    params.durationMins ??
-    (params.reservationType === 'CUSTOM' && params.durationMins
-      ? params.durationMins
-      : await resolveDurationMins(
-          restaurant.id,
-          params.partySize,
-          restaurant.defaultDurationMins,
-        ));
-
-  const endsAt = addMinutes(params.startsAt, durationMins);
-
-  if (params.startsAt <= new Date() && params.source === 'ONLINE') {
-    throw new ConflictError('Cannot book a time in the past');
-  }
+  const standardDurationMins = await resolveDurationMins(
+    restaurant.id,
+    params.partySize,
+    restaurant.defaultDurationMins,
+  );
 
   let tableIds: string[];
+  let endsAt: Date;
+  let wasCapped = false;
 
-  if (params.tableIds?.length) {
-    tableIds = params.tableIds;
-  } else {
-    const units = await loadBookableUnits(
-      restaurant.id,
-      restaurant.seatingMode,
-    );
-    if (units.length === 0) {
-      throw new ConflictError(
-        'No tables configured for this restaurant',
-      );
-    }
+  if (params.reservationType === 'CUSTOM') {
+    const bookingContext = {
+      id: restaurant.id,
+      seatingMode: restaurant.seatingMode,
+      defaultDurationMins: restaurant.defaultDurationMins,
+      openMinutes: restaurant.openMinutes,
+      closeMinutes: restaurant.closeMinutes,
+      timezone: restaurant.timezone,
+      maxExtraHours: restaurant.maxExtraHours,
+    };
 
-    const unit = await findBestFitUnit(
-      units,
-      params.partySize,
-      params.startsAt,
-      endsAt,
-    );
-
-    if (!unit) {
-      const nextAvailable = await findNextAvailableStart(
-        restaurant,
+    if (params.untilClose) {
+      const resolved = await resolveCustomReservationWindow(
+        bookingContext,
         params.partySize,
         params.startsAt,
-        params.reservationType === 'CUSTOM' ? durationMins : undefined,
+        { kind: 'untilClose' },
       );
-      throw new ConflictError(
-        'No table available for the requested time',
-        nextAvailable
-          ? { suggestedNextAvailableAt: nextAvailable.toISOString() }
-          : undefined,
+      if (!resolved) {
+        const nextAvailable = await findNextAvailableStart(
+          restaurant,
+          params.partySize,
+          params.startsAt,
+          maxCustomDurationMins(standardDurationMins, restaurant.maxExtraHours),
+        );
+        throw new ConflictError(
+          'No table available for the requested time',
+          nextAvailable
+            ? { suggestedNextAvailableAt: nextAvailable.toISOString() }
+            : undefined,
+        );
+      }
+      tableIds = params.tableIds?.length ? params.tableIds : resolved.tableIds;
+      endsAt = resolved.endsAt;
+      wasCapped = resolved.wasCapped;
+    } else {
+      const durationMins = params.durationMins!;
+      const cap = maxCustomDurationMins(
+        standardDurationMins,
+        restaurant.maxExtraHours,
       );
-    }
+      if (durationMins > cap) {
+        throw new UnprocessableError(
+          `Custom reservations cannot exceed ${cap} minutes (${restaurant.maxExtraHours} extra hour(s) beyond the standard table turn).`,
+          {
+            maxDurationMins: cap,
+            standardDurationMins,
+            maxExtraHours: restaurant.maxExtraHours,
+          },
+        );
+      }
 
-    tableIds = unit.tableIds;
+      const resolved = await resolveCustomReservationWindow(
+        bookingContext,
+        params.partySize,
+        params.startsAt,
+        { kind: 'extended', durationMins },
+      );
+      if (!resolved) {
+        const nextAvailable = await findNextAvailableStart(
+          restaurant,
+          params.partySize,
+          params.startsAt,
+          durationMins,
+        );
+        throw new ConflictError(
+          'No table available for the requested time',
+          nextAvailable
+            ? { suggestedNextAvailableAt: nextAvailable.toISOString() }
+            : undefined,
+        );
+      }
+      tableIds = params.tableIds?.length ? params.tableIds : resolved.tableIds;
+      endsAt = resolved.endsAt;
+      wasCapped = resolved.wasCapped;
+    }
+  } else {
+    const durationMins = params.durationMins ?? standardDurationMins;
+    endsAt = addMinutes(params.startsAt, durationMins);
+
+    if (params.tableIds?.length) {
+      tableIds = params.tableIds;
+    } else {
+      const units = await loadBookableUnits(
+        restaurant.id,
+        restaurant.seatingMode,
+      );
+      if (units.length === 0) {
+        throw new ConflictError(
+          'This restaurant has no bookable tables yet. The owner needs to add tables before reservations can be accepted.',
+        );
+      }
+
+      const unit = await findBestFitUnit(
+        units,
+        params.partySize,
+        params.startsAt,
+        endsAt,
+      );
+
+      if (!unit) {
+        const nextAvailable = await findNextAvailableStart(
+          restaurant,
+          params.partySize,
+          params.startsAt,
+        );
+        throw new ConflictError(
+          'No table available for the requested time',
+          nextAvailable
+            ? { suggestedNextAvailableAt: nextAvailable.toISOString() }
+            : undefined,
+        );
+      }
+
+      tableIds = unit.tableIds;
+    }
   }
 
   const feeSnapshots =
@@ -371,7 +474,7 @@ async function createWithAllocation(
       : undefined;
 
   try {
-    return await createReservationWithHolds(
+    const row = await createReservationWithHolds(
       {
         restaurantId: restaurant.id,
         partySize: params.partySize,
@@ -385,17 +488,22 @@ async function createWithAllocation(
         ...(params.notes !== undefined && { notes: params.notes }),
         ...(params.isOverride !== undefined && { isOverride: params.isOverride }),
         ...(feeSnapshots !== undefined && { feeSnapshots }),
+        ...(params.untilClose && { untilClose: true }),
         ...(params.status !== undefined && { status: params.status }),
         ...(params.status === 'SEATED' && { seatedAt: new Date() }),
       },
       actorId,
     );
+    return { row, wasCapped, standardDurationMins };
   } catch (err) {
     if (isExclusionViolation(err)) {
       const nextAvailable = await findNextAvailableStart(
         restaurant,
         params.partySize,
         params.startsAt,
+        params.reservationType === 'CUSTOM' && params.durationMins
+          ? params.durationMins
+          : undefined,
       );
       throw new ConflictError(
         'The requested time is no longer available',
@@ -416,7 +524,8 @@ export async function createReservation(
   await assertReservationPlanLimit(input.restaurantId);
 
   const startsAt = new Date(input.startsAt);
-  const reservation = await createWithAllocation(
+  const { row: reservation, wasCapped, standardDurationMins } =
+    await createWithAllocation(
     restaurant,
     {
       dinerId,
@@ -425,6 +534,7 @@ export async function createReservation(
       reservationType: input.reservationType,
       source: 'ONLINE',
       ...(input.durationMins !== undefined && { durationMins: input.durationMins }),
+      ...(input.untilClose && { untilClose: true }),
       ...(input.notes !== undefined && { notes: input.notes }),
     },
     dinerId,
@@ -448,7 +558,7 @@ export async function createReservation(
     startsAt: startsAt.toISOString(),
   });
 
-  return serializeReservation(reservation);
+  return serializeReservation(reservation, { wasCapped, standardDurationMins });
 }
 
 export async function listMyReservations(
@@ -475,7 +585,7 @@ export async function listMyReservations(
   ]);
 
   return {
-    reservations: rows.map(serializeReservation),
+    reservations: rows.map((row) => serializeReservation(row)),
     total,
     page,
     limit,
@@ -608,7 +718,7 @@ export async function listRestaurantReservations(
   ]);
 
   return {
-    reservations: rows.map(serializeReservation),
+    reservations: rows.map((row) => serializeReservation(row)),
     total,
     page,
     limit,
@@ -946,7 +1056,7 @@ export async function createWalkIn(
       restaurant.defaultDurationMins,
     ));
 
-  const reservation = await createWithAllocation(
+  const { row: reservation } = await createWithAllocation(
     restaurant,
     {
       partySize: input.partySize,
@@ -992,7 +1102,7 @@ export async function createStaffReservation(
   const restaurant = await loadRestaurantForBooking(restaurantId);
   const startsAt = new Date(input.startsAt);
 
-  const reservation = await createWithAllocation(
+  const { row: reservation } = await createWithAllocation(
     restaurant,
     {
       ...(input.dinerId !== undefined && { dinerId: input.dinerId }),

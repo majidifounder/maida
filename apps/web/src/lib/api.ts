@@ -6,6 +6,7 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    public details?: Record<string, unknown>,
   ) {
     super(message);
   }
@@ -27,7 +28,7 @@ async function request<T>(
 ): Promise<T> {
   const headers: Record<string, string> = {};
 
-  if (body !== undefined) {
+  if (body !== undefined && !(body instanceof FormData)) {
     headers['Content-Type'] = 'application/json';
   }
 
@@ -40,7 +41,7 @@ async function request<T>(
     credentials: 'include',
   };
   if (body !== undefined) {
-    init.body = JSON.stringify(body);
+    init.body = body instanceof FormData ? body : JSON.stringify(body);
   }
 
   const res = await fetch(`${BASE}${path}`, init);
@@ -49,10 +50,20 @@ async function request<T>(
     const err = (await res.json().catch(() => ({}))) as {
       error?: string;
       message?: string;
+      suggestedNextAvailableAt?: string;
+      [key: string]: unknown;
     };
+    const { error, message, suggestedNextAvailableAt, ...rest } = err;
+    const details =
+      suggestedNextAvailableAt != null
+        ? { suggestedNextAvailableAt, ...rest }
+        : Object.keys(rest).length > 0
+          ? rest
+          : undefined;
     throw new ApiError(
       res.status,
-      err.error ?? err.message ?? res.statusText,
+      error ?? message ?? res.statusText,
+      details,
     );
   }
 

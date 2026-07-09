@@ -419,6 +419,32 @@ export async function listAuditLogs(input: AdminPaginationInput) {
   return { logs, total, page: input.page, limit: input.limit };
 }
 
+export async function listProductFeedback(input: AdminPaginationInput) {
+  const [items, total] = await prisma.$transaction([
+    prisma.productFeedback.findMany({
+      include: { user: { select: { id: true, email: true } } },
+      orderBy: { createdAt: 'desc' },
+      skip: (input.page - 1) * input.limit,
+      take: input.limit,
+    }),
+    prisma.productFeedback.count(),
+  ]);
+
+  return {
+    feedback: items.map((f: (typeof items)[number]) => ({
+      id: f.id,
+      userId: f.userId,
+      userEmail: f.user.email,
+      role: f.role,
+      message: f.message,
+      createdAt: f.createdAt.toISOString(),
+    })),
+    total,
+    page: input.page,
+    limit: input.limit,
+  };
+}
+
 export async function listSubscriptions(input: AdminPaginationInput) {
   const [subs, total] = await prisma.$transaction([
     prisma.subscription.findMany({

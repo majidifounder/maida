@@ -1,4 +1,5 @@
 import pino from 'pino';
+import type { FastifyReply, FastifyRequest } from 'fastify';
 import { env } from '../env.js';
 
 const REDACTED_PATHS = [
@@ -24,18 +25,18 @@ export const logger = pino({
     censor: '[REDACTED]',
   },
   serializers: {
-    req(req) {
+    req(request: FastifyRequest) {
       return {
-        method: req.method,
-        url: req.url,
-        userAgent: req.headers['user-agent'],
-        requestId: req.id,
+        method: request.method,
+        url: request.url,
+        userAgent: request.headers['user-agent'],
+        requestId: request.id,
       };
     },
-    res(res) {
+    res(reply: FastifyReply) {
       return {
-        statusCode: res.statusCode,
-        requestId: (res as { request?: { id?: string } }).request?.id,
+        statusCode: reply.statusCode,
+        requestId: reply.request?.id,
       };
     },
   },

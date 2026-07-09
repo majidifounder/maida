@@ -95,6 +95,7 @@ model User {
   restaurants  Restaurant[]
   sessions     RefreshToken[]
   subscription Subscription?
+  feedback     ProductFeedback[]
 
   @@index([email])
   @@index([role])
@@ -149,6 +150,7 @@ model Restaurant {
   customFee    Decimal? @db.Decimal(10, 2)           // flat fee for a custom-duration reservation
   extraHourFee Decimal? @db.Decimal(10, 2)           // rate per additional hour beyond the standard turn time
   feeCurrency  String   @default("USD") @db.VarChar(3)
+  maxExtraHours Int     @default(2)                  // cap on hours beyond standard turn for CUSTOM reservations
 
   // Relations
   tables        DiningTable[]
@@ -263,6 +265,7 @@ model Reservation {
   customFeeSnapshot    Decimal? @db.Decimal(10, 2)
   extraHourFeeSnapshot Decimal? @db.Decimal(10, 2)
   feeCurrency          String?  @db.VarChar(3)
+  untilClose           Boolean  @default(false)      // server-computed end for "reserve until close" bookings
 
   isOverride Boolean @default(false)           // created via the explicit staff override path
 
@@ -348,9 +351,25 @@ model Subscription {
   renewsAt              DateTime?
   cancelAtPeriodEnd     Boolean            @default(false)
   status                SubscriptionStatus @default(ACTIVE)
+  trialStartedAt        DateTime?          @db.Timestamptz
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@map("subscriptions")
+}
+
+// ─── PRODUCT FEEDBACK (internal — admin only) ────────────────────────────────
+
+model ProductFeedback {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String   @db.Uuid
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      Role
+  message   String   @db.Text
+  createdAt DateTime @default(now()) @db.Timestamptz
+
+  @@index([createdAt])
+  @@index([userId])
+  @@map("product_feedback")
 }

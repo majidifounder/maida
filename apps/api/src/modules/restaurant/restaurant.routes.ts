@@ -14,6 +14,7 @@ import {
 import * as RestaurantService from './restaurant.service.js';
 import { assertOwnerRestaurantPlanLimit } from '../subscription/subscription.service.js';
 import { handleRouteError } from '../../lib/handle-route-error.js';
+import { getRealIp } from '../../lib/cloudflare.js';
 
 export async function restaurantRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.get('/restaurants', async (request, reply) => {
@@ -88,18 +89,18 @@ export async function restaurantRoutes(fastify: FastifyInstance): Promise<void> 
         .send({ error: 'Validation failed', details: body.error.flatten() });
     }
 
-    const { plan, atLimit, limit } = await assertOwnerRestaurantPlanLimit(
-      request.user!.sub,
-    );
-    if (atLimit) {
-      return reply.code(403).send({
-        error: 'Plan limit reached',
-        message: `Your ${plan} plan allows ${limit === Infinity ? 'unlimited' : limit} restaurant(s). Upgrade to add more.`,
-        upgrade: '/subscriptions/checkout',
-      });
-    }
-
     try {
+      const { plan, atLimit, limit } = await assertOwnerRestaurantPlanLimit(
+        request.user!.sub,
+      );
+      if (atLimit) {
+        return reply.code(403).send({
+          error: 'Plan limit reached',
+          message: `You've reached your ${plan} plan limit of ${limit === Infinity ? 'unlimited' : limit} restaurant(s). Upgrade on Billing to add more.`,
+          upgrade: '/subscriptions/checkout',
+        });
+      }
+
       const restaurant = await RestaurantService.createRestaurant(
         request.user!.sub,
         body.data,
@@ -129,6 +130,49 @@ export async function restaurantRoutes(fastify: FastifyInstance): Promise<void> 
       return handleRouteError(err, reply);
     }
   });
+
+  fastify.post(
+    '/restaurants/:id/logo',
+    {
+      ...ownerHooks,
+      config: {
+        rateLimit: {
+          max: 10,
+          timeWindow: '1 hour',
+          keyGenerator: (req) =>
+            `logo-upload:${getRealIp(req)}:${req.user?.sub ?? 'anon'}`,
+          errorResponseBuilder: () => ({
+            statusCode: 429,
+            error: 'Too Many Requests',
+            message: 'Too many logo uploads. Try again in an hour.',
+            retryAfter: 3600,
+          }),
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      try {
+        const file = await request.file();
+        if (!file) {
+          return reply.code(422).send({ error: 'No file uploaded. Send multipart field "logo".' });
+        }
+        if (file.fieldname !== 'logo') {
+          await file.toBuffer().catch(() => undefined);
+          return reply.code(422).send({ error: 'Upload field must be named "logo".' });
+        }
+        const buffer = await file.toBuffer();
+        const result = await RestaurantService.setRestaurantLogo(
+          id,
+          request.user!.sub,
+          buffer,
+        );
+        return reply.code(200).send(result);
+      } catch (err) {
+        return handleRouteError(err, reply);
+      }
+    },
+  );
 
   fastify.patch(
     '/restaurants/:id/reservation-config',

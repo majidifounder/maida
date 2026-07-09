@@ -2,7 +2,7 @@ import fp from 'fastify-plugin';
 import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
 import { prisma } from '@restaurant/db';
 import { verifyAccessToken } from '../lib/jwt.js';
-import { getRedisClient } from '../lib/redis.js';
+import { ensureRedisConnected } from '../lib/redis.js';
 import type { JWTPayload, Role } from '@restaurant/types';
 
 declare module 'fastify' {
@@ -28,7 +28,7 @@ const authenticatePlugin: FastifyPluginAsync = async (fastify) => {
       try {
         const payload = verifyAccessToken(token);
 
-        const redis = getRedisClient();
+        const redis = await ensureRedisConnected(1_500);
         const revoked = await redis.get(`deny:${payload.jti}`);
         if (revoked) {
           return reply.code(401).send({ error: 'Token has been revoked' });

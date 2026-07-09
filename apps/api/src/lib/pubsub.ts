@@ -1,4 +1,5 @@
 import { getRedisClient, createSubscriberClient } from './redis.js';
+import { logger } from './logger.js';
 import { Redis } from 'ioredis';
 
 const listeners = new Map<string, Set<(payload: string) => void>>();
@@ -20,7 +21,7 @@ async function getSubscriber(): Promise<Redis> {
     });
 
     subscriber.on('error', (err: Error) => {
-      console.warn('[PubSub] subscriber error (non-fatal):', err.message);
+      logger.warn({ err }, '[PubSub] subscriber error (non-fatal)');
     });
   }
   return subscriber;
@@ -43,7 +44,7 @@ export async function publishToRestaurantChannel(
     const redis = getRedisClient();
     await redis.publish(reservationChannel(restaurantId), JSON.stringify(payload));
   } catch (err) {
-    console.warn('[PubSub] publish failed (non-fatal):', (err as Error).message);
+    logger.warn({ err }, '[PubSub] publish failed (non-fatal)');
   }
 }
 
