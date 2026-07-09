@@ -29,6 +29,10 @@ export async function cleanupTestUsers(userIds: string[]): Promise<void> {
     where: { userId: { in: userIds } },
   });
 
+  await prisma.productFeedback.deleteMany({
+    where: { userId: { in: userIds } },
+  });
+
   await prisma.refreshToken.deleteMany({
     where: { userId: { in: userIds } },
   });

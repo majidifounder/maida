@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 /**
- * Tablz — Database Restore
+ * Maida — Database Restore
  *
  * Usage:
  *   pnpm db:restore --file=backups/backup-2026-06-28T14-30-00.json
@@ -28,6 +28,11 @@ import { createHash } from 'node:crypto';
 import { createInterface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import type { prisma as PrismaInstance } from '@restaurant/db';
+import {
+  importScriptPrisma,
+  isBackupPlatformId,
+  printDatabaseConnectionHint,
+} from './lib/script-db.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -98,12 +103,12 @@ function loadAndValidate(filePath: string): BackupFile {
   }
 
   if (!backup.meta || !backup.data) {
-    console.error('\n❌ File does not look like a Tablz backup (missing meta or data).\n');
+    console.error('\n❌ File does not look like a Maida backup (missing meta or data).\n');
     process.exit(1);
   }
 
-  if (backup.meta.platform !== 'tablz') {
-    console.error('\n❌ This is not a Tablz backup file.\n');
+  if (!isBackupPlatformId(backup.meta.platform)) {
+    console.error('\n❌ This is not a Maida backup file (unknown platform).\n');
     process.exit(1);
   }
 
@@ -249,7 +254,7 @@ async function verifyRestore(
 async function main(): Promise<void> {
   const { file } = parseArgs();
 
-  console.log('\n🔄 Tablz Database Restore');
+  console.log('\n🔄 Maida Database Restore');
   console.log('─────────────────────────────────────');
 
   console.log('\n🔍 Loading and validating backup file...');
@@ -290,7 +295,7 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  const { prisma } = await import('@restaurant/db');
+  const { prisma } = await importScriptPrisma();
   const startMs = Date.now();
 
   console.log('\n🗑️  Wiping current data...');
@@ -326,5 +331,6 @@ async function main(): Promise<void> {
 
 main().catch((err) => {
   console.error('\n❌ Restore failed:', err);
+  printDatabaseConnectionHint(err);
   process.exit(1);
 });

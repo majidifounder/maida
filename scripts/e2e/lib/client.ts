@@ -35,16 +35,30 @@ export async function apiRequest<T = unknown>(
     if (qs) url += `?${qs}`;
   }
 
-  const res = await fetch(url, {
-    method,
-    headers: {
-      ...(opts.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-      ...(opts.skipLoadTestHeader ? {} : ctx.loadTestHeaders),
-      ...(opts.token ? { Authorization: `Bearer ${opts.token}` } : {}),
-      ...opts.headers,
-    },
-    ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method,
+      headers: {
+        ...(opts.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        ...(opts.skipLoadTestHeader ? {} : ctx.loadTestHeaders),
+        ...(opts.token ? { Authorization: `Bearer ${opts.token}` } : {}),
+        ...opts.headers,
+      },
+      ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch (err) {
+    const cause =
+      err instanceof Error && 'cause' in err && err.cause instanceof Error
+        ? err.cause.message
+        : err instanceof Error
+          ? err.message
+          : String(err);
+    throw new Error(
+      `API unreachable ${method} ${path} (${cause}). Is the API still running on ${ctx.base}?`,
+    );
+  }
 
   const text = await res.text();
   let body: T;

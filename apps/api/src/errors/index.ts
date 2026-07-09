@@ -37,7 +37,10 @@ export class NotFoundError extends AppError {
 }
 
 export class UnprocessableError extends AppError {
-  constructor(message = 'Unprocessable entity') {
+  constructor(
+    message = 'Unprocessable entity',
+    public readonly details?: Record<string, unknown>,
+  ) {
     super(422, message, 'UNPROCESSABLE');
   }
 }

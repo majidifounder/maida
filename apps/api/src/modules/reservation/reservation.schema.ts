@@ -1,13 +1,47 @@
 import { z } from 'zod';
 
-export const CreateReservationSchema = z.object({
-  restaurantId: z.string().uuid(),
-  partySize: z.number().int().min(1).max(50),
-  startsAt: z.string().datetime(),
-  reservationType: z.enum(['STANDARD', 'CUSTOM']).default('STANDARD'),
-  durationMins: z.number().int().min(15).max(720).optional(),
-  notes: z.string().max(500).optional(),
-});
+export const CreateReservationSchema = z
+  .object({
+    restaurantId: z.string().uuid(),
+    partySize: z.number().int().min(1).max(50),
+    startsAt: z.string().datetime(),
+    reservationType: z.enum(['STANDARD', 'CUSTOM']).default('STANDARD'),
+    durationMins: z.number().int().min(15).max(720).optional(),
+    untilClose: z.boolean().optional().default(false),
+    notes: z.string().max(500).optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.untilClose && data.durationMins !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'Choose either a custom duration in minutes or reserve until close — not both.',
+        path: ['durationMins'],
+      });
+    }
+    if (
+      data.reservationType === 'STANDARD' &&
+      (data.untilClose || data.durationMins !== undefined)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Standard reservations cannot include a custom duration or until-close.',
+        path: ['reservationType'],
+      });
+    }
+    if (
+      data.reservationType === 'CUSTOM' &&
+      !data.untilClose &&
+      data.durationMins === undefined
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'Custom reservations need either durationMins (extended time) or untilClose: true.',
+        path: ['reservationType'],
+      });
+    }
+  });
 
 export const ListReservationsQuerySchema = z.object({
   status: z

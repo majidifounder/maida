@@ -1,6 +1,5 @@
 import { prisma } from '@restaurant/db';
 import { Redis } from 'ioredis';
-import { Redis } from 'ioredis';
 import { apiRequest } from '../lib/client.js';
 import type { E2eContext } from '../lib/context.js';
 import { registerAndLogin, setOwnerPlan } from '../lib/auth-helpers.js';
@@ -9,16 +8,22 @@ import { futureDatetime } from '../lib/dates.js';
 export async function runRegressionJourney(ctx: E2eContext): Promise<void> {
   const { report } = ctx;
 
-  await report.test('Regression', 'GET /health — DB + Redis healthy', async () => {
-    const health = await apiRequest<{
-      status: string;
-      checks?: { database: string; redis: string };
-    }>(ctx, 'GET', '/health');
+  await report.test('Regression', 'GET /health — process alive', async () => {
+    const health = await apiRequest<{ status: string }>(ctx, 'GET', '/health');
     report.assert(health.status === 200, `Health should 200, got ${health.status}`);
     report.assert(health.body.status === 'ok', 'Health status should be ok');
+  });
+
+  await report.test('Regression', 'GET /health/ready — DB + Redis healthy', async () => {
+    const ready = await apiRequest<{
+      status: string;
+      checks?: { database: string; redis: string };
+    }>(ctx, 'GET', '/health/ready');
+    report.assert(ready.status === 200, `Ready should 200, got ${ready.status}`);
+    report.assert(ready.body.status === 'ok', 'Ready status should be ok');
     report.assert(
-      health.body.checks?.database === 'ok' && health.body.checks?.redis === 'ok',
-      'DB and Redis checks must pass',
+      ready.body.checks?.database === 'ok' && ready.body.checks?.redis === 'ok',
+      `DB and Redis checks must pass (got ${JSON.stringify(ready.body.checks)})`,
     );
   });
 

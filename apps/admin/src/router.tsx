@@ -9,6 +9,7 @@ import { RestaurantsPage } from './pages/RestaurantsPage.js';
 import { BookingsPage } from './pages/BookingsPage.js';
 import { SubscriptionsPage } from './pages/SubscriptionsPage.js';
 import { AuditLogsPage } from './pages/AuditLogsPage.js';
+import { FeedbackPage } from './pages/FeedbackPage.js';
 
 export const router: ReturnType<typeof createBrowserRouter> = createBrowserRouter([
   { path: '/login', element: <LoginPage /> },
@@ -27,6 +28,7 @@ export const router: ReturnType<typeof createBrowserRouter> = createBrowserRoute
       { path: 'bookings', element: <BookingsPage /> },
       { path: 'subscriptions', element: <SubscriptionsPage /> },
       { path: 'audit-logs', element: <AuditLogsPage /> },
+      { path: 'feedback', element: <FeedbackPage /> },
       { path: '*', element: <Navigate to="/" replace /> },
     ],
   },

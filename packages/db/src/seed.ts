@@ -1,10 +1,13 @@
 import { PrismaClient, Role, CuisineType, ReservationStatus } from '@prisma/client';
 import { faker } from '@faker-js/faker';
+import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
-const DEV_PASSWORD_HASH =
-  '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LdmvwBJp9VG0GXrCy';
+/** Shared dev login for all seeded users — printed again at end of seed. */
+export const DEV_PASSWORD = 'password123';
+
+const DEV_PASSWORD_HASH = bcrypt.hashSync(DEV_PASSWORD, 12);
 
 async function main(): Promise<void> {
   console.log('🌱 Seeding database...');
@@ -182,6 +185,9 @@ async function main(): Promise<void> {
   console.log(`✅ Seeded ${owners.length} owners, ${diners.length} diners`);
   console.log(`✅ Seeded ${restaurants.length} restaurants with dining tables`);
   console.log(`✅ Seeded ${reservationCount} reservations`);
+  console.log(`\n🔑 Dev login — all seed users share password: ${DEV_PASSWORD}`);
+  console.log('   Owners: alice@example.com, bob@example.com');
+  console.log('   Diners: diner1@example.com … diner10@example.com');
 }
 
 main()

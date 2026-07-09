@@ -6,7 +6,8 @@ import { createCheckoutUrl } from '../../lib/lemon-squeezy.js';
 import { handleRouteError } from '../../lib/handle-route-error.js';
 import {
   getSubscription,
-  getPlanLimits,
+  getPlanComparison,
+  resolveOwnerBillingState,
   cancelSubscription,
   resumeSubscription,
 } from './subscription.service.js';
@@ -33,8 +34,12 @@ export async function subscriptionRoutes(
     ownerHooks,
     async (request, reply) => {
       const sub = await getSubscription(request.user!.sub);
-      const limits = getPlanLimits(sub.plan);
-      return reply.send({ subscription: sub, limits });
+      const state = await resolveOwnerBillingState(request.user!.sub);
+      return reply.send({
+        subscription: sub,
+        limits: state.limits,
+        planComparison: getPlanComparison(),
+      });
     },
   );
 

@@ -135,7 +135,7 @@ export function CombinationsPanel({
       </div>
 
       {limits.combinationsPerRestaurant === 0 && (
-        <PlanGateNotice message="Table combinations require a Pro or Premium plan." />
+        <PlanGateNotice message="Table combinations need Flexible seating and a Pro or Premium plan. Upgrade on Billing to unlock combinations." />
       )}
 
       {atComboLimit && limits.combinationsPerRestaurant > 0 && (

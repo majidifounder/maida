@@ -49,7 +49,7 @@ export function zonedTimeToUtc(
   const minutes = minutesFromMidnight % 60;
   const [year, month, day] = dateStr.split('-').map(Number);
 
-  let utcMs = Date.UTC(year!, month! - 1, day!, hours, minutes, 0, 0);
+  let utcMs = Date.UTC(year!, month! - 1, day, hours, minutes, 0, 0);
   for (let i = 0; i < 2; i++) {
     utcMs -= getTimeZoneOffsetMs(new Date(utcMs), timeZone);
   }

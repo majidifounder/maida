@@ -1,6 +1,6 @@
-Contact: mailto:security@tablz.com
+Contact: mailto:security@maida.app
 Expires: 2027-01-01T00:00:00.000Z
 Preferred-Languages: en, fr, ar
-Policy: https://tablz.com/security-policy
-Acknowledgments: https://tablz.com/security-hall-of-fame
-Encryption: https://tablz.com/.well-known/pgp-key.txt
+Policy: https://maida.app/security-policy
+Acknowledgments: https://maida.app/security-hall-of-fame
+Encryption: https://maida.app/.well-known/pgp-key.txt

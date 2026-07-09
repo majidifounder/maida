@@ -545,10 +545,31 @@ describe('GET /restaurants/:id/availability', () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body) as {
       times: Array<{ startsAt: string; endsAt: string }>;
+      standardDurationMins: number;
+      serviceWindow: { open: string; close: string };
     };
     expect(body.times.length).toBeGreaterThan(0);
     expect(body.times[0]!.startsAt).toBeDefined();
     expect(body.times[0]!.endsAt).toBeDefined();
+    expect(body.standardDurationMins).toBeGreaterThan(0);
+    expect(body.serviceWindow.open).toBeDefined();
+    expect(body.serviceWindow.close).toBeDefined();
+  });
+
+  it('200 — cached availability still includes serviceWindow and standardDurationMins', async () => {
+    const url = `/restaurants/${restaurantId}/availability?date=${availDate}&partySize=3`;
+    const first = await server.inject({ method: 'GET', url });
+    expect(first.statusCode).toBe(200);
+
+    const second = await server.inject({ method: 'GET', url });
+    expect(second.statusCode).toBe(200);
+    const body = JSON.parse(second.body) as {
+      standardDurationMins: number;
+      serviceWindow: { open: string; close: string };
+    };
+    expect(body.standardDurationMins).toBeGreaterThan(0);
+    expect(body.serviceWindow.open).toBeDefined();
+    expect(body.serviceWindow.close).toBeDefined();
   });
 
   it('404 — non-existent restaurant', async () => {

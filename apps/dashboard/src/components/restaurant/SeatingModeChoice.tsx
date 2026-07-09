@@ -30,7 +30,8 @@ const OPTIONS: Array<{
 ];
 
 export function SeatingModeChoice({ value, onChange, disabled }: SeatingModeChoiceProps) {
-  const { limits, plan } = useOwnerPlan();
+  const { limits, billingTier } = useOwnerPlan();
+  const tierLabel = billingTier === 'TRIAL' ? 'trial' : billingTier.toLowerCase();
 
   return (
     <div className="space-y-3">
@@ -57,7 +58,7 @@ export function SeatingModeChoice({ value, onChange, disabled }: SeatingModeChoi
               <p className="mt-1 text-sm text-gray-600">{opt.description}</p>
               {locked && (
                 <p className="mt-2 text-xs font-medium text-amber-700">
-                  Unavailable on {plan} — upgrade to Pro
+                  Unavailable on {tierLabel} — upgrade to Pro
                 </p>
               )}
             </button>
@@ -65,7 +66,14 @@ export function SeatingModeChoice({ value, onChange, disabled }: SeatingModeChoi
         })}
       </div>
       {!limits.flexibleSeating && (
-        <PlanGateNotice message="Flexible seating and table combinations require a Pro or Premium plan." />
+        <PlanGateNotice
+          message={
+            billingTier === 'TRIAL'
+              ? 'Flexible seating is not included in the free trial. Upgrade to Pro or Premium after subscribing.'
+              : 'Flexible seating and table combinations require a Pro or Premium plan.'
+          }
+          ctaLabel="Compare plans on Billing →"
+        />
       )}
     </div>
   );

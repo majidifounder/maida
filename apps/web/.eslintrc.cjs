@@ -7,4 +7,7 @@ module.exports = {
     ecmaFeatures: { jsx: true },
   },
   ignorePatterns: ['dist'],
+  rules: {
+    '@typescript-eslint/explicit-function-return-type': 'off',
+  },
 };

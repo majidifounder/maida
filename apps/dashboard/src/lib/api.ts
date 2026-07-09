@@ -64,7 +64,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body: unknown) =>
-    request<T>(path, { method: 'POST', body: JSON.stringify(body) }),
+    request<T>(path, {
+      method: 'POST',
+      body: body instanceof FormData ? body : JSON.stringify(body),
+    }),
   patch: <T>(path: string, body?: unknown) => {
     const init: RequestInit = { method: 'PATCH' };
     if (body !== undefined) init.body = JSON.stringify(body);

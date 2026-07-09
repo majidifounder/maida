@@ -13,7 +13,7 @@ import { env } from '../env.js';
  * This plugin catches any gap in the firewall rules.
  */
 export const cloudflareOnlyPlugin = fp(
-  async (fastify) => {
+  (fastify) => {
     const secret = env.CF_ORIGIN_SECRET;
 
     if (!secret || env.NODE_ENV !== 'production') {

@@ -26,7 +26,7 @@ import {
 
 
 
-export async function adminRoutes(fastify: FastifyInstance) {
+export function adminRoutes(fastify: FastifyInstance): void {
 
   fastify.post(
 
@@ -94,14 +94,10 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
 
 
-        reply.setCookie(
-
+        void reply.setCookie(
           REFRESH_COOKIE_NAME,
-
           result.refreshToken,
-
           REFRESH_COOKIE_OPTIONS,
-
         );
 
         // Omit refreshToken from body — HttpOnly cookie is the sole delivery mechanism.
@@ -153,14 +149,10 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
 
 
-      reply.setCookie(
-
+      void reply.setCookie(
         REFRESH_COOKIE_NAME,
-
         result.refreshToken,
-
         REFRESH_COOKIE_OPTIONS,
-
       );
 
       // Omit refreshToken from body — HttpOnly cookie is the sole delivery mechanism.
@@ -390,6 +382,20 @@ export async function adminRoutes(fastify: FastifyInstance) {
     }
 
     return reply.send(await AdminService.listAuditLogs(query.data));
+
+  });
+
+  fastify.get('/admin/feedback', adminHooks, async (request, reply) => {
+
+    const query = AdminPaginationSchema.safeParse(request.query);
+
+    if (!query.success) {
+
+      return reply.code(422).send({ error: 'Validation failed' });
+
+    }
+
+    return reply.send(await AdminService.listProductFeedback(query.data));
 
   });
 

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import Fastify, { type FastifyBaseLogger } from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
@@ -8,7 +9,7 @@ import sensible from '@fastify/sensible';
 
 import { env } from './env.js';
 import { logger } from './lib/logger.js';
-import { getRedisClient } from './lib/redis.js';
+import { getRedisClient, pingRedis } from './lib/redis.js';
 import { getRealIp } from './lib/cloudflare.js';
 import { isLoadTestRequest } from './lib/load-test.js';
 import { recordThreatSignal, isExtendedBanned } from './lib/threat-detector.js';
@@ -22,7 +23,13 @@ import { reservationRoutes } from './modules/reservation/reservation.routes.js';
 import { adminRoutes } from './modules/admin/admin.routes.js';
 import { webhookRoutes } from './modules/subscription/webhook.routes.js';
 import { subscriptionRoutes } from './modules/subscription/subscription.routes.js';
+import multipart from '@fastify/multipart';
+import { MAX_LOGO_BYTES } from './lib/image-validation.js';
+import { feedbackRoutes } from './modules/feedback/feedback.routes.js';
 import { startNotificationWorker } from './workers/notification.worker.js';
+import { AppError } from './errors/index.js';
+import { registerLocalLogoRoutes } from './lib/local-logo-routes.js';
+import { warmupStores } from './lib/store-warmup.js';
 
 const BLOCKED_UA_PATTERNS = [
   /sqlmap/i,
@@ -34,6 +41,25 @@ const BLOCKED_UA_PATTERNS = [
   /python-requests\/[01]\./i,
 ];
 
+function isHealthRoute(url: string): boolean {
+  const path = url.split('?')[0] ?? url;
+  return path === '/health' || path === '/health/ready';
+}
+
+function sendLiveness(res: ServerResponse): void {
+  const body = JSON.stringify({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    environment: env.NODE_ENV,
+  });
+  res.writeHead(200, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body),
+    'Cache-Control': 'no-store',
+  });
+  res.end(body);
+}
+
 async function buildServer() {
   const fastify = Fastify({
     loggerInstance: logger as unknown as FastifyBaseLogger,
@@ -42,6 +68,28 @@ async function buildServer() {
     requestTimeout: 30_000,
     keepAliveTimeout: 5_000,
     bodyLimit: 100 * 1024, // 100 KB default
+    // Answer /health at the raw HTTP layer so Redis/rate-limit/hooks can never hang it.
+    serverFactory(handler) {
+      return createServer((req: IncomingMessage, res: ServerResponse) => {
+        const path = (req.url ?? '').split('?')[0] ?? '';
+        if (req.method === 'GET' && path === '/health') {
+          sendLiveness(res);
+          return;
+        }
+        handler(req, res);
+      });
+    },
+  });
+
+  // Keep a Fastify route for inject()/tests (serverFactory is not used by inject).
+  fastify.get('/health', {
+    config: { rateLimit: false },
+  }, async (_request, reply) => {
+    return reply.code(200).send({
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      environment: env.NODE_ENV,
+    });
   });
 
   await fastify.register(helmet, {
@@ -86,24 +134,28 @@ async function buildServer() {
 
   await fastify.register(cookie);
 
-  const redis = getRedisClient();
+  // Always use in-memory rate limiting in development/test.
+  // Redis-backed limiting is production-only and must never block local/e2e.
   await fastify.register(rateLimit, {
     global: true,
     max: 100,
     timeWindow: '1 minute',
-    redis,
     keyGenerator: (req) => getRealIp(req),
-    allowList: (req) => isLoadTestRequest(req),
+    allowList: (req) => isLoadTestRequest(req) || isHealthRoute(req.url),
     errorResponseBuilder: (_req, context) => ({
       statusCode: 429,
       error: 'Too Many Requests',
       message: `Rate limit exceeded. Retry after ${context.after}.`,
       retryAfter: context.ttl,
     }),
-    skipOnError: false,
+    skipOnError: true,
+    ...(env.NODE_ENV === 'production' ? { redis: getRedisClient() } : {}),
   });
 
   await fastify.register(sensible);
+  await fastify.register(multipart, {
+    limits: { fileSize: MAX_LOGO_BYTES, files: 1 },
+  });
 
   // --- Scanner / bot UA block ---
   fastify.addHook('onRequest', async (request, reply) => {
@@ -115,6 +167,7 @@ async function buildServer() {
 
   // --- Extended IP ban check (threat detector) ---
   fastify.addHook('onRequest', async (request, reply) => {
+    if (isHealthRoute(request.url)) return;
     const ip = getRealIp(request);
     const banned = await isExtendedBanned(ip);
     if (banned) {
@@ -135,14 +188,14 @@ async function buildServer() {
   });
 
   // --- Security headers + correlation ID ---
-  fastify.addHook('onSend', async (request, reply) => {
-    reply.header(
+  fastify.addHook('onSend', (request, reply) => {
+    void reply.header(
       'Permissions-Policy',
       'accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()',
     );
-    reply.removeHeader('X-Powered-By');
-    reply.header('X-DNS-Prefetch-Control', 'off');
-    reply.header('X-Request-Id', request.id);
+    void reply.removeHeader('X-Powered-By');
+    void reply.header('X-DNS-Prefetch-Control', 'off');
+    void reply.header('X-Request-Id', request.id);
   });
 
   // --- Block HTTP method override headers ---
@@ -162,21 +215,26 @@ async function buildServer() {
   await fastify.register(webhookRoutes);
   await fastify.register(cloudflareOnlyPlugin);
   await fastify.register(authenticatePlugin);
+  registerLocalLogoRoutes(fastify);
   await fastify.register(wsPlugin);
   await fastify.register(authRoutes);
   await fastify.register(restaurantRoutes);
   await fastify.register(reservationRoutes);
   await fastify.register(subscriptionRoutes);
+  await fastify.register(feedbackRoutes);
   await fastify.register(adminRoutes);
 
   // --- Responsible disclosure endpoint ---
   fastify.get('/.well-known/security.txt', async (_request, reply) => {
     return reply.header('Content-Type', 'text/plain; charset=utf-8').send(
-      `Contact: mailto:security@tablz.com\nExpires: 2027-01-01T00:00:00.000Z\nPreferred-Languages: en, fr, ar\nPolicy: https://tablz.com/security-policy\n`,
+      `Contact: mailto:security@maida.app\nExpires: 2027-01-01T00:00:00.000Z\nPreferred-Languages: en, fr, ar\nPolicy: https://maida.app/security-policy\n`,
     );
   });
 
-  fastify.get('/health', async (_request, reply) => {
+  // Readiness — DB + Redis. Used by launch checks and e2e regression.
+  fastify.get('/health/ready', {
+    config: { rateLimit: false },
+  }, async (_request, reply) => {
     const checks: Record<string, 'ok' | 'error'> = {};
     let httpStatus = 200;
 
@@ -189,8 +247,7 @@ async function buildServer() {
     }
 
     try {
-      const redis = getRedisClient();
-      await redis.ping();
+      await pingRedis(3_000);
       checks.redis = 'ok';
     } catch {
       checks.redis = 'error';
@@ -206,6 +263,13 @@ async function buildServer() {
   });
 
   fastify.setErrorHandler((error: unknown, _request, reply) => {
+    if (error instanceof AppError) {
+      return reply.code(error.statusCode).send({
+        error: error.message,
+        code: error.code,
+      });
+    }
+
     const err = error as { statusCode?: number; message?: string; stack?: string };
     if (env.NODE_ENV === 'production' && !('statusCode' in (err as object))) {
       fastify.log.error(err);
@@ -227,7 +291,7 @@ async function start() {
   let stopWorker: (() => Promise<void>) | null = null;
 
   const shutdown = async (signal: string) => {
-    console.log(`Received ${signal}, shutting down gracefully…`);
+    logger.info(`Received ${signal}, shutting down gracefully…`);
     if (stopWorker) await stopWorker();
     await server.close();
     process.exit(0);
@@ -237,9 +301,10 @@ async function start() {
   process.on('SIGINT', () => void shutdown('SIGINT'));
 
   try {
+    await warmupStores();
     await server.listen({ port: env.PORT, host: '0.0.0.0' });
     stopWorker = startNotificationWorker();
-    console.log(`✅ API server listening on port ${env.PORT}`);
+    logger.info(`✅ API server listening on port ${env.PORT}`);
   } catch (err) {
     if (stopWorker) await stopWorker();
     server.log.error(err);

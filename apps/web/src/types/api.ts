@@ -12,12 +12,19 @@ export type PublicRestaurant = Restaurant & {
   customFee: string | null;
   extraHourFee: string | null;
   feeCurrency: string;
+  maxExtraHours: number;
 };
 
 export interface AvailabilityTime {
   startsAt: string;
   endsAt: string;
   durationMins: number;
+}
+
+export interface AvailabilityResponse {
+  times: AvailabilityTime[];
+  standardDurationMins: number;
+  serviceWindow: { open: string; close: string };
 }
 
 export interface ReservationWithDetails {

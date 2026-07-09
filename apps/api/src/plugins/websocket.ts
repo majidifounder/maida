@@ -89,15 +89,17 @@ const wsPlugin: FastifyPluginAsync = async (fastify) => {
         (exp - Math.floor(Date.now() / 1000)) * 1000,
         0,
       );
-      const expiryTimer = setTimeout(async () => {
-        try {
-          const revoked = await getRedisClient().get(`deny:${jti}`);
-          if (revoked || Date.now() / 1000 > exp) {
+      const expiryTimer = setTimeout(() => {
+        void (async () => {
+          try {
+            const revoked = await getRedisClient().get(`deny:${jti}`);
+            if (revoked || Date.now() / 1000 > exp) {
+              socket.close(4001, 'Token expired');
+            }
+          } catch {
             socket.close(4001, 'Token expired');
           }
-        } catch {
-          socket.close(4001, 'Token expired');
-        }
+        })();
       }, msUntilExpiry);
 
       const unsubscribe = await subscribeToRestaurantChannel(

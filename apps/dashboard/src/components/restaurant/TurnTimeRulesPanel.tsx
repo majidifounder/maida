@@ -92,7 +92,7 @@ export function TurnTimeRulesPanel({ restaurantId }: TurnTimeRulesPanelProps) {
       {atRuleLimit && (
         <div className="mb-4">
           <PlanGateNotice
-            message={`You've reached the turn-time rule limit on your ${plan} plan.`}
+            message={`You've reached your plan limit of ${limits.turnTimeRulesPerRestaurant} turn-time rule(s). Upgrade on Billing to add more, or delete an existing rule.`}
           />
         </div>
       )}

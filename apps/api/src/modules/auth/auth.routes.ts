@@ -27,6 +27,7 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
           max: 3,
           timeWindow: '1 hour',
           keyGenerator: (req) => `register:${getRealIp(req)}`,
+          allowList: (req) => isLoadTestRequest(req),
         },
       },
     },

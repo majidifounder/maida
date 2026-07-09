@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 /**
- * Tablz — Dev Data Reset
+ * Maida — Dev Data Reset
  *
  * Usage:
  *   pnpm db:dev-reset
@@ -29,6 +29,10 @@ import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import type { prisma as PrismaInstance } from '@restaurant/db';
+import {
+  printDatabaseConnectionHint,
+  useDirectDatabaseUrl,
+} from './lib/script-db.js';
 
 const CONFIRM_PHRASE = 'RESET DEV';
 
@@ -121,6 +125,36 @@ function assertDevTarget(databaseUrl: string): ParsedDatabaseUrl {
 
 type PrismaClient = typeof PrismaInstance;
 
+async function assertSchemaCurrent(prisma: PrismaClient): Promise<void> {
+  const [trialColumn, feedbackTable] = await Promise.all([
+    prisma.$queryRaw<{ column_name: string }[]>`
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'subscriptions'
+        AND column_name = 'trialStartedAt'
+    `,
+    prisma.$queryRaw<{ table_name: string }[]>`
+      SELECT table_name
+      FROM information_schema.tables
+      WHERE table_schema = 'public'
+        AND table_name = 'product_feedback'
+    `,
+  ]);
+
+  const missing: string[] = [];
+  if (trialColumn.length === 0) missing.push('subscriptions.trialStartedAt');
+  if (feedbackTable.length === 0) missing.push('product_feedback table');
+
+  if (missing.length > 0) {
+    console.error('\n❌ Database schema is behind the codebase.');
+    console.error(`   Missing: ${missing.join(', ')}`);
+    console.error('   Run: pnpm db:migrate');
+    console.error('   If generate fails on Windows, stop dev servers/tests and run: pnpm db:generate\n');
+    process.exit(1);
+  }
+}
+
 async function getTableCounts(prisma: PrismaClient): Promise<Record<string, number>> {
   const [
     users,
@@ -132,6 +166,7 @@ async function getTableCounts(prisma: PrismaClient): Promise<Record<string, numb
     reservations,
     reservationTables,
     subscriptions,
+    productFeedback,
     auditLogs,
     refreshTokens,
   ] = await Promise.all([
@@ -144,6 +179,7 @@ async function getTableCounts(prisma: PrismaClient): Promise<Record<string, numb
     prisma.reservation.count(),
     prisma.reservationTable.count(),
     prisma.subscription.count(),
+    prisma.productFeedback.count(),
     prisma.auditLog.count(),
     prisma.refreshToken.count(),
   ]);
@@ -158,6 +194,7 @@ async function getTableCounts(prisma: PrismaClient): Promise<Record<string, numb
     reservations,
     reservationTables,
     subscriptions,
+    productFeedback,
     auditLogs,
     refreshTokens,
   };
@@ -175,6 +212,7 @@ function printCounts(counts: Record<string, number>, title: string): void {
 async function wipeDatabase(prisma: PrismaClient): Promise<void> {
   await prisma.$transaction([
     prisma.auditLog.deleteMany(),
+    prisma.productFeedback.deleteMany(),
     prisma.reservationTable.deleteMany(),
     prisma.reservation.deleteMany(),
     prisma.tableCombinationMember.deleteMany(),
@@ -253,9 +291,9 @@ function printAdminSetupInstructions(): void {
 
 async function main(): Promise<void> {
   const repoRoot = resolve(__dirname, '..');
-  const databaseUrl = process.env.DATABASE_URL ?? '';
+  const databaseUrl = useDirectDatabaseUrl();
 
-  console.log('\n🧹 Tablz Dev Data Reset');
+  console.log('\n🧹 Maida Dev Data Reset');
   console.log('─────────────────────────────────────');
 
   assertDevTarget(databaseUrl);
@@ -265,6 +303,8 @@ async function main(): Promise<void> {
   console.log(`   NODE_ENV : ${process.env.NODE_ENV ?? '(unset)'}`);
 
   const { prisma } = await import('@restaurant/db');
+
+  await assertSchemaCurrent(prisma);
 
   const beforeCounts = await getTableCounts(prisma);
   printCounts(beforeCounts, '📊 Current data:');
@@ -326,5 +366,6 @@ async function main(): Promise<void> {
 
 main().catch((err) => {
   console.error('\n❌ Dev data reset failed:', err);
+  printDatabaseConnectionHint(err);
   process.exit(1);
 });

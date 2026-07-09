@@ -2,10 +2,13 @@ import { prisma, type Prisma } from '@restaurant/db';
 import {
   addLocalDays,
   formatLocalDate,
+  localDayBoundsUtc,
   zonedTimeToUtc,
 } from './timezone.js';
+import { isOpen24Hours } from './service-hours.js';
 
 export const AVAILABILITY_STEP_MINS = 15;
+export const MIN_RESERVATION_MINS = 15;
 
 export type BookableUnit = {
   kind: 'table' | 'combination';
@@ -165,6 +168,11 @@ export function serviceWindowBounds(
   closeMinutes: number,
   timeZone = 'UTC',
 ): { windowStart: Date; windowEnd: Date } {
+  if (isOpen24Hours(openMinutes, closeMinutes)) {
+    const bounds = localDayBoundsUtc(date, timeZone);
+    return { windowStart: bounds.start, windowEnd: bounds.end };
+  }
+
   return {
     windowStart: zonedTimeToUtc(date, openMinutes, timeZone),
     windowEnd: zonedTimeToUtc(date, closeMinutes, timeZone),
@@ -389,4 +397,140 @@ function findBestFitUnitInMemory(
     }
   }
   return null;
+}
+
+export type RestaurantBookingContext = {
+  id: string;
+  seatingMode: 'LOCKED' | 'FLEXIBLE';
+  defaultDurationMins: number;
+  openMinutes: number;
+  closeMinutes: number;
+  timezone: string;
+  maxExtraHours: number;
+};
+
+export type CustomReservationMode =
+  | { kind: 'extended'; durationMins: number }
+  | { kind: 'untilClose' };
+
+export function maxCustomDurationMins(
+  standardDurationMins: number,
+  maxExtraHours: number,
+): number {
+  return standardDurationMins + maxExtraHours * 60;
+}
+
+export function computeEstimatedFee(
+  customFee: { toString(): string } | null | undefined,
+  extraHourFee: { toString(): string } | null | undefined,
+  startsAt: Date,
+  endsAt: Date,
+  standardDurationMins: number,
+): number {
+  const flat = customFee != null ? Number(customFee) : 0;
+  const perHour = extraHourFee != null ? Number(extraHourFee) : 0;
+  const actualMins = (endsAt.getTime() - startsAt.getTime()) / 60_000;
+  const extraMins = Math.max(0, actualMins - standardDurationMins);
+  const extraHours = Math.ceil(extraMins / 60);
+  return (Number.isNaN(flat) ? 0 : flat) + extraHours * (Number.isNaN(perHour) ? 0 : perHour);
+}
+
+async function findEarliestFollowingReservationStart(
+  tableIds: string[],
+  startsAt: Date,
+  searchUntil: Date,
+  db: DbClient = prisma,
+): Promise<Date | null> {
+  if (tableIds.length === 0) return null;
+
+  const rows = await db.$queryRaw<Array<{ startsAt: Date }>>`
+    SELECT MIN(rt."startsAt") AS "startsAt"
+    FROM "reservation_tables" rt
+    WHERE rt."tableId" = ANY(${tableIds}::uuid[])
+      AND rt."releasedAt" IS NULL
+      AND rt."startsAt" > ${startsAt}::timestamptz
+      AND rt."startsAt" < ${searchUntil}::timestamptz
+  `;
+
+  return rows[0]?.startsAt ?? null;
+}
+
+/** Resolves table assignment and end time for CUSTOM (Extended or Until-close) bookings. */
+export async function resolveCustomReservationWindow(
+  restaurant: RestaurantBookingContext,
+  partySize: number,
+  startsAt: Date,
+  mode: CustomReservationMode,
+  db: DbClient = prisma,
+): Promise<{
+  tableIds: string[];
+  endsAt: Date;
+  wasCapped: boolean;
+  standardDurationMins: number;
+} | null> {
+  const standardDurationMins = await resolveDurationMins(
+    restaurant.id,
+    partySize,
+    restaurant.defaultDurationMins,
+    db,
+  );
+  const capEndsAt = addMinutes(
+    startsAt,
+    maxCustomDurationMins(standardDurationMins, restaurant.maxExtraHours),
+  );
+
+  const dateStr = formatLocalDate(startsAt, restaurant.timezone);
+  const { windowEnd: serviceCloseAt } = serviceWindowBounds(
+    dateStr,
+    restaurant.openMinutes,
+    restaurant.closeMinutes,
+    restaurant.timezone,
+  );
+
+  const units = await loadBookableUnits(restaurant.id, restaurant.seatingMode, db);
+  if (units.length === 0) return null;
+
+  if (mode.kind === 'extended') {
+    const endsAt = addMinutes(startsAt, mode.durationMins);
+    const unit = await findBestFitUnit(units, partySize, startsAt, endsAt, db);
+    if (!unit) return null;
+
+    return {
+      tableIds: unit.tableIds,
+      endsAt,
+      wasCapped: false,
+      standardDurationMins,
+    };
+  }
+
+  const probeEndsAt = addMinutes(startsAt, MIN_RESERVATION_MINS);
+  const unit = await findBestFitUnit(units, partySize, startsAt, probeEndsAt, db);
+  if (!unit) return null;
+
+  const theoreticalMax = new Date(
+    Math.min(serviceCloseAt.getTime(), capEndsAt.getTime()),
+  );
+  const followingStart = await findEarliestFollowingReservationStart(
+    unit.tableIds,
+    startsAt,
+    theoreticalMax,
+    db,
+  );
+
+  const endsAt = new Date(
+    Math.min(
+      theoreticalMax.getTime(),
+      followingStart?.getTime() ?? Number.POSITIVE_INFINITY,
+    ),
+  );
+
+  const durationMins = (endsAt.getTime() - startsAt.getTime()) / 60_000;
+  if (durationMins < MIN_RESERVATION_MINS) return null;
+
+  return {
+    tableIds: unit.tableIds,
+    endsAt,
+    wasCapped: endsAt.getTime() < serviceCloseAt.getTime(),
+    standardDurationMins,
+  };
 }

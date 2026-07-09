@@ -1,4 +1,17 @@
-import type { Plan, PlanLimits } from '@restaurant/types';
+import type { BillingTier, Plan, PlanLimits } from '@restaurant/types';
+
+export const TRIAL_DAYS = 14;
+
+/** Stricter than STARTER — enough to evaluate the product, not run production volume. */
+export const TRIAL_LIMITS: PlanLimits = {
+  restaurants: 1,
+  reservationsPerMonth: 25,
+  tablesPerRestaurant: 5,
+  combinationsPerRestaurant: 0,
+  turnTimeRulesPerRestaurant: 1,
+  flexibleSeating: false,
+  customReservations: false,
+};
 
 export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
   STARTER: {
@@ -30,6 +43,38 @@ export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
   },
 };
 
+export const PLAN_COMPARISON: Array<{
+  tier: BillingTier;
+  label: string;
+  price: string | null;
+  limits: PlanLimits;
+}> = [
+  {
+    tier: 'TRIAL',
+    label: 'Free trial',
+    price: '14 days free',
+    limits: TRIAL_LIMITS,
+  },
+  {
+    tier: 'STARTER',
+    label: 'Starter',
+    price: '€29/mo',
+    limits: PLAN_LIMITS.STARTER,
+  },
+  {
+    tier: 'PRO',
+    label: 'Pro',
+    price: '€79/mo',
+    limits: PLAN_LIMITS.PRO,
+  },
+  {
+    tier: 'PREMIUM',
+    label: 'Premium',
+    price: '€199/mo',
+    limits: PLAN_LIMITS.PREMIUM,
+  },
+];
+
 export function getPlanLimits(plan: Plan): PlanLimits {
   return PLAN_LIMITS[plan];
 }
@@ -38,9 +83,41 @@ export function planDisplayName(plan: Plan): string {
   return { STARTER: 'Starter', PRO: 'Pro', PREMIUM: 'Premium' }[plan];
 }
 
+export function billingTierLabel(tier: BillingTier): string {
+  if (tier === 'TRIAL') return 'Free trial';
+  return planDisplayName(tier);
+}
+
+export function computeTrialEndsAt(trialStartedAt: Date): Date {
+  const end = new Date(trialStartedAt);
+  end.setUTCDate(end.getUTCDate() + TRIAL_DAYS);
+  return end;
+}
+
+export function isTrialPeriodExpired(
+  trialStartedAt: Date,
+  now: Date = new Date(),
+): boolean {
+  return now >= computeTrialEndsAt(trialStartedAt);
+}
+
+export function trialDaysRemaining(
+  trialStartedAt: Date,
+  now: Date = new Date(),
+): number {
+  const end = computeTrialEndsAt(trialStartedAt);
+  const ms = end.getTime() - now.getTime();
+  if (ms <= 0) return 0;
+  return Math.ceil(ms / (24 * 60 * 60 * 1000));
+}
+
 export function startOfCurrentMonth(): Date {
   const d = new Date();
   d.setUTCDate(1);
   d.setUTCHours(0, 0, 0, 0);
   return d;
+}
+
+export function formatLimit(value: number): string {
+  return value === Infinity ? 'Unlimited' : String(value);
 }

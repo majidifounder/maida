@@ -4,18 +4,23 @@ import toast from 'react-hot-toast';
 import { api, ApiError } from '../../lib/api.js';
 import type { OwnerRestaurant, SeatingMode } from '../../types/api.js';
 import {
-  COMMON_TIMEZONES,
   formatServiceWindow,
+  isOpen24Hours,
   minutesToTimeInput,
   resolveTimezone,
-  timeInputToMinutes,
 } from '../../lib/restaurant-time.js';
 import { useOwnerPlan } from '../../hooks/useOwnerPlan.js';
 import { Card } from '../ui/Card.js';
-import { Input, Select } from '../ui/Input.js';
+import { Input } from '../ui/Input.js';
 import { Button } from '../ui/Button.js';
 import { PlanGateNotice } from '../PlanGateNotice.js';
 import { SeatingModeChoice } from './SeatingModeChoice.js';
+import { TimezonePicker } from './TimezonePicker.js';
+import {
+  resolveServiceHoursPayload,
+  ServiceHoursFields,
+  validateServiceHoursInput,
+} from './ServiceHoursFields.js';
 
 interface ReservationConfigPanelProps {
   restaurantId: string;
@@ -31,6 +36,9 @@ export function ReservationConfigPanel({
 
   const [timezone, setTimezone] = useState(config.timezone);
   const [seatingMode, setSeatingMode] = useState<SeatingMode>(config.seatingMode);
+  const [open24Hours, setOpen24Hours] = useState(
+    isOpen24Hours(config.openMinutes, config.closeMinutes),
+  );
   const [openTime, setOpenTime] = useState(minutesToTimeInput(config.openMinutes));
   const [closeTime, setCloseTime] = useState(minutesToTimeInput(config.closeMinutes));
   const [defaultDurationMins, setDefaultDurationMins] = useState(
@@ -39,45 +47,52 @@ export function ReservationConfigPanel({
   const [customFee, setCustomFee] = useState(config.customFee ?? '');
   const [extraHourFee, setExtraHourFee] = useState(config.extraHourFee ?? '');
   const [feeCurrency, setFeeCurrency] = useState(config.feeCurrency);
+  const [maxExtraHours, setMaxExtraHours] = useState(String(config.maxExtraHours ?? 2));
 
   useEffect(() => {
     setTimezone(config.timezone);
     setSeatingMode(config.seatingMode);
+    setOpen24Hours(isOpen24Hours(config.openMinutes, config.closeMinutes));
     setOpenTime(minutesToTimeInput(config.openMinutes));
     setCloseTime(minutesToTimeInput(config.closeMinutes));
     setDefaultDurationMins(String(config.defaultDurationMins));
     setCustomFee(config.customFee ?? '');
     setExtraHourFee(config.extraHourFee ?? '');
     setFeeCurrency(config.feeCurrency);
+    setMaxExtraHours(String(config.maxExtraHours ?? 2));
   }, [config]);
 
   const saveMutation = useMutation({
     mutationFn: () => {
-      const openMinutes = timeInputToMinutes(openTime);
-      const closeMinutes = timeInputToMinutes(closeTime);
+      const hoursError = validateServiceHoursInput(openTime, closeTime, open24Hours);
+      if (hoursError) throw new ApiError(422, hoursError);
+
+      const hours = resolveServiceHoursPayload(openTime, closeTime, open24Hours);
       const duration = Number(defaultDurationMins);
 
-      if (openMinutes === null || closeMinutes === null) {
-        throw new ApiError(422, 'Enter valid open and close times (HH:MM).');
-      }
-      if (closeMinutes <= openMinutes) {
-        throw new ApiError(422, 'Close time must be after open time.');
+      if (!hours) {
+        throw new ApiError(422, 'Enter valid service hours.');
       }
       if (!Number.isInteger(duration) || duration < 15 || duration > 720) {
-        throw new ApiError(422, 'Default duration must be between 15 and 720 minutes.');
+        throw new ApiError(422, 'Default table turn must be between 15 and 720 minutes.');
       }
 
       const body: Record<string, unknown> = {
         timezone: resolveTimezone(timezone),
         seatingMode: limits.flexibleSeating ? seatingMode : 'LOCKED',
-        openMinutes,
-        closeMinutes,
+        openMinutes: hours.openMinutes,
+        closeMinutes: hours.closeMinutes,
         defaultDurationMins: duration,
       };
       if (!feesLocked) {
         body.customFee = customFee.trim() === '' ? null : Number(customFee);
         body.extraHourFee = extraHourFee.trim() === '' ? null : Number(extraHourFee);
         body.feeCurrency = feeCurrency;
+        const extraHours = Number(maxExtraHours);
+        if (!Number.isInteger(extraHours) || extraHours < 0 || extraHours > 6) {
+          throw new ApiError(422, 'Maximum extra time must be between 0 and 6 hours.');
+        }
+        body.maxExtraHours = extraHours;
       }
       return api.patch<{ config: OwnerRestaurant }>(
         `/restaurants/${restaurantId}/reservation-config`,
@@ -112,42 +127,20 @@ export function ReservationConfigPanel({
           saveMutation.mutate();
         }}
       >
-        <Select
-          label="Timezone"
-          value={timezone}
-          onChange={(e) => setTimezone(e.target.value)}
-        >
-          {COMMON_TIMEZONES.map((tz) => (
-            <option key={tz.value} value={tz.value}>
-              {tz.label}
-            </option>
-          ))}
-        </Select>
+        <TimezonePicker value={timezone} onChange={setTimezone} />
 
         <SeatingModeChoice value={seatingMode} onChange={setSeatingMode} />
 
-        <div className="grid gap-4 sm:grid-cols-3">
-          <Input
-            label="Opens at"
-            type="time"
-            value={openTime}
-            onChange={(e) => setOpenTime(e.target.value)}
-          />
-          <Input
-            label="Closes at"
-            type="time"
-            value={closeTime}
-            onChange={(e) => setCloseTime(e.target.value)}
-          />
-          <Input
-            label="Default duration (minutes)"
-            type="number"
-            min={15}
-            max={720}
-            value={defaultDurationMins}
-            onChange={(e) => setDefaultDurationMins(e.target.value)}
-          />
-        </div>
+        <ServiceHoursFields
+          openTime={openTime}
+          closeTime={closeTime}
+          defaultDurationMins={defaultDurationMins}
+          open24Hours={open24Hours}
+          onOpenTimeChange={setOpenTime}
+          onCloseTimeChange={setCloseTime}
+          onDefaultDurationChange={setDefaultDurationMins}
+          onOpen24HoursChange={setOpen24Hours}
+        />
 
         <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
           <h3 className="text-sm font-semibold text-gray-900">
@@ -160,7 +153,7 @@ export function ReservationConfigPanel({
 
           {feesLocked ? (
             <div className="mt-3">
-              <PlanGateNotice message="Custom reservation fees and custom-length bookings require a Pro or Premium plan." />
+              <PlanGateNotice message="Custom reservation fees and custom-length bookings need a Pro or Premium plan. Upgrade on Billing to offer them." />
             </div>
           ) : (
             <div className="mt-4 grid gap-4 sm:grid-cols-3">
@@ -188,6 +181,23 @@ export function ReservationConfigPanel({
                 value={feeCurrency}
                 onChange={(e) => setFeeCurrency(e.target.value.toUpperCase())}
               />
+            </div>
+          )}
+
+          {!feesLocked && (
+            <div className="mt-4">
+              <Input
+                label="Maximum extra time diners can add (hours)"
+                type="number"
+                min={0}
+                max={6}
+                step={1}
+                value={maxExtraHours}
+                onChange={(e) => setMaxExtraHours(e.target.value)}
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                Applies to extended and reserve-until-close bookings (0–6 hours).
+              </p>
             </div>
           )}
         </div>

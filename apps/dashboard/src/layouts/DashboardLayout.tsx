@@ -1,7 +1,9 @@
 import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../context/AuthContext.js';
-import { api } from '../lib/api.js';
+import { useOwnerPlan } from '../hooks/useOwnerPlan.js';
+import { billingTierLabel } from '../lib/plan-limits.js';
+import { TrialBanner } from '../components/TrialBanner.js';
+import { FeedbackForm } from '../components/FeedbackForm.js';
 import { Button } from '../components/ui/Button.js';
 
 function BillingIcon() {
@@ -52,16 +54,7 @@ const navLinkClass = ({ isActive }: { isActive: boolean }) =>
 export function DashboardLayout() {
   const { user, logout, loading } = useAuth();
   const navigate = useNavigate();
-
-  const { data: sub } = useQuery({
-    queryKey: ['subscription'],
-    queryFn: () =>
-      api
-        .get<{ subscription: { plan: string } }>('/subscriptions/me')
-        .then((r) => r.subscription),
-    staleTime: 5 * 60 * 1000,
-    enabled: !loading && !!user,
-  });
+  const { billingTier, isTrialActive, trialDaysRemaining } = useOwnerPlan();
 
   const handleLogout = async () => {
     await logout();
@@ -87,13 +80,26 @@ export function DashboardLayout() {
             Billing
           </NavLink>
 
-          {sub && (
+          {!loading && user && (
             <div className="mt-auto px-3 py-2">
               <span className="text-xs text-gray-400">Plan</span>
-              <p className="text-sm font-semibold text-gray-700">{sub.plan}</p>
+              <p className="text-sm font-semibold text-gray-700">
+                {billingTierLabel(billingTier)}
+              </p>
+              {isTrialActive && trialDaysRemaining != null && (
+                <p className="text-xs text-blue-700">
+                  {trialDaysRemaining} day{trialDaysRemaining === 1 ? '' : 's'} left
+                </p>
+              )}
             </div>
           )}
         </nav>
+
+        {!loading && user && (
+          <div className="border-t border-gray-200 p-4">
+            <FeedbackForm />
+          </div>
+        )}
 
         {!loading && user && (
           <div className="border-t border-gray-200 p-4">
@@ -111,6 +117,7 @@ export function DashboardLayout() {
       </aside>
 
       <div className="flex flex-1 flex-col">
+        {!loading && user && <TrialBanner />}
         <main className="flex-1 px-6 py-8">
           <Outlet />
         </main>

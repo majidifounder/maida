@@ -6,16 +6,19 @@ import { z } from 'zod';
 import toast from 'react-hot-toast';
 import { api, ApiError } from '../lib/api.js';
 import { CUISINE_TYPES, type SeatingMode } from '../types/api.js';
-import {
-  COMMON_TIMEZONES,
-  resolveTimezone,
-  timeInputToMinutes,
-} from '../lib/restaurant-time.js';
+import { resolveTimezone } from '../lib/restaurant-time.js';
 import { useOwnerPlan } from '../hooks/useOwnerPlan.js';
 import { Card } from '../components/ui/Card.js';
 import { Input, Select, TextArea } from '../components/ui/Input.js';
 import { Button } from '../components/ui/Button.js';
 import { SeatingModeChoice } from '../components/restaurant/SeatingModeChoice.js';
+import { TimezonePicker } from '../components/restaurant/TimezonePicker.js';
+import {
+  resolveServiceHoursPayload,
+  ServiceHoursFields,
+  validateServiceHoursInput,
+} from '../components/restaurant/ServiceHoursFields.js';
+import { formatServiceWindow } from '../lib/restaurant-time.js';
 
 const basicsSchema = z.object({
   name: z.string().min(2),
@@ -42,6 +45,7 @@ export function CreateRestaurantPage() {
   const [seatingMode, setSeatingMode] = useState<SeatingMode>('LOCKED');
   const [openTime, setOpenTime] = useState('11:00');
   const [closeTime, setCloseTime] = useState('23:00');
+  const [open24Hours, setOpen24Hours] = useState(false);
   const [defaultDurationMins, setDefaultDurationMins] = useState('90');
 
   const {
@@ -64,37 +68,29 @@ export function CreateRestaurantPage() {
     setApiError(null);
     setSubmitting(true);
     const basics = getValues();
-
-    const openMinutes = timeInputToMinutes(openTime);
-    const closeMinutes = timeInputToMinutes(closeTime);
+    const hours = resolveServiceHoursPayload(openTime, closeTime, open24Hours);
     const duration = Number(defaultDurationMins);
     const effectiveSeatingMode = limits.flexibleSeating ? seatingMode : 'LOCKED';
 
-    if (openMinutes === null || closeMinutes === null) {
-      setApiError('Enter valid open and close times (HH:MM).');
-      setSubmitting(false);
-      return;
-    }
-    if (closeMinutes <= openMinutes) {
-      setApiError('Close time must be after open time.');
+    const hoursError = validateServiceHoursInput(openTime, closeTime, open24Hours);
+    if (hoursError || !hours) {
+      setApiError(hoursError ?? 'Enter valid service hours.');
       setSubmitting(false);
       return;
     }
     if (!Number.isInteger(duration) || duration < 15 || duration > 720) {
-      setApiError('Default duration must be between 15 and 720 minutes.');
+      setApiError('Default table turn must be between 15 and 720 minutes.');
       setSubmitting(false);
       return;
     }
 
     try {
-      const tz = resolveTimezone(timezone);
-
       const res = await api.post<{ restaurant: { id: string } }>('/restaurants', {
         ...basics,
-        timezone: tz,
+        timezone: resolveTimezone(timezone),
         seatingMode: effectiveSeatingMode,
-        openMinutes,
-        closeMinutes,
+        openMinutes: hours.openMinutes,
+        closeMinutes: hours.closeMinutes,
         defaultDurationMins: duration,
       });
 
@@ -108,6 +104,7 @@ export function CreateRestaurantPage() {
   };
 
   const basics = getValues();
+  const reviewHours = resolveServiceHoursPayload(openTime, closeTime, open24Hours);
 
   return (
     <div className="mx-auto max-w-2xl">
@@ -157,27 +154,8 @@ export function CreateRestaurantPage() {
 
         {step === 1 && (
           <div className="space-y-6">
-            <Select
-              label="Timezone"
-              value={timezone}
-              onChange={(e) => setTimezone(e.target.value)}
-            >
-              {COMMON_TIMEZONES.some((t) => t.value === timezone) ? null : (
-                <option value={timezone}>{timezone}</option>
-              )}
-              {COMMON_TIMEZONES.map((tz) => (
-                <option key={tz.value} value={tz.value}>
-                  {tz.label}
-                </option>
-              ))}
-            </Select>
-            <p className="text-sm text-gray-600">
-              Reservations are filed and displayed using this timezone. Choose the city
-              where guests dine.
-            </p>
-
+            <TimezonePicker value={timezone} onChange={setTimezone} />
             <SeatingModeChoice value={seatingMode} onChange={setSeatingMode} />
-
             <div className="flex gap-2">
               <Button variant="secondary" type="button" onClick={() => setStep(0)}>
                 Back
@@ -195,28 +173,16 @@ export function CreateRestaurantPage() {
               Defaults work for most restaurants — you can change these anytime from the
               restaurant settings page.
             </p>
-            <div className="grid gap-4 sm:grid-cols-3">
-              <Input
-                label="Opens at"
-                type="time"
-                value={openTime}
-                onChange={(e) => setOpenTime(e.target.value)}
-              />
-              <Input
-                label="Closes at"
-                type="time"
-                value={closeTime}
-                onChange={(e) => setCloseTime(e.target.value)}
-              />
-              <Input
-                label="Default duration (min)"
-                type="number"
-                min={15}
-                max={720}
-                value={defaultDurationMins}
-                onChange={(e) => setDefaultDurationMins(e.target.value)}
-              />
-            </div>
+            <ServiceHoursFields
+              openTime={openTime}
+              closeTime={closeTime}
+              defaultDurationMins={defaultDurationMins}
+              open24Hours={open24Hours}
+              onOpenTimeChange={setOpenTime}
+              onCloseTimeChange={setCloseTime}
+              onDefaultDurationChange={setDefaultDurationMins}
+              onOpen24HoursChange={setOpen24Hours}
+            />
             <div className="flex gap-2">
               <Button variant="secondary" type="button" onClick={() => setStep(1)}>
                 Back
@@ -252,7 +218,9 @@ export function CreateRestaurantPage() {
               <div>
                 <dt className="font-medium text-gray-500">Service window</dt>
                 <dd>
-                  {openTime} – {closeTime} · {defaultDurationMins} min default turn
+                  {reviewHours
+                    ? `${formatServiceWindow(reviewHours.openMinutes, reviewHours.closeMinutes)} · ${defaultDurationMins} min default turn`
+                    : '—'}
                 </dd>
               </div>
             </dl>

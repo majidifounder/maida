@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 /**
- * Tablz — Database Export
+ * Maida — Database Export
  *
  * Usage:
  *   pnpm db:export
@@ -43,18 +43,63 @@ function timestampedFilename(): string {
   return `backup-${now}.json`;
 }
 
+import {
+  connectScriptPrisma,
+  isReachabilityError,
+  printDatabaseConnectionHint,
+} from './lib/script-db.js';
+import type { PrismaClient } from '@prisma/client';
+
+async function readAllTables(prisma: PrismaClient) {
+  return Promise.all([
+    prisma.user.findMany({ orderBy: { createdAt: 'asc' } }),
+    prisma.restaurant.findMany({ orderBy: { createdAt: 'asc' } }),
+    prisma.diningTable.findMany({ orderBy: { createdAt: 'asc' } }),
+    prisma.tableCombination.findMany({ orderBy: { createdAt: 'asc' } }),
+    prisma.tableCombinationMember.findMany({ orderBy: { id: 'asc' } }),
+    prisma.turnTimeRule.findMany({ orderBy: { createdAt: 'asc' } }),
+    prisma.reservation.findMany({ orderBy: { createdAt: 'asc' } }),
+    prisma.reservationTable.findMany({ orderBy: { startsAt: 'asc' } }),
+    prisma.subscription.findMany({ orderBy: { createdAt: 'asc' } }),
+    prisma.auditLog.findMany({
+      orderBy: { createdAt: 'asc' },
+      where: {
+        createdAt: { gte: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000) },
+      },
+    }),
+  ]);
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  const { prisma } = await import('@restaurant/db');
-
-  console.log('\n📦 Tablz Database Export');
+  console.log('\n📦 Maida Database Export');
   console.log('─────────────────────────────────────');
 
+  let { prisma } = await connectScriptPrisma();
+
+  try {
   const startMs = Date.now();
 
-  // ── Read all tables in parallel ──────────────────────────────────────────
   console.log('\n🔍 Reading database...');
+
+  let rows: Awaited<ReturnType<typeof readAllTables>> | undefined;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      rows = await readAllTables(prisma);
+      break;
+    } catch (err) {
+      if (!isReachabilityError(err) || attempt === 3) throw err;
+      console.log(
+        `   ⏳ Read failed (attempt ${attempt}/3) — reconnecting in ${attempt * 3}s...`,
+      );
+      await prisma.$disconnect().catch(() => {});
+      await new Promise((r) => setTimeout(r, attempt * 3000));
+      ({ prisma } = await connectScriptPrisma());
+    }
+  }
+
+  if (!rows) throw new Error('Export read failed');
 
   const [
     users,
@@ -67,52 +112,7 @@ async function main(): Promise<void> {
     reservationTables,
     subscriptions,
     auditLogs,
-  ] = await Promise.all([
-    prisma.user.findMany({
-      orderBy: { createdAt: 'asc' },
-    }),
-
-    prisma.restaurant.findMany({
-      orderBy: { createdAt: 'asc' },
-    }),
-
-    prisma.diningTable.findMany({
-      orderBy: { createdAt: 'asc' },
-    }),
-
-    prisma.tableCombination.findMany({
-      orderBy: { createdAt: 'asc' },
-    }),
-
-    prisma.tableCombinationMember.findMany({
-      orderBy: { id: 'asc' },
-    }),
-
-    prisma.turnTimeRule.findMany({
-      orderBy: { createdAt: 'asc' },
-    }),
-
-    prisma.reservation.findMany({
-      orderBy: { createdAt: 'asc' },
-    }),
-
-    prisma.reservationTable.findMany({
-      orderBy: { startsAt: 'asc' },
-    }),
-
-    prisma.subscription.findMany({
-      orderBy: { createdAt: 'asc' },
-    }),
-
-    prisma.auditLog.findMany({
-      orderBy: { createdAt: 'asc' },
-      where: {
-        createdAt: {
-          gte: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000),
-        },
-      },
-    }),
-  ]);
+  ] = rows;
 
   const counts = {
     users: users.length,
@@ -156,7 +156,7 @@ async function main(): Promise<void> {
   const backup = {
     meta: {
       version: '2.0',
-      platform: 'tablz',
+      platform: 'maida',
       exportedAt,
       counts,
       checksum,
@@ -186,10 +186,14 @@ async function main(): Promise<void> {
   console.log(`   Checksum  : ${checksum.slice(0, 16)}...`);
   console.log('\n💡 Save this file somewhere safe (external drive, Google Drive, email to yourself).');
   console.log('   To restore: pnpm db:restore --file=backups/' + filename + '\n');
+  } finally {
+    await prisma.$disconnect();
+  }
 }
 
 main()
   .catch((err) => {
     console.error('\n❌ Export failed:', err);
+    printDatabaseConnectionHint(err);
     process.exit(1);
   });

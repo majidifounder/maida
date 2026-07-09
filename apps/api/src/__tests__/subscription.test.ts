@@ -333,7 +333,7 @@ describe('GET /subscriptions/me', () => {
     trackedUserIds.length = 0;
   });
 
-  it('returns synthetic STARTER subscription when no row exists', async () => {
+  it('lazy-initializes a trial subscription when no row exists', async () => {
     const owner = await loginUser(app, {
       role: 'owner',
       subscriptionPlan: 'none',
@@ -347,12 +347,19 @@ describe('GET /subscriptions/me', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    const body = res.json() as {
-      subscription: { plan: string };
-      limits: { restaurants: number };
-    };
-    expect(body.subscription.plan).toBe('STARTER');
+    const body = res.json();
+    expect(body.subscription.status).toBe('TRIALING');
+    expect(body.subscription.billingTier).toBe('TRIAL');
+    expect(body.subscription.isTrialActive).toBe(true);
     expect(body.limits.restaurants).toBe(1);
+    expect(body.limits.reservationsPerMonth).toBe(25);
+    expect(body.planComparison).toHaveLength(4);
+
+    const row = await prisma.subscription.findUnique({
+      where: { userId: owner.userId },
+    });
+    expect(row?.status).toBe('TRIALING');
+    expect(row?.trialStartedAt).toBeTruthy();
   });
 
   it('returns 403 for diner role', async () => {
@@ -406,7 +413,7 @@ describe('Plan enforcement — POST /restaurants', () => {
       },
     });
     expect(first.statusCode).toBe(201);
-    const firstBody = first.json() as { restaurant: { id: string } };
+    const firstBody = first.json();
     trackedRestaurantIds.push(firstBody.restaurant.id);
 
     const res = await app.inject({
@@ -424,7 +431,7 @@ describe('Plan enforcement — POST /restaurants', () => {
     });
 
     expect(res.statusCode).toBe(403);
-    const body = res.json() as { error: string; upgrade: string };
+    const body = res.json();
     expect(body.error).toBe('Plan limit reached');
     expect(body.upgrade).toBe('/subscriptions/checkout');
   });
@@ -453,9 +460,10 @@ describe('POST /subscriptions/checkout', () => {
       'fetch',
       vi.fn().mockResolvedValue({
         ok: true,
-        json: async () => ({
-          data: { attributes: { url: 'https://checkout.lemonsqueezy.com/test' } },
-        }),
+        json: () =>
+          Promise.resolve({
+            data: { attributes: { url: 'https://checkout.lemonsqueezy.com/test' } },
+          }),
       }),
     );
 
@@ -595,5 +603,65 @@ describe('POST /subscriptions/resume', () => {
       where: { userId: owner.userId },
     });
     expect(sub?.cancelAtPeriodEnd).toBe(false);
+  });
+});
+
+describe('Owner trial lifecycle', () => {
+  const trackedUserIds: string[] = [];
+  let app: Awaited<ReturnType<typeof buildTestServer>>;
+
+  beforeEach(async () => {
+    app = await buildTestServer();
+  });
+
+  afterEach(async () => {
+    await app.close();
+    await cleanupTestUsers(trackedUserIds);
+    trackedUserIds.length = 0;
+  });
+
+  it('blocks restaurant creation when trial has expired', async () => {
+    const owner = await loginUser(app, {
+      role: 'owner',
+      subscriptionPlan: 'TRIAL_EXPIRED',
+    });
+    trackedUserIds.push(owner.userId);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/restaurants',
+      headers: { Authorization: `Bearer ${owner.accessToken}` },
+      payload: {
+        name: 'Expired Trial Bistro',
+        cuisine: 'ITALIAN',
+        description: 'Should fail',
+        address: '1 Main St',
+        city: 'Paris',
+        maxCapacity: 4,
+      },
+    });
+
+    expect(res.statusCode).toBe(403);
+    const body = res.json();
+    expect(body.error).toContain('trial has ended');
+  });
+
+  it('applies stricter trial limits than STARTER', async () => {
+    const owner = await loginUser(app, {
+      role: 'owner',
+      subscriptionPlan: 'TRIAL',
+    });
+    trackedUserIds.push(owner.userId);
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/subscriptions/me',
+      headers: { Authorization: `Bearer ${owner.accessToken}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.limits.reservationsPerMonth).toBe(25);
+    expect(body.limits.tablesPerRestaurant).toBe(5);
   });
 });

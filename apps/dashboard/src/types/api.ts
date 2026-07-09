@@ -35,6 +35,7 @@ export interface OwnerRestaurant {
   customFee: string | null;
   extraHourFee: string | null;
   feeCurrency: string;
+  maxExtraHours: number;
 }
 
 export interface DiningTableRow {

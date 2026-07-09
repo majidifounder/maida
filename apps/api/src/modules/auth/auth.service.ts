@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
-import { prisma, type Prisma } from '@restaurant/db';
-import { getRedisClient } from '../../lib/redis.js';
+import { prisma, Plan, SubscriptionStatus, type Prisma } from '@restaurant/db';
+import { ensureRedisConnected } from '../../lib/redis.js';
+import { logger } from '../../lib/logger.js';
 import {
   signAccessToken,
   signRefreshToken,
@@ -29,13 +30,13 @@ async function getDummyHash(): Promise<string> {
 async function recordFailedLogin(userId: string): Promise<void> {
   if (process.env.NODE_ENV === 'test') return;
   try {
-    const redis = getRedisClient();
+    const redis = await ensureRedisConnected(1_500);
     const key = `login:fail:${userId}`;
     const count = await redis.incr(key);
     if (count === 1) await redis.expire(key, ACCOUNT_LOCKOUT_WINDOW_SEC);
     if (count >= ACCOUNT_LOCKOUT_ATTEMPTS) {
       await redis.set(`login:locked:${userId}`, '1', 'EX', ACCOUNT_LOCKOUT_DURATION_SEC);
-      console.warn(`[Auth] Account locked after ${count} failed logins: ${userId}`);
+      logger.warn({ userId, count }, '[Auth] Account locked after failed logins');
     }
   } catch {
     // Non-fatal
@@ -45,7 +46,8 @@ async function recordFailedLogin(userId: string): Promise<void> {
 async function clearFailedLogins(userId: string): Promise<void> {
   if (process.env.NODE_ENV === 'test') return;
   try {
-    await getRedisClient().del(`login:fail:${userId}`);
+    const redis = await ensureRedisConnected(1_500);
+    await redis.del(`login:fail:${userId}`);
   } catch {
     // Non-fatal
   }
@@ -54,7 +56,8 @@ async function clearFailedLogins(userId: string): Promise<void> {
 async function isAccountLocked(userId: string): Promise<boolean> {
   if (process.env.NODE_ENV === 'test') return false;
   try {
-    const locked = await getRedisClient().get(`login:locked:${userId}`);
+    const redis = await ensureRedisConnected(1_500);
+    const locked = await redis.get(`login:locked:${userId}`);
     return locked !== null;
   } catch {
     return false;
@@ -88,6 +91,15 @@ export async function registerUser(
       email: input.email,
       password: passwordHash,
       role: input.role.toUpperCase() as 'DINER' | 'OWNER',
+      ...(input.role === 'owner' && {
+        subscription: {
+          create: {
+            status: SubscriptionStatus.TRIALING,
+            plan: Plan.STARTER,
+            trialStartedAt: new Date(),
+          },
+        },
+      }),
     },
     select: { id: true, email: true, role: true, createdAt: true },
   });
@@ -242,14 +254,17 @@ export async function logoutUser(
   rawRefreshToken: string | undefined,
   meta: { userId: string; jti: string; exp: number; ip: string },
 ) {
-  const redis = getRedisClient();
-
-  const remainingSeconds = Math.max(
-    0,
-    meta.exp - Math.floor(Date.now() / 1000),
-  );
-  if (remainingSeconds > 0) {
-    await redis.set(`deny:${meta.jti}`, '1', 'EX', remainingSeconds);
+  try {
+    const redis = await ensureRedisConnected(1_500);
+    const remainingSeconds = Math.max(
+      0,
+      meta.exp - Math.floor(Date.now() / 1000),
+    );
+    if (remainingSeconds > 0) {
+      await redis.set(`deny:${meta.jti}`, '1', 'EX', remainingSeconds);
+    }
+  } catch {
+    // Non-fatal — refresh token revoke below still invalidates the session
   }
 
   if (rawRefreshToken) {
@@ -334,7 +349,7 @@ export async function forgotPassword(
     user.role === 'OWNER' ? env.DASHBOARD_URL : env.WEB_URL;
 
   const token = randomUUID();
-  const redis = getRedisClient();
+  const redis = await ensureRedisConnected(1_500);
   const resetUrl = `${appBaseUrl}/reset-password?token=${token}`;
 
   await redis.set(RESET_KEY(token), user.id, 'EX', RESET_TOKEN_TTL);
@@ -342,10 +357,7 @@ export async function forgotPassword(
   try {
     await sendPasswordReset({ toEmail: input.email, resetUrl });
   } catch (err) {
-    console.error(
-      '[Auth] password reset email failed (non-fatal):',
-      (err as Error).message,
-    );
+    logger.error({ err }, '[Auth] password reset email failed (non-fatal)');
   }
 
   await prisma.auditLog
@@ -365,7 +377,7 @@ export async function resetPassword(
   input: { token: string; password: string },
   meta: { ip: string },
 ): Promise<void> {
-  const redis = getRedisClient();
+  const redis = await ensureRedisConnected(1_500);
   const userId = await redis.get(RESET_KEY(input.token));
 
   if (!userId) {
