@@ -1,9 +1,37 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@400;500&family=DM+Mono:wght@400&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/* Maida v3.0 — monochrome. Paper canvas, Ink text, hairline borders.
+   Color appears only as meaning (success / danger / notice). */
+
 body {
-  @apply bg-gray-50 text-gray-900 antialiased;
+  @apply bg-paper font-sans text-ink antialiased;
+}
+
+h1,
+h2 {
+  @apply font-serif font-normal;
+}
+
+/* Ink focus ring — monochrome, visible on every interactive element. */
+:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(15, 15, 14, 0.2);
+  border-radius: 6px;
+}
+
+/* Respect vestibular safety: motion communicates, but never insists. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 @keyframes onAutoFillStart {
@@ -16,4 +44,33 @@ body {
 input:-webkit-autofill {
   animation-name: onAutoFillStart;
   animation-duration: 0.001s;
+}
+
+/* Row flash on live insert — a single calm pulse of Fog, then gone.
+   Communicates "this just arrived" without demanding attention. */
+@keyframes maida-row-arrive {
+  0% {
+    background-color: #efede9;
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+.row-arrive {
+  animation: maida-row-arrive 1.2s ease-out 1;
+}
+
+/* Skeleton shimmer — Fog on Paper, subtle. */
+@keyframes maida-skeleton {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+.skeleton {
+  @apply rounded-md bg-fog;
+  animation: maida-skeleton 1.6s ease-in-out infinite;
 }

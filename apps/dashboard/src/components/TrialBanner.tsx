@@ -50,13 +50,13 @@ export function TrialBanner() {
   const dayLabel = days === 1 ? '1 day' : `${days} days`;
 
   return (
-    <div className="border-b border-blue-200 bg-blue-50 px-6 py-4">
+    <div className="border-b border-notice/30 bg-notice-bg px-6 py-4">
       <div className="mx-auto flex max-w-5xl flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <p className="font-semibold text-blue-900">
+          <p className="font-medium text-notice-text">
             {billingTierLabel('TRIAL')} — {dayLabel} remaining
           </p>
-          <p className="text-sm text-blue-800">
+          <p className="text-sm text-notice-text">
             Trial ends {fmt(trialEndsAt)}. After that, subscribe to keep accepting
             reservations and editing your setup. Trial limits are lower than Starter.
           </p>

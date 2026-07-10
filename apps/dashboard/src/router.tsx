@@ -8,6 +8,7 @@ import { ResetPasswordPage } from './pages/ResetPasswordPage.js';
 import { RestaurantListPage } from './pages/RestaurantListPage.js';
 import { CreateRestaurantPage } from './pages/CreateRestaurantPage.js';
 import { RestaurantDetailPage } from './pages/RestaurantDetailPage.js';
+import { ServicePage } from './pages/ServicePage.js';
 import { BillingPage } from './pages/BillingPage.js';
 
 export const router = createBrowserRouter([
@@ -25,6 +26,7 @@ export const router = createBrowserRouter([
           { path: 'restaurants', element: <RestaurantListPage /> },
           { path: 'restaurants/new', element: <CreateRestaurantPage /> },
           { path: 'restaurants/:id', element: <RestaurantDetailPage /> },
+          { path: 'restaurants/:id/service', element: <ServicePage /> },
           { path: 'billing', element: <BillingPage /> },
         ],
       },

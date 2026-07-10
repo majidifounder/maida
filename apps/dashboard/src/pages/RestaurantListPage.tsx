@@ -4,7 +4,9 @@ import { api } from '../lib/api.js';
 import type { OwnerRestaurant } from '../types/api.js';
 import { Card } from '../components/ui/Card.js';
 import { Button } from '../components/ui/Button.js';
-import { Spinner } from '../components/ui/Spinner.js';
+import { Skeleton } from '../components/ui/Skeleton.js';
+import { EmptyState } from '../components/ui/EmptyState.js';
+import { IconArmchair, IconSettings } from '../components/ui/icons.js';
 
 function formatCuisine(cuisine: string): string {
   return cuisine.charAt(0) + cuisine.slice(1).toLowerCase();
@@ -23,9 +25,9 @@ export function RestaurantListPage() {
     <div>
       <div className="mb-8 flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">My restaurants</h1>
-          <p className="mt-1 text-gray-600">
-            Manage reservations, tables, and engine settings
+          <h1 className="font-serif text-3xl text-ink">My restaurants</h1>
+          <p className="mt-1 text-slate2">
+            Tonight&apos;s service, tables, and settings
           </p>
         </div>
         <Link to="/restaurants/new">
@@ -34,36 +36,52 @@ export function RestaurantListPage() {
       </div>
 
       {isLoading && (
-        <div className="flex justify-center py-16">
-          <Spinner />
+        <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+          {[0, 1, 2].map((i) => (
+            <Skeleton key={i} className="h-40 rounded-card" />
+          ))}
         </div>
       )}
 
-      {error && (
-        <p className="text-red-600">Failed to load restaurants.</p>
+      {Boolean(error) && (
+        <p className="text-danger-text">
+          Couldn&apos;t load your restaurants. Refresh to try again.
+        </p>
       )}
 
-      {!isLoading && restaurants.length === 0 && (
-        <Card className="text-center">
-          <p className="text-gray-600">You have no restaurants yet.</p>
-          <Link to="/restaurants/new" className="mt-4 inline-block">
-            <Button>Create your first restaurant</Button>
-          </Link>
-        </Card>
+      {!isLoading && !error && restaurants.length === 0 && (
+        <EmptyState
+          title="No restaurants yet."
+          hint="Add your restaurant, set your hours and tables, and you're taking bookings — takes about 3 minutes."
+          action={
+            <Link to="/restaurants/new">
+              <Button>Create your first restaurant</Button>
+            </Link>
+          }
+        />
       )}
 
       <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
         {restaurants.map((r) => (
           <Card key={r.id} className="flex flex-col">
-            <h2 className="text-lg font-semibold">{r.name}</h2>
-            <p className="mt-1 text-sm text-gray-500">
+            <h2 className="font-sans text-lg font-medium text-ink">{r.name}</h2>
+            <p className="mt-1 text-sm text-slate2">
               {formatCuisine(r.cuisine)} · {r.city}
             </p>
-            <Link to={`/restaurants/${r.id}`} className="mt-4">
-              <Button variant="secondary" className="w-full">
-                Manage
-              </Button>
-            </Link>
+            {/* Service is the daily door; settings is the weekly one. */}
+            <div className="mt-4 flex gap-2">
+              <Link to={`/restaurants/${r.id}/service`} className="flex-1">
+                <Button className="w-full">
+                  <IconArmchair size={15} />
+                  Service
+                </Button>
+              </Link>
+              <Link to={`/restaurants/${r.id}`}>
+                <Button variant="secondary" aria-label={`${r.name} settings`}>
+                  <IconSettings size={15} />
+                </Button>
+              </Link>
+            </div>
           </Card>
         ))}
       </div>

@@ -113,9 +113,14 @@ async function invalidateAvailabilityCache(
 
 function formatReservation<T extends { status: string; endsAt: Date }>(
   row: T,
-): T & { status: string } {
+): T & { status: string; rawStatus: string } {
   return {
     ...row,
+    // Display status flips past SCHEDULED/SEATED rows to COMPLETED the moment
+    // endsAt passes. rawStatus is the DB truth — the owner dashboard needs it
+    // to know which lifecycle actions are still legal (e.g. marking a no-show
+    // on a row the display layer already retired).
+    rawStatus: row.status,
     status: deriveDisplayStatus(row.status, row.endsAt),
   };
 }

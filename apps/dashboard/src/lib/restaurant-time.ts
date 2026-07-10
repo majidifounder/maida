@@ -41,6 +41,101 @@ export function formatServiceWindow(openMinutes: number, closeMinutes: number): 
   return `${minutesToTimeInput(openMinutes)} – ${minutesToTimeInput(closeMinutes)}`;
 }
 
+// ── Restaurant-local instants (service view) ─────────────────────────────────
+// EVERY reservation time on the dashboard renders in the RESTAURANT's zone,
+// never the device's — an owner checking from home must see service-floor time.
+
+/** "7:30 PM" in the restaurant's timezone. */
+export function formatTimeInTz(iso: string, timeZone: string): string {
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(iso));
+}
+
+/** The restaurant's current local calendar date, YYYY-MM-DD. */
+export function restaurantTodayIso(timeZone: string, now = new Date()): string {
+  // en-CA reliably formats as YYYY-MM-DD.
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(now);
+}
+
+/** Calendar-date arithmetic on YYYY-MM-DD strings (timezone-independent). */
+export function addDaysIso(dateIso: string, days: number): string {
+  const d = new Date(`${dateIso}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/** "Today" / "Tomorrow" / "Yesterday" / "Fri, Jul 12" for a local date. */
+export function formatDayLabel(dateIso: string, todayIso: string): string {
+  if (dateIso === todayIso) return 'Today';
+  if (dateIso === addDaysIso(todayIso, 1)) return 'Tomorrow';
+  if (dateIso === addDaysIso(todayIso, -1)) return 'Yesterday';
+  const d = new Date(`${dateIso}T12:00:00Z`);
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: 'UTC',
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  }).format(d);
+}
+
+/** Combine a local calendar date + HH:MM in a tz into a UTC instant. */
+export function zonedDateTimeToUtc(
+  dateIso: string,
+  timeInput: string,
+  timeZone: string,
+): Date | null {
+  const mins = timeInputToMinutes(timeInput);
+  if (mins === null) return null;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  // Two-pass offset resolution (mirrors the API's zonedTimeToUtc).
+  const naive = Date.UTC(
+    Number(dateIso.slice(0, 4)),
+    Number(dateIso.slice(5, 7)) - 1,
+    Number(dateIso.slice(8, 10)),
+    h,
+    m,
+  );
+  let guess = naive;
+  for (let i = 0; i < 2; i++) {
+    const offset = tzOffsetMs(new Date(guess), timeZone);
+    guess = naive - offset;
+  }
+  return new Date(guess);
+}
+
+function tzOffsetMs(at: Date, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(at);
+  const get = (type: string): number =>
+    Number(parts.find((p) => p.type === type)?.value ?? 0);
+  const asUtc = Date.UTC(
+    get('year'),
+    get('month') - 1,
+    get('day'),
+    get('hour') % 24,
+    get('minute'),
+    get('second'),
+  );
+  return asUtc - at.getTime();
+}
+
 export interface TimezoneOption {
   value: string;
   city: string;

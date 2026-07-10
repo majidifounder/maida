@@ -57,6 +57,9 @@ export const ListRestaurantReservationsQuerySchema =
       .string()
       .regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD')
       .optional(),
+    // The service view loads a whole day in one request — a single busy day
+    // fits comfortably under 100 rows, which makes pagination a non-event.
+    limit: z.coerce.number().int().min(1).max(100).default(20),
   });
 
 export const StaffCreateReservationSchema = z

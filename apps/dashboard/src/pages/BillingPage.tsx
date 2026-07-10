@@ -27,7 +27,7 @@ const STATUS_BADGE: Record<Status, { label: string; className: string }> = {
     className: 'bg-yellow-100 text-yellow-800',
   },
   paused: { label: 'Paused', className: 'bg-gray-100 text-gray-600' },
-  on_trial: { label: 'Free trial', className: 'bg-blue-100 text-blue-800' },
+  on_trial: { label: 'Free trial', className: 'bg-notice-bg text-notice-text' },
   trial_expired: {
     label: 'Trial ended',
     className: 'bg-red-100 text-red-800',
@@ -147,8 +147,8 @@ export function BillingPage() {
         </div>
 
         {isTrialActive && trialDaysRemaining != null && (
-          <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-800">
-            <p className="font-medium text-blue-900">
+          <div className="mt-4 rounded-lg border border-mist bg-fog p-4 text-sm text-charcoal">
+            <p className="font-medium text-ink">
               {trialDaysRemaining} day{trialDaysRemaining === 1 ? '' : 's'} left
               in your free trial
             </p>
