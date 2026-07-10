@@ -374,8 +374,10 @@ describe('GET /subscriptions/me', () => {
     expect(body.subscription.status).toBe('TRIALING');
     expect(body.subscription.billingTier).toBe('TRIAL');
     expect(body.subscription.isTrialActive).toBe(true);
-    expect(body.limits.restaurants).toBe(1);
-    expect(body.limits.reservationsPerMonth).toBe(25);
+    // Trial = full PRO limits for 14 days (R8) — the deadline converts, not
+    // artificial scarcity during evaluation.
+    expect(body.limits.restaurants).toBe(5);
+    expect(body.limits.reservationsPerMonth).toBe(1000);
     expect(body.planComparison).toHaveLength(4);
 
     const row = await prisma.subscription.findUnique({
@@ -684,7 +686,8 @@ describe('Owner trial lifecycle', () => {
 
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.limits.reservationsPerMonth).toBe(25);
-    expect(body.limits.tablesPerRestaurant).toBe(5);
+    // Trial carries full PRO limits (R8).
+    expect(body.limits.reservationsPerMonth).toBe(1000);
+    expect(body.limits.tablesPerRestaurant).toBe(30);
   });
 });

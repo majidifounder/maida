@@ -2,16 +2,6 @@ import type { BillingTier, PlanLimits, PlanComparisonRow } from '@restaurant/typ
 
 export const TRIAL_DAYS = 14;
 
-export const TRIAL_LIMITS: PlanLimits = {
-  restaurants: 1,
-  reservationsPerMonth: 25,
-  tablesPerRestaurant: 5,
-  combinationsPerRestaurant: 0,
-  turnTimeRulesPerRestaurant: 1,
-  flexibleSeating: false,
-  customReservations: false,
-};
-
 export const PLAN_LIMITS: Record<'STARTER' | 'PRO' | 'PREMIUM', PlanLimits> = {
   STARTER: {
     restaurants: 1,
@@ -42,11 +32,15 @@ export const PLAN_LIMITS: Record<'STARTER' | 'PRO' | 'PREMIUM', PlanLimits> = {
   },
 };
 
+/** Trial = full PRO for 14 days (R8). MUST mirror apps/api/src/lib/plan.ts —
+ * this file is only the offline fallback; the server's planComparison wins. */
+export const TRIAL_LIMITS: PlanLimits = PLAN_LIMITS.PRO;
+
 export const DEFAULT_PLAN_COMPARISON: PlanComparisonRow[] = [
   {
     tier: 'TRIAL',
     label: 'Free trial',
-    price: '14 days free',
+    price: '14 days free — full Pro',
     limits: TRIAL_LIMITS,
   },
   {

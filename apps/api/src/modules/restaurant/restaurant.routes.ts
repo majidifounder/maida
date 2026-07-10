@@ -84,6 +84,16 @@ export async function restaurantRoutes(fastify: FastifyInstance): Promise<void> 
   };
 
   fastify.post('/restaurants', ownerHooks, async (request, reply) => {
+    // A restaurant must belong to a reachable owner — booking alerts, billing
+    // and reminders all go to this address. Verification gates creation, not
+    // the session, so a new owner can still explore the dashboard first.
+    if (request.emailVerified === false) {
+      return reply.code(403).send({
+        error:
+          'Please confirm your email before creating a restaurant — we sent you a link.',
+        code: 'EMAIL_NOT_VERIFIED',
+      });
+    }
     const body = CreateRestaurantSchema.safeParse(request.body);
     if (!body.success) {
       return reply

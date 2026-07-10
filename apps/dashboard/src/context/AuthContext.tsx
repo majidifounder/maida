@@ -18,6 +18,8 @@ interface AuthUser {
   id: string;
   email: string;
   role: string;
+  /** False until the verification link is clicked; gates restaurant creation. */
+  emailVerified?: boolean;
 }
 
 interface AuthCtx {
@@ -86,6 +88,12 @@ export function AuthProvider({ children }: { children: ReactNode }): ReactNode {
     }
     applySession(r.accessToken, r.accessTokenExpiresAt);
     setUser({ ...r.user, role: normalizeRole(r.user.role) });
+    // Login payload lacks emailVerified — refresh the profile in the
+    // background so the verify banner is accurate immediately.
+    void api
+      .get<AuthUser>('/auth/me')
+      .then((me) => setUser({ ...me, role: normalizeRole(me.role) }))
+      .catch(() => {});
   }, []);
 
   const register = useCallback(

@@ -8,9 +8,16 @@ import {
   signRefreshToken,
   verifyRefreshToken,
 } from '../../lib/jwt.js';
-import { UnauthorizedError, ConflictError } from '../../errors/index.js';
+import {
+  UnauthorizedError,
+  ConflictError,
+  UnprocessableError,
+} from '../../errors/index.js';
 import { env } from '../../env.js';
-import { sendPasswordReset } from '../../services/email.service.js';
+import {
+  sendEmailVerification,
+  sendPasswordReset,
+} from '../../services/email.service.js';
 import type { RegisterInput, LoginInput } from './auth.schema.js';
 
 // --- Account lockout constants ---
@@ -114,7 +121,83 @@ export async function registerUser(
     },
   });
 
+  // Verification email is best-effort: registration must never fail because
+  // the email provider is down — the user can resend from the banner.
+  try {
+    await issueEmailVerification(user.id, user.email, user.role);
+  } catch (err) {
+    logger.warn(
+      { err, userId: user.id },
+      '[Auth] could not send verification email at signup (resend available)',
+    );
+  }
+
   return { user };
+}
+
+// ── Email verification ────────────────────────────────────────────────────────
+// Identities must be reachable before they can act: diners verify before
+// booking, owners before creating a restaurant. The session itself is never
+// gated — friction lands exactly where abuse does.
+
+const EMAIL_VERIFY_TTL_SEC = 24 * 60 * 60;
+
+function verifyUrlBase(role: string): string {
+  return role === 'OWNER' ? env.DASHBOARD_URL : env.WEB_URL;
+}
+
+/** Creates + stores a token and sends the link. Exported for tests. */
+export async function issueEmailVerification(
+  userId: string,
+  email: string,
+  role: string,
+): Promise<string> {
+  const token = randomUUID();
+  const redis = await ensureRedisConnected(1_500);
+  await redis.set(`email_verify:${token}`, userId, 'EX', EMAIL_VERIFY_TTL_SEC);
+
+  const verifyUrl = `${verifyUrlBase(role)}/verify-email?token=${token}`;
+  await sendEmailVerification({ toEmail: email, verifyUrl });
+  return token;
+}
+
+export async function verifyEmail(token: string): Promise<void> {
+  const redis = await ensureRedisConnected(1_500);
+  const key = `email_verify:${token}`;
+  const userId = await redis.get(key);
+  if (!userId) {
+    throw new UnprocessableError(
+      'That link has expired or was already used. Sign in and request a new one.',
+    );
+  }
+
+  await prisma.user.updateMany({
+    where: { id: userId, emailVerifiedAt: null },
+    data: { emailVerifiedAt: new Date() },
+  });
+  await redis.del(key);
+
+  await prisma.auditLog
+    .create({
+      data: {
+        actorId: userId,
+        action: 'EMAIL_VERIFIED',
+        entityType: 'User',
+        entityId: userId,
+      },
+    })
+    .catch(() => {});
+}
+
+export async function resendVerification(userId: string): Promise<void> {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { email: true, role: true, emailVerifiedAt: true },
+  });
+  if (!user) throw new UnauthorizedError('Account not found');
+  if (user.emailVerifiedAt) return; // already verified — nothing to send
+
+  await issueEmailVerification(userId, user.email, user.role);
 }
 
 export async function loginUser(

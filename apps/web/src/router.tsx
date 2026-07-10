@@ -8,6 +8,7 @@ import { ResetPasswordPage } from './pages/ResetPasswordPage.js';
 import { RestaurantListPage } from './pages/RestaurantListPage.js';
 import { RestaurantDetailPage } from './pages/RestaurantDetailPage.js';
 import { MyBookingsPage } from './pages/MyBookingsPage.js';
+import { VerifyEmailPage } from './pages/VerifyEmailPage.js';
 
 export const router = createBrowserRouter([
   {
@@ -18,6 +19,7 @@ export const router = createBrowserRouter([
       { path: 'register', element: <RegisterPage /> },
       { path: 'forgot-password', element: <ForgotPasswordPage /> },
       { path: 'reset-password', element: <ResetPasswordPage /> },
+      { path: 'verify-email', element: <VerifyEmailPage /> },
       { path: 'restaurants', element: <RestaurantListPage /> },
       { path: 'restaurants/:id', element: <RestaurantDetailPage /> },
       { path: 'bookings', element: <Navigate to="/reservations" replace /> },

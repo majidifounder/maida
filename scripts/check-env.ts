@@ -55,6 +55,29 @@ if (process.env.NODE_ENV === 'production') {
     );
     hasError = true;
   }
+
+  // Rate limits, lockouts, and threat bans key on the client IP. Without the
+  // origin secret, anyone who reaches the origin directly can forge
+  // CF-Connecting-IP per request and rotate identities at will.
+  if (!process.env.CF_ORIGIN_SECRET || process.env.CF_ORIGIN_SECRET.length < 32) {
+    console.error(
+      '❌  CF_ORIGIN_SECRET missing or under 32 chars — required in production. ' +
+        'Set the same value in the Cloudflare Transform Rule (x-cf-origin-secret).',
+    );
+    hasError = true;
+  }
+
+  // Prisma + a transaction pooler (Supabase port 6543) WITHOUT pgbouncer=true
+  // fails under concurrency with "prepared statement s0 already exists" —
+  // invisible in single-user dev, guaranteed in production.
+  const dbUrl = process.env.DATABASE_URL ?? '';
+  if (dbUrl.includes(':6543') && !/[?&]pgbouncer=true/.test(dbUrl)) {
+    console.error(
+      '❌  DATABASE_URL uses the transaction pooler (6543) without pgbouncer=true — ' +
+        'append ?pgbouncer=true&connection_limit=10 (Prisma prepared statements break otherwise)',
+    );
+    hasError = true;
+  }
 }
 
 async function checkRedisEvictionPolicy(): Promise<void> {

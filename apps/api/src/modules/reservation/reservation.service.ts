@@ -30,6 +30,8 @@ import {
 } from '../../lib/service-schedule.js';
 import { localDayBoundsUtc, formatLocalDate } from '../../lib/timezone.js';
 import { invalidateAvailabilityCacheForDate } from '../../lib/availability-cache.js';
+import { notifyOnce } from '../../lib/notify-once.js';
+import { sendReservationLimitReached } from '../../services/email.service.js';
 
 // ── Diner-facing booking guards (abuse controls) ──────────────────────────────
 // Furthest ahead a diner may book online. Staff/override paths are exempt so
@@ -190,14 +192,50 @@ function serializeReservation<T extends Record<string, unknown>>(
 // otherwise a diner could burn a restaurant's allowance with fake no-shows.
 const RESERVATION_QUOTA_STATUS_EXCLUDED = ['CANCELLED', 'NO_SHOW'] as const;
 
-function reservationQuotaMessage(limit: number): string {
-  return `This restaurant has reached its monthly limit of ${limit} reservations. The owner needs to upgrade on Billing before more bookings can be accepted.`;
+/**
+ * Who is being told the quota is exhausted. A diner must NEVER see the owner's
+ * billing situation — "the owner needs to upgrade" leaks a private commercial
+ * detail and makes the restaurant look broke to its own guests.
+ */
+type QuotaAudience = 'diner' | 'owner';
+
+function reservationQuotaMessage(limit: number, audience: QuotaAudience): string {
+  if (audience === 'diner') {
+    return 'This restaurant can’t take more online bookings right now. Please try another date or contact the restaurant directly.';
+  }
+  return `You've reached this month's limit of ${limit} reservations across your restaurants. Upgrade on Billing to keep accepting bookings.`;
 }
 
-type ReservationQuota = { ownerId: string; monthlyLimit: number };
+/**
+ * The moment the quota blocks a booking, the OWNER must know — they are
+ * actively losing covers. Once per owner per month, fire-and-forget.
+ */
+function notifyOwnerQuotaReached(ownerId: string, monthlyLimit: number): void {
+  const month = startOfCurrentMonth().toISOString().slice(0, 7);
+  void (async () => {
+    const owner = await prisma.user.findUnique({
+      where: { id: ownerId },
+      select: { email: true },
+    });
+    if (!owner) return;
+    await notifyOnce(`quota-reached:${ownerId}:${month}`, () =>
+      sendReservationLimitReached({
+        ownerEmail: owner.email,
+        monthlyLimit,
+      }),
+    );
+  })().catch(() => {});
+}
+
+type ReservationQuota = {
+  ownerId: string;
+  monthlyLimit: number;
+  audience: QuotaAudience;
+};
 
 async function assertReservationPlanLimit(
   restaurantId: string,
+  audience: QuotaAudience,
 ): Promise<ReservationQuota> {
   const restaurant = await prisma.restaurant.findFirst({
     where: { id: restaurantId },
@@ -209,7 +247,7 @@ async function assertReservationPlanLimit(
   const limits = await getEffectiveLimitsForOwner(restaurant.ownerId);
   const monthlyLimit = limits.reservationsPerMonth;
   if (monthlyLimit === Infinity) {
-    return { ownerId: restaurant.ownerId, monthlyLimit: Infinity };
+    return { ownerId: restaurant.ownerId, monthlyLimit: Infinity, audience };
   }
 
   const count = await prisma.reservation.count({
@@ -221,10 +259,11 @@ async function assertReservationPlanLimit(
   });
 
   if (count >= monthlyLimit) {
-    throw new UnprocessableError(reservationQuotaMessage(monthlyLimit));
+    notifyOwnerQuotaReached(restaurant.ownerId, monthlyLimit);
+    throw new UnprocessableError(reservationQuotaMessage(monthlyLimit, audience));
   }
 
-  return { ownerId: restaurant.ownerId, monthlyLimit };
+  return { ownerId: restaurant.ownerId, monthlyLimit, audience };
 }
 
 /** Diner-facing abuse guards: booking horizon, overlap, and concurrent-hold cap. */
@@ -370,7 +409,10 @@ async function createReservationWithHolds(
         },
       });
       if (used >= quota.monthlyLimit) {
-        throw new UnprocessableError(reservationQuotaMessage(quota.monthlyLimit));
+        notifyOwnerQuotaReached(quota.ownerId, quota.monthlyLimit);
+        throw new UnprocessableError(
+          reservationQuotaMessage(quota.monthlyLimit, quota.audience),
+        );
       }
     }
 
@@ -697,7 +739,7 @@ export async function createReservation(
   input: CreateReservationInput,
 ) {
   const restaurant = await loadRestaurantForBooking(input.restaurantId);
-  const quota = await assertReservationPlanLimit(input.restaurantId);
+  const quota = await assertReservationPlanLimit(input.restaurantId, 'diner');
 
   const startsAt = new Date(input.startsAt);
   const { row: reservation, wasCapped, standardDurationMins } =
@@ -1243,7 +1285,7 @@ export async function createWalkIn(
   input: WalkInInput,
 ) {
   await assertOwnerAccess(restaurantId, ownerId);
-  const quota = await assertReservationPlanLimit(restaurantId);
+  const quota = await assertReservationPlanLimit(restaurantId, 'owner');
 
   const restaurant = await loadRestaurantForBooking(restaurantId);
   const now = new Date();
@@ -1297,7 +1339,7 @@ export async function createStaffReservation(
   input: StaffCreateReservationInput,
 ) {
   await assertOwnerAccess(restaurantId, ownerId);
-  const quota = await assertReservationPlanLimit(restaurantId);
+  const quota = await assertReservationPlanLimit(restaurantId, 'owner');
 
   const restaurant = await loadRestaurantForBooking(restaurantId);
   const startsAt = new Date(input.startsAt);
@@ -1347,7 +1389,7 @@ export async function createOverrideReservation(
   input: OverrideReservationInput,
 ) {
   await assertOwnerAccess(restaurantId, ownerId);
-  const quota = await assertReservationPlanLimit(restaurantId);
+  const quota = await assertReservationPlanLimit(restaurantId, 'owner');
 
   const startsAt = new Date(input.startsAt);
   const endsAt = new Date(input.endsAt);

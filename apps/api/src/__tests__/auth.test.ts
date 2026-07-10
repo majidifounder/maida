@@ -560,3 +560,88 @@ describe('Security invariants', () => {
     expect(res.statusCode).toBe(200);
   });
 });
+
+describe('Email verification', () => {
+  it('a fresh registration is unverified; verify-email flips it; token is single-use', async () => {
+    const { randomUUID } = await import('node:crypto');
+    const { ensureRedisConnected } = await import('../lib/redis.js');
+
+    const creds = await loginUser(server, { role: 'diner', unverified: true });
+    createdUserIds.push(creds.userId);
+
+    // /auth/me exposes the unverified state.
+    let me = await server.inject({
+      method: 'GET',
+      url: '/auth/me',
+      headers: { Authorization: `Bearer ${creds.accessToken}` },
+    });
+    expect(me.statusCode).toBe(200);
+    expect(me.json().emailVerified).toBe(false);
+
+    // Booking is gated with a distinct, actionable code.
+    const blocked = await server.inject({
+      method: 'POST',
+      url: '/reservations',
+      headers: { Authorization: `Bearer ${creds.accessToken}` },
+      payload: {
+        restaurantId: randomUUID(),
+        partySize: 2,
+        startsAt: new Date(Date.now() + 86_400_000).toISOString(),
+      },
+    });
+    expect(blocked.statusCode).toBe(403);
+    expect(blocked.json().code).toBe('EMAIL_NOT_VERIFIED');
+
+    // Simulate the emailed token (the email itself is not sent in tests).
+    const token = randomUUID();
+    const redis = await ensureRedisConnected(1_500);
+    await redis.set(`email_verify:${token}`, creds.userId, 'EX', 3600);
+
+    const verify = await server.inject({
+      method: 'POST',
+      url: '/auth/verify-email',
+      payload: { token },
+    });
+    expect(verify.statusCode).toBe(200);
+    expect(verify.json().verified).toBe(true);
+
+    me = await server.inject({
+      method: 'GET',
+      url: '/auth/me',
+      headers: { Authorization: `Bearer ${creds.accessToken}` },
+    });
+    expect(me.json().emailVerified).toBe(true);
+
+    // Replaying the same token fails cleanly.
+    const replay = await server.inject({
+      method: 'POST',
+      url: '/auth/verify-email',
+      payload: { token },
+    });
+    expect(replay.statusCode).toBe(422);
+  });
+
+  it('unverified owners cannot create a restaurant', async () => {
+    const creds = await loginUser(server, {
+      role: 'owner',
+      unverified: true,
+      subscriptionPlan: 'PREMIUM',
+    });
+    createdUserIds.push(creds.userId);
+
+    const res = await server.inject({
+      method: 'POST',
+      url: '/restaurants',
+      headers: { Authorization: `Bearer ${creds.accessToken}` },
+      payload: {
+        name: 'Unverified Bistro',
+        description: 'Should not exist',
+        cuisine: 'FRENCH',
+        address: '1 Test St',
+        city: 'Testville',
+      },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().code).toBe('EMAIL_NOT_VERIFIED');
+  });
+});
