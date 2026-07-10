@@ -1,262 +1,140 @@
 import {
-
   createContext,
-
   useContext,
-
   useEffect,
-
   useState,
-
   useCallback,
-
-  useRef,
-
   type ReactNode,
-
 } from 'react';
-
+import {
+  applySession,
+  clearSession as clearClientSession,
+  configureApiClient,
+  refreshSession,
+} from '@restaurant/api-client';
 import { api } from '../lib/api.js';
-
-import { setAccessToken } from '../lib/access-token.js';
-
 import type { User } from '@restaurant/types';
-
-import type { LoginResponse, RefreshResponse } from '../types/api.js';
-
-
+import type { LoginResponse } from '../types/api.js';
 
 interface AuthState {
-
   user: User | null;
-
-  token: string | null;
-
   loading: boolean;
-
 }
 
-
-
 interface AuthContextValue extends AuthState {
-
   login: (email: string, password: string) => Promise<void>;
-
   register: (
     email: string,
     password: string,
     role: 'diner' | 'owner',
     cfTurnstileResponse?: string,
   ) => Promise<void>;
-
   logout: () => Promise<void>;
-
 }
-
-
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-
-
-let bootstrapRefresh: Promise<void> | null = null;
-
-
+let bootstrapRefresh: Promise<User | null> | null = null;
 
 function toUser(raw: LoginResponse['user']): User {
-
   const createdAt =
-
     raw.createdAt == null
-
       ? new Date().toISOString()
-
       : typeof raw.createdAt === 'string'
-
         ? raw.createdAt
-
         : new Date(raw.createdAt).toISOString();
 
-
-
   return {
-
     id: raw.id,
-
     email: raw.email,
-
     role: raw.role.toLowerCase() as User['role'],
-
     createdAt,
-
   };
-
 }
 
-
-
-export function AuthProvider({ children }: { children: ReactNode }) {
-
-  const tokenRef = useRef<string | null>(null);
-
-  const [state, setState] = useState<AuthState>({
-
-    user: null,
-
-    token: null,
-
-    loading: true,
-
-  });
-
-
-
-  const applySession = useCallback((accessToken: string, user: User) => {
-
-    tokenRef.current = accessToken;
-
-    setAccessToken(accessToken);
-
-    setState({ user, token: accessToken, loading: false });
-
-  }, []);
-
-
+export function AuthProvider({ children }: { children: ReactNode }): ReactNode {
+  const [state, setState] = useState<AuthState>({ user: null, loading: true });
 
   const clearSession = useCallback(() => {
-
-    tokenRef.current = null;
-
-    setAccessToken(null);
-
-    setState({ user: null, token: null, loading: false });
-
+    clearClientSession();
+    setState({ user: null, loading: false });
   }, []);
 
-
+  // The shared client refreshes the token proactively and after 401s; if the
+  // refresh token itself is ever rejected, the session is over — reflect that
+  // in the UI immediately instead of letting requests fail one by one.
+  useEffect(() => {
+    configureApiClient({
+      onSessionExpired: () => setState({ user: null, loading: false }),
+    });
+    return () => configureApiClient({ onSessionExpired: undefined });
+  }, []);
 
   useEffect(() => {
-
-    bootstrapRefresh ??= (async () => {
-
+    bootstrapRefresh ??= (async (): Promise<User | null> => {
       try {
-
-        const { accessToken } = await api.post<RefreshResponse>('/auth/refresh', {});
-
-        tokenRef.current = accessToken;
-
-        setAccessToken(accessToken);
-
-        const me = await api.get<User>('/auth/me');
-
-        setState({ user: me, token: accessToken, loading: false });
-
+        await refreshSession();
+        return await api.get<User>('/auth/me');
       } catch {
-
-        clearSession();
-
+        return null;
       }
-
     })();
 
-
-
-    void bootstrapRefresh;
-
+    void bootstrapRefresh.then((user) => {
+      if (user) {
+        setState({ user, loading: false });
+      } else {
+        clearSession();
+      }
+    });
   }, [clearSession]);
 
-
-
-  const login = useCallback(
-
-    async (email: string, password: string) => {
-
-      const result = await api.post<LoginResponse>('/auth/login', {
-
-        email,
-
-        password,
-
-      });
-
-      applySession(result.accessToken, toUser(result.user));
-
-    },
-
-    [applySession],
-
-  );
-
-
+  const login = useCallback(async (email: string, password: string) => {
+    const result = await api.post<LoginResponse>('/auth/login', {
+      email,
+      password,
+    });
+    applySession(result.accessToken, result.accessTokenExpiresAt);
+    setState({ user: toUser(result.user), loading: false });
+  }, []);
 
   const register = useCallback(
-
     async (
       email: string,
       password: string,
       role: 'diner' | 'owner',
       cfTurnstileResponse?: string,
     ) => {
-
       await api.post('/auth/register', {
         email,
         password,
         role,
         ...(cfTurnstileResponse ? { cfTurnstileResponse } : {}),
       });
-
       await login(email, password);
-
     },
-
     [login],
-
   );
-
-
 
   const logout = useCallback(async () => {
-
     try {
-
       await api.post('/auth/logout', {});
-
     } catch {
-
-      // clear local session even if API call fails
-
+      // clear local session even if the API call fails
     }
-
     bootstrapRefresh = null;
-
     clearSession();
-
   }, [clearSession]);
 
-
-
   return (
-
     <AuthContext.Provider value={{ ...state, login, register, logout }}>
-
       {children}
-
     </AuthContext.Provider>
-
   );
-
 }
-
-
 
 export function useAuth(): AuthContextValue {
-
   const ctx = useContext(AuthContext);
-
   if (!ctx) throw new Error('useAuth must be used inside <AuthProvider>');
-
   return ctx;
-
 }
-
-

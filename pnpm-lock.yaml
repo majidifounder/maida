@@ -59,6 +59,9 @@ importers:
       '@hookform/resolvers':
         specifier: ^3.10.0
         version: 3.10.0(react-hook-form@7.80.0(react@18.3.1))
+      '@restaurant/api-client':
+        specifier: workspace:*
+        version: link:../../packages/api-client
       '@restaurant/types':
         specifier: workspace:*
         version: link:../../packages/types
@@ -220,6 +223,9 @@ importers:
       '@hookform/resolvers':
         specifier: ^3.10.0
         version: 3.10.0(react-hook-form@7.80.0(react@18.3.1))
+      '@restaurant/api-client':
+        specifier: workspace:*
+        version: link:../../packages/api-client
       '@restaurant/types':
         specifier: workspace:*
         version: link:../../packages/types
@@ -281,6 +287,9 @@ importers:
       '@marsidev/react-turnstile':
         specifier: ^1.5.3
         version: 1.5.3(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@restaurant/api-client':
+        specifier: workspace:*
+        version: link:../../packages/api-client
       '@restaurant/types':
         specifier: workspace:*
         version: link:../../packages/types
@@ -333,6 +342,15 @@ importers:
       vitest:
         specifier: ^4.1.9
         version: 4.1.9(@types/node@22.20.0)(@vitest/coverage-v8@4.1.9)(vite@6.4.3(@types/node@22.20.0)(jiti@1.21.7)(lightningcss@1.32.0)(tsx@4.22.4))
+
+  packages/api-client:
+    devDependencies:
+      typescript:
+        specifier: ^5.4.0
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.9
+        version: 4.1.9(@types/node@22.20.0)(@vitest/coverage-v8@4.1.9)(vite@8.1.0(@types/node@22.20.0)(esbuild@0.28.1)(jiti@1.21.7)(tsx@4.22.4))
 
   packages/db:
     dependencies:

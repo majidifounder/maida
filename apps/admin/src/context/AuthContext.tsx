@@ -7,8 +7,13 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import {
+  applySession,
+  clearSession as clearClientSession,
+  configureApiClient,
+  refreshSession,
+} from '@restaurant/api-client';
 import { api } from '../lib/api.js';
-import { setAccessToken } from '../lib/access-token.js';
 import type {
   AdminUser,
   LoginResponse,
@@ -55,25 +60,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const clearSession = useCallback(() => {
-    setAccessToken(null);
+    clearClientSession();
     setUser(null);
   }, []);
 
   const completeLogin = useCallback((res: LoginSuccessResponse) => {
-    setAccessToken(res.accessToken);
+    applySession(res.accessToken, res.accessTokenExpiresAt);
     setUser({ ...res.user, role: normalizeRole(res.user.role) });
     setLoginStep({ phase: 'credentials' });
     credentialsRef.current = null;
   }, []);
 
+  // Session death (refresh token rejected) → back to the login screen.
+  useEffect(() => {
+    configureApiClient({ onSessionExpired: () => setUser(null) });
+    return () => configureApiClient({ onSessionExpired: undefined });
+  }, []);
+
   useEffect(() => {
     bootstrapRefresh ??= (async () => {
       try {
-        const refreshed = await api.post<{ accessToken: string }>(
-          '/auth/refresh',
-          {},
-        );
-        setAccessToken(refreshed.accessToken);
+        await refreshSession();
         const me = await api.get<{ id: string; email: string; role: string }>(
           '/auth/me',
         );
@@ -90,12 +97,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })();
 
     void bootstrapRefresh;
-  }, [clearSession]);
-
-  useEffect(() => {
-    const handler = () => clearSession();
-    window.addEventListener('admin:unauthorized', handler);
-    return () => window.removeEventListener('admin:unauthorized', handler);
   }, [clearSession]);
 
   const submitCredentials = useCallback(

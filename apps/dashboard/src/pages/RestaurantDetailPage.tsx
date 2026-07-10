@@ -29,7 +29,7 @@ export function RestaurantDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { token } = useAuth();
+  const { user } = useAuth();
 
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState('');
@@ -76,9 +76,8 @@ export function RestaurantDetailPage() {
 
   const { isConnected } = useBookingWebSocket({
     restaurantId: id!,
-    token,
     onEvent: onWsEvent,
-    enabled: Boolean(id && token),
+    enabled: Boolean(id && user),
   });
 
   const updateMutation = useMutation({
