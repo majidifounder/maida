@@ -4,6 +4,7 @@ import { env } from '../env.js';
 import { logger } from '../lib/logger.js';
 import {
   getBullmqConnection,
+  scheduleReservationReminder,
   type ReservationEventPayload,
 } from '../lib/queue.js';
 import {
@@ -11,6 +12,7 @@ import {
   sendReservationSeated,
   sendReservationCancelledByDiner,
   sendReservationCancelledByOwner,
+  sendReservationReminder,
   type ReservationEmailData,
 } from '../services/email.service.js';
 import { reportCriticalError } from '../lib/alert.js';
@@ -24,11 +26,15 @@ async function fetchEmailData(
       id: true,
       partySize: true,
       startsAt: true,
+      endsAt: true,
+      status: true,
       diner: { select: { email: true } },
       restaurant: {
         select: {
           name: true,
           timezone: true,
+          address: true,
+          city: true,
           owner: { select: { email: true } },
         },
       },
@@ -39,10 +45,14 @@ async function fetchEmailData(
     reservationId: reservation.id,
     partySize: reservation.partySize,
     startsAt: reservation.startsAt.toISOString(),
+    endsAt: reservation.endsAt.toISOString(),
+    status: reservation.status,
     dinerEmail: reservation.diner?.email ?? null,
     ownerEmail: reservation.restaurant.owner.email,
     restaurantName: reservation.restaurant.name,
     restaurantTimezone: reservation.restaurant.timezone,
+    restaurantAddress: reservation.restaurant.address,
+    restaurantCity: reservation.restaurant.city,
   };
 }
 
@@ -55,6 +65,22 @@ async function processNotificationJob(
   switch (eventType) {
     case 'reservation.created':
       await sendReservationCreated(data);
+      // Day-of reminder for future-dated bookings with a reachable diner.
+      // Walk-ins (startsAt ≈ now) are skipped by the lead-time rules.
+      if (data.dinerEmail) {
+        await scheduleReservationReminder(
+          data.reservationId,
+          new Date(data.startsAt),
+        );
+      }
+      break;
+
+    case 'reservation.reminder':
+      // Status re-checked at delivery time — a reservation cancelled after
+      // scheduling simply produces no email.
+      if (data.status === 'SCHEDULED') {
+        await sendReservationReminder(data);
+      }
       break;
 
     case 'reservation.seated':

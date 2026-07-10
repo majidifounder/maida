@@ -12,6 +12,13 @@ export interface ReservationEmailData {
   partySize: number;
   reservationId: string;
   restaurantTimezone: string; // IANA tz — emails must show the restaurant's local time
+  /** ISO end — used for the calendar attachment. */
+  endsAt?: string;
+  /** Street address + city — shown in reminders and the calendar entry. */
+  restaurantAddress?: string;
+  restaurantCity?: string;
+  /** Raw DB status — reminder sends re-check this at delivery time. */
+  status?: string;
 }
 
 /** @deprecated Use ReservationEmailData */
@@ -42,6 +49,45 @@ function reservationRef(id: string): string {
   return id.slice(0, 8).toUpperCase();
 }
 
+function icsEscape(text: string): string {
+  return text.replace(/\\/g, '\\\\').replace(/[;,]/g, (c) => `\\${c}`).replace(/\n/g, '\\n');
+}
+
+function icsUtcStamp(iso: string): string {
+  return new Date(iso).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+}
+
+/**
+ * Minimal RFC 5545 calendar entry for the reservation. Times are emitted in
+ * UTC (Z), which every calendar client renders in the viewer's local zone —
+ * timezone-safe without shipping VTIMEZONE blocks.
+ */
+export function buildReservationIcs(data: ReservationEmailData): string | null {
+  if (!data.endsAt) return null;
+  const location = [data.restaurantAddress, data.restaurantCity]
+    .filter(Boolean)
+    .join(', ');
+  const lines = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//Maida//Reservations//EN',
+    'METHOD:PUBLISH',
+    'BEGIN:VEVENT',
+    `UID:${data.reservationId}@maida`,
+    `DTSTAMP:${icsUtcStamp(new Date().toISOString())}`,
+    `DTSTART:${icsUtcStamp(data.startsAt)}`,
+    `DTEND:${icsUtcStamp(data.endsAt)}`,
+    `SUMMARY:${icsEscape(`Reservation — ${data.restaurantName}`)}`,
+    ...(location ? [`LOCATION:${icsEscape(location)}`] : []),
+    `DESCRIPTION:${icsEscape(
+      `Party of ${data.partySize}. Reference ${reservationRef(data.reservationId)}.`,
+    )}`,
+    'END:VEVENT',
+    'END:VCALENDAR',
+  ];
+  return lines.join('\r\n');
+}
+
 async function sendEmail(
   options: Parameters<typeof resend.emails.send>[0],
 ): Promise<void> {
@@ -57,6 +103,7 @@ export async function sendReservationCreated(
   const dinerEmail = data.dinerEmail;
 
   if (dinerEmail) {
+    const ics = buildReservationIcs(data);
     await notifyOnce(`${data.reservationId}:created:diner`, () =>
       sendEmail({
         from: env.EMAIL_FROM,
@@ -70,6 +117,17 @@ export async function sendReservationCreated(
         <p style="color:#6b7280;font-size:13px">Reference: ${ref}</p>
         <p>We look forward to seeing you!</p>
       `,
+        ...(ics
+          ? {
+              attachments: [
+                {
+                  filename: 'reservation.ics',
+                  content: Buffer.from(ics).toString('base64'),
+                  contentType: 'text/calendar; method=PUBLISH',
+                },
+              ],
+            }
+          : {}),
       }),
     );
   }
@@ -169,6 +227,43 @@ export async function sendReservationCancelledByOwner(
         <p>We're sorry — the restaurant has had to cancel your reservation.</p>
         <p><strong>Restaurant:</strong> ${data.restaurantName}</p>
         <p><strong>Original time:</strong> ${time}</p>
+      `,
+    }),
+  );
+}
+
+/**
+ * Day-of reminder — the single most effective no-show reducer. Diner only;
+ * the worker re-checks the reservation is still SCHEDULED before calling this.
+ */
+export async function sendReservationReminder(
+  data: ReservationEmailData,
+): Promise<void> {
+  const dinerEmail = data.dinerEmail;
+  if (!dinerEmail) return;
+  const time = fmtTime(data.startsAt, data.restaurantTimezone);
+  const ref = reservationRef(data.reservationId);
+  const location = [data.restaurantAddress, data.restaurantCity]
+    .filter(Boolean)
+    .join(', ');
+
+  await notifyOnce(`${data.reservationId}:reminder:diner`, () =>
+    sendEmail({
+      from: env.EMAIL_FROM,
+      to: dinerEmail,
+      subject: `Reminder: your table at ${data.restaurantName}`,
+      html: `
+        <h2>See you soon!</h2>
+        <p>A reminder of your upcoming reservation.</p>
+        <p><strong>Restaurant:</strong> ${data.restaurantName}</p>
+        ${location ? `<p><strong>Address:</strong> ${location}</p>` : ''}
+        <p><strong>Date &amp; time:</strong> ${time}</p>
+        <p><strong>Party size:</strong> ${data.partySize}</p>
+        <p style="color:#6b7280;font-size:13px">Reference: ${ref}</p>
+        <p style="color:#6b7280;font-size:13px">
+          Plans changed? Please cancel from “My bookings” so the restaurant can
+          offer your table to another guest.
+        </p>
       `,
     }),
   );

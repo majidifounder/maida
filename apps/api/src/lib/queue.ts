@@ -9,7 +9,8 @@ export type ReservationEventType =
   | 'reservation.extended'
   | 'reservation.freed_early'
   | 'reservation.cancelled'
-  | 'reservation.no_show';
+  | 'reservation.no_show'
+  | 'reservation.reminder';
 
 export interface ReservationEventPayload {
   eventType: ReservationEventType;
@@ -87,6 +88,50 @@ export async function publishReservationEvent(
     );
   } catch (err) {
     logger.warn({ err, eventType }, '[Queue] failed to publish reservation event');
+  }
+}
+
+// Reminder timing: 24h before the reservation when booked far enough ahead,
+// else 2h before. Bookings made closer than that get no reminder — the
+// confirmation email IS the reminder at that range.
+const REMINDER_PRIMARY_LEAD_MS = 24 * 60 * 60 * 1000;
+const REMINDER_FALLBACK_LEAD_MS = 2 * 60 * 60 * 1000;
+const REMINDER_MIN_MARGIN_MS = 15 * 60 * 1000;
+
+/**
+ * Schedules the day-of reminder as a delayed job. Deterministic jobId makes it
+ * idempotent per reservation; the worker re-checks status at send time, so a
+ * cancellation between now and then simply results in no email.
+ */
+export async function scheduleReservationReminder(
+  reservationId: string,
+  startsAt: Date,
+): Promise<void> {
+  try {
+    const now = Date.now();
+    const primaryAt = startsAt.getTime() - REMINDER_PRIMARY_LEAD_MS;
+    const fallbackAt = startsAt.getTime() - REMINDER_FALLBACK_LEAD_MS;
+
+    let sendAt: number | null = null;
+    if (primaryAt - now > REMINDER_MIN_MARGIN_MS) sendAt = primaryAt;
+    else if (fallbackAt - now > REMINDER_MIN_MARGIN_MS) sendAt = fallbackAt;
+    if (sendAt === null) return;
+
+    await getQueue().add(
+      'reservation.reminder',
+      {
+        eventType: 'reservation.reminder',
+        reservationId,
+        publishedAt: new Date().toISOString(),
+      },
+      { delay: sendAt - now, jobId: `reminder:${reservationId}` },
+    );
+    logger.info(
+      { reservationId, sendAt: new Date(sendAt).toISOString() },
+      '[Queue] Scheduled reservation reminder',
+    );
+  } catch (err) {
+    logger.warn({ err, reservationId }, '[Queue] failed to schedule reminder');
   }
 }
 
