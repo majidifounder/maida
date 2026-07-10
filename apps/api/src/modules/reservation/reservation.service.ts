@@ -91,13 +91,24 @@ const TX_OPTIONS = { maxWait: 15_000, timeout: 20_000 } as const;
 async function invalidateAvailabilityCache(
   restaurantId: string,
   startsAt: Date,
+  endsAt?: Date,
 ): Promise<void> {
   const restaurant = await prisma.restaurant.findFirst({
     where: { id: restaurantId },
     select: { timezone: true },
   });
-  const date = formatLocalDate(startsAt, restaurant?.timezone ?? 'UTC');
-  await invalidateAvailabilityCacheForDate(restaurantId, date);
+  const tz = restaurant?.timezone ?? 'UTC';
+  const startDate = formatLocalDate(startsAt, tz);
+  await invalidateAvailabilityCacheForDate(restaurantId, startDate);
+
+  // A reservation crossing local midnight (overnight service windows,
+  // until-close, extensions) also changes the NEXT day's availability.
+  if (endsAt) {
+    const endDate = formatLocalDate(endsAt, tz);
+    if (endDate !== startDate) {
+      await invalidateAvailabilityCacheForDate(restaurantId, endDate);
+    }
+  }
 }
 
 function formatReservation<T extends { status: string; endsAt: Date }>(
@@ -701,7 +712,11 @@ export async function createReservation(
     quota,
   );
 
-  await invalidateAvailabilityCache(input.restaurantId, startsAt);
+  await invalidateAvailabilityCache(
+    input.restaurantId,
+    startsAt,
+    reservation.endsAt,
+  );
 
   await publishReservationEvent('reservation.created', {
     reservationId: reservation.id,
@@ -785,6 +800,7 @@ export async function cancelMyReservation(
       status: true,
       restaurantId: true,
       startsAt: true,
+      endsAt: true,
     },
   });
 
@@ -823,7 +839,11 @@ export async function cancelMyReservation(
     return cancelled;
   }, TX_OPTIONS);
 
-  await invalidateAvailabilityCache(existing.restaurantId, existing.startsAt);
+  await invalidateAvailabilityCache(
+    existing.restaurantId,
+    existing.startsAt,
+    existing.endsAt,
+  );
 
   await publishReservationEvent('reservation.cancelled', {
     reservationId,
@@ -952,6 +972,7 @@ export async function cancelReservationByOwner(
       status: true,
       dinerId: true,
       startsAt: true,
+      endsAt: true,
     },
   });
   if (!existing) throw new NotFoundError('Reservation not found');
@@ -986,7 +1007,11 @@ export async function cancelReservationByOwner(
     return cancelled;
   }, TX_OPTIONS);
 
-  await invalidateAvailabilityCache(restaurantId, existing.startsAt);
+  await invalidateAvailabilityCache(
+    restaurantId,
+    existing.startsAt,
+    existing.endsAt,
+  );
 
   await publishReservationEvent('reservation.cancelled', {
     reservationId,
@@ -1013,7 +1038,7 @@ export async function markNoShow(
 
   const existing = await prisma.reservation.findFirst({
     where: { id: reservationId, restaurantId },
-    select: { id: true, status: true, startsAt: true },
+    select: { id: true, status: true, startsAt: true, endsAt: true },
   });
   if (!existing) throw new NotFoundError('Reservation not found');
   if (existing.status !== 'SCHEDULED') {
@@ -1044,7 +1069,11 @@ export async function markNoShow(
     return row;
   }, TX_OPTIONS);
 
-  await invalidateAvailabilityCache(restaurantId, existing.startsAt);
+  await invalidateAvailabilityCache(
+    restaurantId,
+    existing.startsAt,
+    existing.endsAt,
+  );
 
   await publishReservationEvent('reservation.no_show', {
     reservationId,
@@ -1114,7 +1143,7 @@ export async function extendReservation(
       return row;
     }, TX_OPTIONS);
 
-    await invalidateAvailabilityCache(restaurantId, existing.startsAt);
+    await invalidateAvailabilityCache(restaurantId, existing.startsAt, newEndsAt);
 
     await publishReservationEvent('reservation.extended', {
       reservationId,
@@ -1184,7 +1213,11 @@ export async function freeTableEarly(
     return row;
   }, TX_OPTIONS);
 
-  await invalidateAvailabilityCache(restaurantId, existing.startsAt);
+  await invalidateAvailabilityCache(
+    restaurantId,
+    existing.startsAt,
+    existing.endsAt,
+  );
 
   await publishReservationEvent('reservation.freed_early', {
     reservationId,
@@ -1234,7 +1267,7 @@ export async function createWalkIn(
     quota,
   );
 
-  await invalidateAvailabilityCache(restaurantId, now);
+  await invalidateAvailabilityCache(restaurantId, now, reservation.endsAt);
 
   await publishReservationEvent('reservation.created', {
     reservationId: reservation.id,
@@ -1280,7 +1313,11 @@ export async function createStaffReservation(
     quota,
   );
 
-  await invalidateAvailabilityCache(restaurantId, startsAt);
+  await invalidateAvailabilityCache(
+    restaurantId,
+    startsAt,
+    reservation.endsAt,
+  );
 
   await publishReservationEvent('reservation.created', {
     reservationId: reservation.id,
@@ -1346,7 +1383,11 @@ export async function createOverrideReservation(
       quota,
     );
 
-    await invalidateAvailabilityCache(restaurantId, startsAt);
+    await invalidateAvailabilityCache(
+    restaurantId,
+    startsAt,
+    reservation.endsAt,
+  );
 
     await publishReservationEvent('reservation.created', {
       reservationId: reservation.id,
