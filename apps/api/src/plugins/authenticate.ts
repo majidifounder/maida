@@ -8,6 +8,8 @@ import type { JWTPayload, Role } from '@restaurant/types';
 declare module 'fastify' {
   interface FastifyRequest {
     user?: JWTPayload;
+    /** From the same per-request account lookup — no extra query. */
+    emailVerified?: boolean;
   }
 }
 
@@ -48,13 +50,14 @@ const authenticatePlugin: FastifyPluginAsync = async (fastify) => {
 
         const user = await prisma.user.findUnique({
           where: { id: payload.sub },
-          select: { deletedAt: true },
+          select: { deletedAt: true, emailVerifiedAt: true },
         });
         if (!user || user.deletedAt) {
           return reply
             .code(401)
             .send({ error: 'Account has been deactivated' });
         }
+        request.emailVerified = user.emailVerifiedAt !== null;
       } catch (err) {
         request.log.error(
           { err },

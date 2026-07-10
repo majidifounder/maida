@@ -289,6 +289,69 @@ export const sendBookingCancelledByDiner = sendReservationCancelledByDiner;
 /** @deprecated Use sendReservationCancelledByOwner */
 export const sendBookingCancelledByOwner = sendReservationCancelledByOwner;
 
+/**
+ * Sent (once per month, via notifyOnce upstream) the first time the monthly
+ * reservation quota blocks a booking — the owner is actively losing covers
+ * and must hear it from us before a guest tells them.
+ */
+export async function sendReservationLimitReached(opts: {
+  ownerEmail: string;
+  monthlyLimit: number;
+}): Promise<void> {
+  await sendEmail({
+    from: env.EMAIL_FROM,
+    to: opts.ownerEmail,
+    subject: 'Your restaurant just missed a booking — monthly limit reached',
+    html: `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px">
+        <h2 style="font-size:20px;margin-bottom:8px">A guest tried to book — and couldn't</h2>
+        <p style="color:#555;margin-bottom:16px">
+          Your plan's limit of <strong>${opts.monthlyLimit} reservations this month</strong>
+          has been reached, so new online bookings are paused until next month.
+        </p>
+        <p style="color:#555;margin-bottom:24px">
+          Upgrading lifts the limit immediately — every booking after that lands
+          as usual.
+        </p>
+        <p style="color:#888;font-size:13px">
+          You can review your plan any time on the Billing page of your dashboard.
+        </p>
+      </div>
+    `,
+  });
+}
+
+export async function sendEmailVerification(opts: {
+  toEmail: string;
+  verifyUrl: string;
+}): Promise<void> {
+  await sendEmail({
+    from: env.EMAIL_FROM,
+    to: opts.toEmail,
+    subject: 'Confirm your email',
+    html: `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px">
+        <h2 style="font-size:20px;margin-bottom:8px">Confirm your email</h2>
+        <p style="color:#555;margin-bottom:24px">
+          One tap and you're set — this link expires in <strong>24 hours</strong>.
+        </p>
+        <a href="${opts.verifyUrl}"
+           style="display:inline-block;background:#0F0F0E;color:#FAFAF9;text-decoration:none;
+                  padding:12px 24px;border-radius:8px;font-weight:600">
+          Confirm email
+        </a>
+        <p style="color:#888;font-size:13px;margin-top:24px">
+          If you didn't create a Maida account, you can safely ignore this email.
+        </p>
+        <p style="color:#bbb;font-size:12px;margin-top:8px">
+          Link not working? Copy and paste into your browser:<br/>
+          <span style="word-break:break-all">${opts.verifyUrl}</span>
+        </p>
+      </div>
+    `,
+  });
+}
+
 export async function sendPasswordReset(opts: {
   toEmail: string;
   resetUrl: string;

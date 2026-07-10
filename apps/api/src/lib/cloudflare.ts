@@ -1,19 +1,41 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import type { FastifyRequest } from 'fastify';
+import { env } from '../env.js';
+
+function timingSafeMatch(a: string, b: string): boolean {
+  const ha = createHash('sha256').update(a).digest();
+  const hb = createHash('sha256').update(b).digest();
+  return timingSafeEqual(ha, hb);
+}
 
 /**
  * Returns the real client IP address.
  *
- * When behind Cloudflare, CF-Connecting-IP is the true client IP.
- * It is set by Cloudflare and cannot be forged through the proxy.
- * Falls back to req.ip (socket IP) when Cloudflare is not in front,
- * which is the case in local development and in the test suite.
+ * CF-Connecting-IP is only trustworthy when the request PROVABLY came through
+ * Cloudflare. When CF_ORIGIN_SECRET is configured, the accompanying
+ * x-cf-origin-secret header (injected by a Cloudflare Transform Rule) is that
+ * proof — a request that reaches the origin directly can type any
+ * CF-Connecting-IP it likes, which would let an attacker rotate identities
+ * per request and neuter every rate limit, lockout, and threat ban.
+ *
+ * Without CF_ORIGIN_SECRET (local dev, tests, staging without Cloudflare) the
+ * header is trusted as before — those environments have no adversarial edge.
  */
 export function getRealIp(request: Pick<FastifyRequest, 'headers' | 'ip'>): string {
   const cfIp = request.headers['cf-connecting-ip'];
-  if (typeof cfIp === 'string' && cfIp.trim().length > 0) {
-    return cfIp.trim();
+  if (typeof cfIp !== 'string' || cfIp.trim().length === 0) {
+    return request.ip;
   }
-  return request.ip;
+
+  if (env.CF_ORIGIN_SECRET) {
+    const provided = request.headers['x-cf-origin-secret'];
+    const cameThroughCloudflare =
+      typeof provided === 'string' &&
+      timingSafeMatch(provided, env.CF_ORIGIN_SECRET);
+    if (!cameThroughCloudflare) return request.ip;
+  }
+
+  return cfIp.trim();
 }
 
 const TURNSTILE_VERIFY_URL =

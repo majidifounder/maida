@@ -3,6 +3,7 @@ import { useAuth } from '../context/AuthContext.js';
 import { useOwnerPlan } from '../hooks/useOwnerPlan.js';
 import { billingTierLabel } from '../lib/plan-limits.js';
 import { TrialBanner } from '../components/TrialBanner.js';
+import { VerifyEmailBanner } from '../components/VerifyEmailBanner.js';
 import { FeedbackForm } from '../components/FeedbackForm.js';
 import { Button } from '../components/ui/Button.js';
 
@@ -117,6 +118,7 @@ export function DashboardLayout() {
       </aside>
 
       <div className="flex flex-1 flex-col">
+        {!loading && user && <VerifyEmailBanner />}
         {!loading && user && <TrialBanner />}
         <main className="flex-1 px-6 py-8">
           <Outlet />

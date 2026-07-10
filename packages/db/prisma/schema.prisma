@@ -89,6 +89,9 @@ model User {
   updatedAt DateTime @updatedAt
   deletedAt  DateTime?                    // soft delete — user data retained for audit
   totpSecret String?                      // null until admin completes TOTP setup
+  // Null until the user clicks the verification link. Verification gates
+  // BOOKING (diners) and RESTAURANT CREATION (owners) — never the session.
+  emailVerifiedAt DateTime? @db.Timestamptz
 
   // Relations
   reservations Reservation[]

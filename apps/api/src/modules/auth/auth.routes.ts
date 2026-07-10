@@ -308,6 +308,7 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
           role: true,
           createdAt: true,
           deletedAt: true,
+          emailVerifiedAt: true,
         },
       });
 
@@ -320,7 +321,76 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
         email: user.email,
         role: user.role.toLowerCase(),
         createdAt: user.createdAt,
+        emailVerified: user.emailVerifiedAt !== null,
       });
+    },
+  );
+
+  // ── Email verification ──────────────────────────────────────────────────────
+
+  fastify.post(
+    '/auth/verify-email',
+    {
+      config: {
+        rateLimit: {
+          max: 10,
+          timeWindow: '1 hour',
+          keyGenerator: (req) => `verify-email:${getRealIp(req)}`,
+          allowList: (req) => isLoadTestRequest(req),
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = z
+        .object({ token: z.string().uuid() })
+        .safeParse(request.body);
+      if (!body.success) {
+        return reply
+          .code(422)
+          .send({ error: 'Validation failed', details: body.error.flatten() });
+      }
+
+      try {
+        await AuthService.verifyEmail(body.data.token);
+        return reply.code(200).send({ verified: true });
+      } catch (err) {
+        if (err instanceof AppError) {
+          return reply
+            .code(err.statusCode)
+            .send({ error: err.message, code: err.code });
+        }
+        throw err;
+      }
+    },
+  );
+
+  fastify.post(
+    '/auth/resend-verification',
+    {
+      preHandler: [fastify.authenticate],
+      config: {
+        rateLimit: {
+          max: 3,
+          timeWindow: '1 hour',
+          keyGenerator: (req) => `resend-verify:${req.user?.sub ?? getRealIp(req)}`,
+          allowList: (req) => isLoadTestRequest(req),
+        },
+      },
+    },
+    async (request, reply) => {
+      try {
+        await AuthService.resendVerification(request.user!.sub);
+        return reply
+          .code(200)
+          .send({ message: 'If your email is unverified, a new link is on its way.' });
+      } catch (err) {
+        if (err instanceof AppError) {
+          return reply
+            .code(err.statusCode)
+            .send({ error: err.message, code: err.code });
+        }
+        throw err;
+      }
     },
   );
 

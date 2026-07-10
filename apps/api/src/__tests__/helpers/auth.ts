@@ -20,6 +20,8 @@ export async function registerUser(
     email?: string;
     password?: string;
     role?: 'diner' | 'owner';
+    /** Fixtures are verified by default — set true to test the unverified gate. */
+    unverified?: boolean;
   } = {},
 ): Promise<{ email: string; password: string; userId: string }> {
   const email = opts.email ?? uniqueEmail();
@@ -37,6 +39,16 @@ export async function registerUser(
   }
 
   const body = JSON.parse(res.body) as { user: { id: string } };
+
+  // Registration creates UNVERIFIED users; almost every test needs an
+  // established (verified) account, so verify by default.
+  if (!opts.unverified) {
+    await prisma.user.update({
+      where: { id: body.user.id },
+      data: { emailVerifiedAt: new Date() },
+    });
+  }
+
   return { email, password, userId: body.user.id };
 }
 
@@ -46,6 +58,8 @@ export async function loginUser(
     email?: string;
     password?: string;
     role?: 'diner' | 'owner';
+    /** Fixtures are verified by default — set true to test the unverified gate. */
+    unverified?: boolean;
     /** Owner subscription override; 'none' skips row (lazy trial on first access). */
     subscriptionPlan?:
       | 'STARTER'

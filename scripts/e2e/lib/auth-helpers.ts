@@ -28,6 +28,14 @@ export async function registerAndLogin(
     throw new Error(`Register failed (${reg.status}): ${JSON.stringify(reg.body)}`);
   }
 
+  // Registration creates UNVERIFIED accounts (R7b) — booking and restaurant
+  // creation are gated on verification. E2E fixtures represent established
+  // users, so mark them verified directly in the DB.
+  await prisma.user.update({
+    where: { id: reg.body.user.id },
+    data: { emailVerifiedAt: new Date() },
+  });
+
   const login = await apiRequest<{ accessToken: string; user: { id: string } }>(
     ctx,
     'POST',

@@ -39,6 +39,8 @@ export {
 
 const TRIAL_ENDED_MESSAGE =
   'Your 14-day trial has ended. Subscribe to a plan to continue accepting reservations and updating your restaurant.';
+const SUBSCRIPTION_ENDED_MESSAGE =
+  'Your subscription has ended. Choose a plan on Billing to continue accepting reservations — your restaurant, tables, and history are all still here.';
 
 export interface OwnerBillingState {
   billingTier: BillingTier;
@@ -131,11 +133,16 @@ export async function resolveOwnerBillingState(
     };
   }
 
-  // EXPIRED paid subscription — downgraded limits, still operational on STARTER.
+  // EXPIRED paid subscription — LOCKED, same as an expired trial. The previous
+  // behavior (free Starter service forever) made a churned customer strictly
+  // better off than a paying Starter one: subscribe once, let it lapse, keep
+  // operating free. Lapsed owners keep read/manage access to existing
+  // reservations (assertOwnerAccess is deliberately ungated); only NEW
+  // inventory is blocked, and diner availability shows bookable:false.
   return {
     billingTier: 'STARTER',
     limits: getPlanLimits('STARTER'),
-    canOperate: true,
+    canOperate: false,
     isTrialActive: false,
     isTrialExpired: false,
     trialStartedAt: sub.trialStartedAt,
@@ -158,7 +165,11 @@ export async function getEffectiveLimitsForOwner(
 export async function assertOwnerCanOperate(userId: string): Promise<void> {
   const state = await resolveOwnerBillingState(userId);
   if (!state.canOperate) {
-    throw new ForbiddenError(TRIAL_ENDED_MESSAGE);
+    throw new ForbiddenError(
+      state.status === SubscriptionStatus.EXPIRED
+        ? SUBSCRIPTION_ENDED_MESSAGE
+        : TRIAL_ENDED_MESSAGE,
+    );
   }
 }
 

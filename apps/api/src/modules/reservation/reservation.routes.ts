@@ -40,6 +40,15 @@ export async function reservationRoutes(
       },
     },
     async (request, reply) => {
+    // Bookings require a reachable identity — confirmations and reminders go
+    // to this address, and every abuse guard assumes it costs something.
+    if (request.emailVerified === false) {
+      return reply.code(403).send({
+        error:
+          'Please confirm your email before booking — we sent you a link. You can resend it from the banner above.',
+        code: 'EMAIL_NOT_VERIFIED',
+      });
+    }
     const body = CreateReservationSchema.safeParse(request.body);
     if (!body.success) {
       return reply

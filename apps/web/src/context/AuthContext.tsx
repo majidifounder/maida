@@ -96,6 +96,12 @@ export function AuthProvider({ children }: { children: ReactNode }): ReactNode {
     });
     applySession(result.accessToken, result.accessTokenExpiresAt);
     setState({ user: toUser(result.user), loading: false });
+    // The login payload doesn't carry emailVerified — refresh the profile in
+    // the background so the verify banner is accurate immediately.
+    void api
+      .get<User>('/auth/me')
+      .then((me) => setState({ user: me, loading: false }))
+      .catch(() => {});
   }, []);
 
   const register = useCallback(

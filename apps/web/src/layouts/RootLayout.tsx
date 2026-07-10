@@ -2,6 +2,7 @@ import { Link, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.js';
 import { Button } from '../components/ui/Button.js';
 import { FeedbackForm } from '../components/FeedbackForm.js';
+import { VerifyEmailBanner } from '../components/VerifyEmailBanner.js';
 
 export function RootLayout() {
   const { user, logout, loading } = useAuth();
@@ -51,6 +52,7 @@ export function RootLayout() {
           </nav>
         </div>
       </header>
+      <VerifyEmailBanner />
       <main className="mx-auto max-w-6xl px-4 py-8">
         <Outlet />
       </main>

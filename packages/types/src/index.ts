@@ -134,4 +134,6 @@ export interface User {
   email: string;
   role: Role;
   createdAt: string;
+  /** False until the verification link is clicked; gates booking/creation. */
+  emailVerified?: boolean;
 }

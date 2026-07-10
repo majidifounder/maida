@@ -2,17 +2,6 @@ import type { BillingTier, Plan, PlanLimits } from '@restaurant/types';
 
 export const TRIAL_DAYS = 14;
 
-/** Stricter than STARTER — enough to evaluate the product, not run production volume. */
-export const TRIAL_LIMITS: PlanLimits = {
-  restaurants: 1,
-  reservationsPerMonth: 25,
-  tablesPerRestaurant: 5,
-  combinationsPerRestaurant: 0,
-  turnTimeRulesPerRestaurant: 1,
-  flexibleSeating: false,
-  customReservations: false,
-};
-
 export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
   STARTER: {
     restaurants: 1,
@@ -43,6 +32,15 @@ export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
   },
 };
 
+/**
+ * The trial is the full PRO experience for 14 days. A trial that hides the
+ * features we want evaluated (flexible seating, custom reservations) or caps
+ * volume below one busy weekend teaches prospects the product fails at
+ * exactly the moment they're deciding — the old 25-reservation trial did
+ * precisely that. Restriction is the wrong conversion lever; the deadline is.
+ */
+export const TRIAL_LIMITS: PlanLimits = PLAN_LIMITS.PRO;
+
 export const PLAN_COMPARISON: Array<{
   tier: BillingTier;
   label: string;
@@ -52,7 +50,7 @@ export const PLAN_COMPARISON: Array<{
   {
     tier: 'TRIAL',
     label: 'Free trial',
-    price: '14 days free',
+    price: '14 days free — full Pro',
     limits: TRIAL_LIMITS,
   },
   {
