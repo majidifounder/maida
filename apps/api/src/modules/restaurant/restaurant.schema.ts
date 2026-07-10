@@ -127,10 +127,49 @@ const ServicePeriodSchema = z.object({
   closeMinute: z.number().int().min(1).max(1440),
 });
 
-export const ReplaceScheduleSchema = z.object({
-  // At most a handful of windows per day across the week; cap defensively.
-  periods: z.array(ServicePeriodSchema).max(70),
-});
+const DAY_LABELS = [
+  'Sunday',
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+] as const;
+
+export const ReplaceScheduleSchema = z
+  .object({
+    // At most a handful of windows per day across the week; cap defensively.
+    periods: z.array(ServicePeriodSchema).max(70),
+  })
+  .superRefine((data, ctx) => {
+    // Same-day windows must not overlap — overlapping windows would emit
+    // duplicate availability slots. An overnight window (close <= open) is
+    // treated as running to 1440+close, so it must be the last window of its
+    // day. (An overnight tail may still meet the NEXT day's first window —
+    // that's legal and handled by the engine.)
+    for (let day = 0; day <= 6; day++) {
+      const windows = data.periods
+        .filter((p) => p.dayOfWeek === day)
+        .map((p) => ({
+          open: p.openMinute,
+          close:
+            p.closeMinute > p.openMinute ? p.closeMinute : 1440 + p.closeMinute,
+        }))
+        .sort((a, b) => a.open - b.open);
+
+      for (let i = 1; i < windows.length; i++) {
+        if (windows[i]!.open < windows[i - 1]!.close) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `${DAY_LABELS[day]} has overlapping service windows — each window must end before the next begins.`,
+            path: ['periods'],
+          });
+          return;
+        }
+      }
+    }
+  });
 
 export const CreateClosureSchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD'),

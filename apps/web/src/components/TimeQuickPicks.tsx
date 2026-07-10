@@ -1,5 +1,9 @@
 import type { AvailabilityTime } from '../types/api.js';
-import type { ScannedSlot } from '../lib/booking-availability.js';
+import {
+  windowForSlot,
+  type ScannedSlot,
+  type ServiceWindowIso,
+} from '../lib/booking-availability.js';
 import {
   formatQuickPickWhen,
   formatRestaurantTime,
@@ -37,7 +41,8 @@ interface TimeQuickPicksProps {
   onPickerDateChange: (date: string) => void;
   minDate: string;
   pickerTimes: AvailabilityTime[];
-  pickerServiceWindow: { open: string; close: string } | null;
+  pickerServiceWindow: ServiceWindowIso | null;
+  pickerServiceWindows?: ServiceWindowIso[] | undefined;
   pickerStandardDurationMins: number;
   pickerLoading: boolean;
 }
@@ -73,6 +78,7 @@ export function TimeQuickPicks({
   minDate,
   pickerTimes,
   pickerServiceWindow,
+  pickerServiceWindows,
   pickerStandardDurationMins,
   pickerLoading,
 }: TimeQuickPicksProps) {
@@ -208,7 +214,11 @@ export function TimeQuickPicks({
                                 slot,
                                 date: pickerDate,
                                 standardDurationMins: pickerStandardDurationMins,
-                                serviceWindow: pickerServiceWindow,
+                                serviceWindow: windowForSlot(
+                                  slot.startsAt,
+                                  pickerServiceWindows,
+                                  pickerServiceWindow,
+                                ),
                               })
                             }
                             className={chipClass(selected)}

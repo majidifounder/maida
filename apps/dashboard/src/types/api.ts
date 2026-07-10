@@ -38,6 +38,25 @@ export interface OwnerRestaurant {
   maxExtraHours: number;
 }
 
+/** One service window on one weekday. closeMinute <= openMinute = overnight. */
+export interface SchedulePeriod {
+  id: string;
+  dayOfWeek: number; // 0 = Sunday … 6 = Saturday
+  openMinute: number; // 0–1439, minutes from local midnight
+  closeMinute: number; // 1–1440
+}
+
+export interface ScheduleClosure {
+  id: string;
+  date: string; // YYYY-MM-DD (restaurant-local calendar day)
+  reason: string | null;
+}
+
+export interface RestaurantSchedule {
+  periods: SchedulePeriod[];
+  closures: ScheduleClosure[];
+}
+
 export interface DiningTableRow {
   id: string;
   name: string;
