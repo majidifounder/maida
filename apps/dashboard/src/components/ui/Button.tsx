@@ -1,6 +1,6 @@
-import type { ButtonHTMLAttributes } from 'react';
+import type { ButtonHTMLAttributes, ReactNode } from 'react';
 
-type Variant = 'primary' | 'secondary' | 'danger';
+type Variant = 'primary' | 'secondary' | 'danger' | 'ghost';
 type Size = 'sm' | 'md';
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -9,18 +9,40 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   loading?: boolean;
 }
 
+/**
+ * Maida button hierarchy (brand §7, monochrome):
+ * primary = Ink fill · secondary = white + Mist hairline · danger = white with
+ * Danger border/text (red is semantic — a destructive action — never a fill).
+ * ghost = borderless quiet action for dense rows.
+ */
 const variantClasses: Record<Variant, string> = {
-  primary: 'bg-brand text-white hover:bg-brand-dark focus:ring-blue-500 disabled:opacity-50',
+  primary:
+    'bg-ink text-paper hover:bg-charcoal active:bg-ink disabled:bg-stone2 disabled:text-white',
   secondary:
-    'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50 focus:ring-blue-500',
+    'bg-white text-ink border border-mist hover:bg-fog active:bg-fog disabled:text-stone2',
   danger:
-    'bg-red-600 text-white hover:bg-red-700 focus:ring-red-500 disabled:opacity-50',
+    'bg-white text-danger-text border border-danger hover:bg-danger-bg active:bg-danger-bg disabled:opacity-50',
+  ghost:
+    'bg-transparent text-charcoal hover:bg-fog active:bg-fog disabled:text-stone2',
 };
 
 const sizeClasses: Record<Size, string> = {
-  sm: 'px-3 py-1.5 text-sm',
-  md: 'px-4 py-2 text-sm',
+  sm: 'h-8 px-3 text-sm gap-1.5',
+  md: 'h-10 px-4 text-sm gap-2',
 };
+
+/**
+ * Loading keeps the label visible and the width stable — the button quietly
+ * shows work is happening without the layout jumping or the intent vanishing.
+ */
+function LoadingDot(): ReactNode {
+  return (
+    <span
+      aria-hidden
+      className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent opacity-70"
+    />
+  );
+}
 
 export function Button({
   variant = 'primary',
@@ -30,15 +52,17 @@ export function Button({
   className = '',
   children,
   ...props
-}: ButtonProps) {
+}: ButtonProps): ReactNode {
   return (
     <button
       type="button"
       disabled={disabled ?? loading}
-      className={`inline-flex items-center justify-center rounded-lg font-medium transition focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:cursor-not-allowed ${variantClasses[variant]} ${sizeClasses[size]} ${className}`}
+      aria-busy={loading || undefined}
+      className={`inline-flex select-none items-center justify-center rounded-btn font-medium transition-colors duration-150 disabled:cursor-not-allowed ${variantClasses[variant]} ${sizeClasses[size]} ${className}`}
       {...props}
     >
-      {loading ? 'Please wait…' : children}
+      {loading && <LoadingDot />}
+      {children}
     </button>
   );
 }

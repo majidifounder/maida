@@ -133,7 +133,7 @@ export function TablesPanel({ restaurantId }: TablesPanelProps) {
       )}
 
       {showAdd && (
-        <div className="mb-4 rounded-lg border border-blue-100 bg-blue-50 p-4">
+        <div className="mb-4 rounded-lg border border-mist bg-fog p-4">
           <div className="flex flex-wrap items-end gap-3">
             <Input
               label="Name"

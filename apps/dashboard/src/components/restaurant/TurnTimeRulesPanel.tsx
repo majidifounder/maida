@@ -98,7 +98,7 @@ export function TurnTimeRulesPanel({ restaurantId }: TurnTimeRulesPanelProps) {
       )}
 
       {showAdd && (
-        <div className="mb-4 flex flex-wrap items-end gap-3 rounded-lg border border-blue-100 bg-blue-50 p-4">
+        <div className="mb-4 flex flex-wrap items-end gap-3 rounded-lg border border-mist bg-fog p-4">
           <Input
             label="Min party"
             type="number"

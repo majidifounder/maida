@@ -87,7 +87,7 @@ export function DashboardLayout() {
                 {billingTierLabel(billingTier)}
               </p>
               {isTrialActive && trialDaysRemaining != null && (
-                <p className="text-xs text-blue-700">
+                <p className="text-xs text-notice-text">
                   {trialDaysRemaining} day{trialDaysRemaining === 1 ? '' : 's'} left
                 </p>
               )}

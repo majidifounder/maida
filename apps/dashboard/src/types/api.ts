@@ -90,13 +90,24 @@ export interface OwnerReservation {
   restaurantId: string;
   dinerId: string | null;
   partySize: number;
+  /** Display status — past SCHEDULED/SEATED rows are shown as COMPLETED. */
   status: string;
+  /** DB truth — decides which lifecycle actions are still legal. */
+  rawStatus: string;
   startsAt: string;
   endsAt: string;
   createdAt: string;
   cancelledAt: string | null;
   guestName: string | null;
+  notes: string | null;
+  source: 'ONLINE' | 'WALK_IN' | 'STAFF';
+  reservationType: 'STANDARD' | 'CUSTOM';
+  isOverride: boolean;
   diner: { email: string } | null;
+  tables: Array<{
+    tableId: string;
+    table: { name: string; maxPartySize: number };
+  }>;
 }
 
 export interface ReservationsResponse {

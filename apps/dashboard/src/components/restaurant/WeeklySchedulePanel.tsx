@@ -279,7 +279,7 @@ export function WeeklySchedulePanel({
                       aria-label={`${DAY_NAMES[day]} window ${i + 1} closes`}
                     />
                     {isOvernight(w) && (
-                      <span className="rounded bg-indigo-50 px-2 py-0.5 text-xs text-indigo-700">
+                      <span className="rounded bg-fog px-2 py-0.5 text-xs text-charcoal">
                         past midnight
                       </span>
                     )}
@@ -296,7 +296,7 @@ export function WeeklySchedulePanel({
                 <div className="flex gap-3">
                   <button
                     type="button"
-                    className="text-sm font-medium text-indigo-600 hover:text-indigo-800"
+                    className="text-sm font-medium text-ink underline-offset-2 hover:underline"
                     onClick={() => addWindow(day)}
                   >
                     + Add hours
