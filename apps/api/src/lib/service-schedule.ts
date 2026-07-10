@@ -21,8 +21,8 @@ export interface RestaurantSchedule {
 
 /** JS weekday (0=Sun … 6=Sat) for a 'YYYY-MM-DD' calendar date. Timezone-independent. */
 export function weekdayForDate(dateStr: string): number {
-  const [y, m, d] = dateStr.split('-').map(Number);
-  return new Date(Date.UTC(y!, m! - 1, d!)).getUTCDay();
+  const [y = 0, m = 1, d = 1] = dateStr.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
 }
 
 /** A stored DATE column (UTC midnight) → its 'YYYY-MM-DD' calendar string. */

@@ -56,10 +56,12 @@ export interface ReservationsListResponse {
 export interface LoginResponse {
   user: { id: string; email: string; role: string; createdAt?: string };
   accessToken: string;
-  accessTokenExpiresAt: number | string;
+  /** Epoch seconds (JWT exp) — used to schedule the proactive refresh. */
+  accessTokenExpiresAt: number;
 }
 
 export interface RefreshResponse {
   accessToken: string;
-  accessTokenExpiresAt: string;
+  /** Epoch seconds (JWT exp). */
+  accessTokenExpiresAt: number;
 }

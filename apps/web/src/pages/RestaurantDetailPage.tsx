@@ -20,7 +20,7 @@ function formatCuisine(cuisine: string): string {
 
 export function RestaurantDetailPage() {
   const { id } = useParams<{ id: string }>();
-  const { user, token } = useAuth();
+  const { user } = useAuth();
   const [toast, setToast] = useState<string | null>(null);
 
   const restaurantQuery = useQuery({
@@ -151,7 +151,7 @@ export function RestaurantDetailPage() {
       <ReservationBookingFlow
         restaurantId={id!}
         restaurant={restaurant}
-        isLoggedIn={Boolean(user && token)}
+        isLoggedIn={Boolean(user)}
         onSuccess={(result) => {
           let msg = 'Reservation confirmed!';
           if (result?.wasCapped) {

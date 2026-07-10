@@ -1,9 +1,7 @@
-let accessToken: string | null = null;
-
-export function setAccessToken(token: string | null): void {
-  accessToken = token;
-}
-
-export function getAccessToken(): string | null {
-  return accessToken;
-}
+/** Re-exported from the shared client — see @restaurant/api-client. */
+export {
+  applySession,
+  clearSession,
+  getAccessToken,
+  setAccessToken,
+} from '@restaurant/api-client';
