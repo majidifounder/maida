@@ -7,7 +7,7 @@ export type DbRole = 'DINER' | 'OWNER' | 'ADMIN';
 export interface AdminUser {
   id: string;
   email: string;
-  role: 'admin' | string;
+  role: string; // 'admin' for admin accounts; the API guards role server-side
 }
 
 export interface LoginSuccessResponse {

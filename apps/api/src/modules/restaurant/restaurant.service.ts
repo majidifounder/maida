@@ -7,12 +7,16 @@ import { isLogoUploadAvailable, uploadRestaurantLogo as putLogoInR2 } from '../.
 import {
   assertOwnerCanOperate,
   getEffectiveLimitsForOwner,
+  resolveOwnerBillingState,
 } from '../subscription/subscription.service.js';
 import {
   computeAvailabilityTimes,
   resolveDurationMins,
-  serviceWindowBounds,
 } from '../../lib/reservation-engine.js';
+import {
+  loadRestaurantSchedule,
+  serviceWindowsForLocalDate,
+} from '../../lib/service-schedule.js';
 import type {
   CreateCombinationInput,
   CreateRestaurantInput,
@@ -236,11 +240,20 @@ export async function searchRestaurants(input: SearchRestaurantsInput) {
 export async function getRestaurant(restaurantId: string) {
   const restaurant = await prisma.restaurant.findFirst({
     where: { id: restaurantId, isActive: true, deletedAt: null },
-    select: PUBLIC_RESTAURANT_SELECT,
+    select: { ...PUBLIC_RESTAURANT_SELECT, ownerId: true },
   });
 
   if (!restaurant) throw new NotFoundError('Restaurant not found');
-  return formatPublicRestaurant(restaurant);
+
+  // Custom-length reservations are gated by the owner's plan, not by whether a
+  // fee happens to be set. Expose a single authoritative flag so the diner UI
+  // and the booking API agree on who may offer them.
+  const limits = await getEffectiveLimitsForOwner(restaurant.ownerId);
+  const offersCustomReservations =
+    limits.customReservations && restaurant.maxExtraHours > 0;
+
+  const { ownerId: _ownerId, ...publicFields } = restaurant;
+  return { ...formatPublicRestaurant(publicFields), offersCustomReservations };
 }
 
 export async function getRestaurantConfig(
@@ -267,6 +280,7 @@ export async function getAvailability(
     where: { id: restaurantId, isActive: true, deletedAt: null },
     select: {
       id: true,
+      ownerId: true,
       seatingMode: true,
       defaultDurationMins: true,
       openMinutes: true,
@@ -275,6 +289,42 @@ export async function getAvailability(
     },
   });
   if (!restaurant) throw new NotFoundError('Restaurant not found');
+
+  const schedule = await loadRestaurantSchedule(restaurant.id, restaurant);
+  const windows = serviceWindowsForLocalDate(date, restaurant.timezone, schedule);
+  const serviceWindows = windows.map((w) => ({
+    open: w.start.toISOString(),
+    close: w.end.toISOString(),
+  }));
+  const serviceWindow =
+    serviceWindows.length > 0
+      ? {
+          open: serviceWindows[0]!.open,
+          close: serviceWindows[serviceWindows.length - 1]!.close,
+        }
+      : null;
+
+  const standardDurationMins = await resolveDurationMins(
+    restaurant.id,
+    partySize,
+    restaurant.defaultDurationMins,
+  );
+
+  // A restaurant whose owner cannot currently operate (expired trial / lapsed
+  // plan) is not taking online reservations. Return no slots and a clear reason
+  // so the diner app can explain instead of failing at booking time.
+  const billing = await resolveOwnerBillingState(restaurant.ownerId);
+  if (!billing.canOperate) {
+    return {
+      times: [],
+      standardDurationMins,
+      serviceWindow,
+      serviceWindows,
+      bookable: false,
+      notice:
+        'This restaurant is not currently accepting online reservations. Please check back later.',
+    };
+  }
 
   const cacheKey = availabilityCacheKey(restaurantId, date, partySize);
   let times: Awaited<ReturnType<typeof computeAvailabilityTimes>> | null = null;
@@ -290,7 +340,12 @@ export async function getAvailability(
   }
 
   if (!times) {
-    times = await computeAvailabilityTimes(restaurant, date, partySize);
+    times = await computeAvailabilityTimes(
+      restaurant,
+      date,
+      partySize,
+      schedule,
+    );
     try {
       await writeAvailabilityCache(
         restaurantId,
@@ -304,25 +359,12 @@ export async function getAvailability(
     }
   }
 
-  const standardDurationMins = await resolveDurationMins(
-    restaurant.id,
-    partySize,
-    restaurant.defaultDurationMins,
-  );
-  const serviceWindow = serviceWindowBounds(
-    date,
-    restaurant.openMinutes,
-    restaurant.closeMinutes,
-    restaurant.timezone,
-  );
-
   return {
     times,
     standardDurationMins,
-    serviceWindow: {
-      open: serviceWindow.windowStart.toISOString(),
-      close: serviceWindow.windowEnd.toISOString(),
-    },
+    serviceWindow,
+    serviceWindows,
+    bookable: true,
   };
 }
 
@@ -359,28 +401,42 @@ export async function createRestaurant(
 
   const slug = generateSlug(input.name);
 
-  const restaurant = await prisma.restaurant.create({
-    data: {
-      name: input.name,
-      description: input.description,
-      cuisine: input.cuisine,
-      address: input.address,
-      city: input.city,
-      ...(input.imageUrl !== undefined && { imageUrl: input.imageUrl }),
-      ...(input.timezone !== undefined && { timezone: input.timezone }),
-      ...(input.seatingMode !== undefined && { seatingMode: input.seatingMode }),
-      ...(input.defaultDurationMins !== undefined && {
-        defaultDurationMins: input.defaultDurationMins,
-      }),
-      ...(input.openMinutes !== undefined && { openMinutes: input.openMinutes }),
-      ...(input.closeMinutes !== undefined && {
-        closeMinutes: input.closeMinutes,
-      }),
-      slug,
-      ownerId,
-      isActive: true,
-    },
-    select: OWNER_RESTAURANT_SELECT,
+  const restaurant = await prisma.$transaction(async (tx) => {
+    const created = await tx.restaurant.create({
+      data: {
+        name: input.name,
+        description: input.description,
+        cuisine: input.cuisine,
+        address: input.address,
+        city: input.city,
+        ...(input.imageUrl !== undefined && { imageUrl: input.imageUrl }),
+        ...(input.timezone !== undefined && { timezone: input.timezone }),
+        ...(input.seatingMode !== undefined && { seatingMode: input.seatingMode }),
+        ...(input.defaultDurationMins !== undefined && {
+          defaultDurationMins: input.defaultDurationMins,
+        }),
+        ...(input.openMinutes !== undefined && { openMinutes: input.openMinutes }),
+        ...(input.closeMinutes !== undefined && {
+          closeMinutes: input.closeMinutes,
+        }),
+        slug,
+        ownerId,
+        isActive: true,
+      },
+      select: OWNER_RESTAURANT_SELECT,
+    });
+
+    // Seed a uniform weekly schedule from the initial open/close window so the
+    // reservation engine has explicit ServicePeriod rows to work from.
+    await tx.servicePeriod.createMany({
+      data: uniformWeeklyPeriods(
+        created.id,
+        created.openMinutes,
+        created.closeMinutes,
+      ),
+    });
+
+    return created;
   });
 
   return formatPublicRestaurant(restaurant);
@@ -418,14 +474,23 @@ export async function updateReservationConfig(
 ) {
   const { ownerId } = await assertRestaurantOwner(restaurantId, callerId);
   await assertOwnerCanOperate(ownerId);
+  const limits = await getEffectiveLimitsForOwner(ownerId);
 
-  if (input.seatingMode === 'FLEXIBLE') {
-    const limits = await getEffectiveLimitsForOwner(ownerId);
-    if (!limits.flexibleSeating) {
-      throw new UnprocessableError(
-        'Flexible seating needs a Pro or Premium plan. Upgrade on Billing, then switch seating mode here — your tables and hours stay as they are.',
-      );
-    }
+  if (input.seatingMode === 'FLEXIBLE' && !limits.flexibleSeating) {
+    throw new UnprocessableError(
+      'Flexible seating needs a Pro or Premium plan. Upgrade on Billing, then switch seating mode here — your tables and hours stay as they are.',
+    );
+  }
+
+  // Custom-length reservations (fees + extra time) are a Pro/Premium capability.
+  const wantsCustomReservationChange =
+    input.customFee !== undefined ||
+    input.extraHourFee !== undefined ||
+    input.maxExtraHours !== undefined;
+  if (wantsCustomReservationChange && !limits.customReservations) {
+    throw new UnprocessableError(
+      'Custom-length reservations, fees, and extra time need a Pro or Premium plan. Upgrade on Billing to configure them.',
+    );
   }
 
   const data: Record<string, unknown> = {};
@@ -438,20 +503,33 @@ export async function updateReservationConfig(
   if (input.customFee !== undefined) data.customFee = input.customFee;
   if (input.extraHourFee !== undefined) data.extraHourFee = input.extraHourFee;
   if (input.feeCurrency !== undefined) data.feeCurrency = input.feeCurrency;
-  if (input.maxExtraHours !== undefined) {
-    const limits = await getEffectiveLimitsForOwner(ownerId);
-    if (!limits.customReservations) {
-      throw new UnprocessableError(
-        'Maximum extra time for diners needs a Pro or Premium plan. Upgrade on Billing to configure it.',
-      );
-    }
-    data.maxExtraHours = input.maxExtraHours;
-  }
+  if (input.maxExtraHours !== undefined) data.maxExtraHours = input.maxExtraHours;
 
-  const updated = await prisma.restaurant.update({
-    where: { id: restaurantId },
-    data,
-    select: OWNER_RESTAURANT_SELECT,
+  // Setting the simple open/close window resets the weekly schedule to a uniform
+  // one for all seven days. Granular per-day hours and closures are managed via
+  // the weekly-schedule endpoints, which do not go through this path.
+  const regenerateSchedule =
+    input.openMinutes !== undefined || input.closeMinutes !== undefined;
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const row = await tx.restaurant.update({
+      where: { id: restaurantId },
+      data,
+      select: OWNER_RESTAURANT_SELECT,
+    });
+
+    if (regenerateSchedule) {
+      await tx.servicePeriod.deleteMany({ where: { restaurantId } });
+      await tx.servicePeriod.createMany({
+        data: uniformWeeklyPeriods(
+          restaurantId,
+          row.openMinutes,
+          row.closeMinutes,
+        ),
+      });
+    }
+
+    return row;
   });
 
   return {
@@ -460,6 +538,25 @@ export async function updateReservationConfig(
     extraHourFee:
       updated.extraHourFee != null ? String(updated.extraHourFee) : null,
   };
+}
+
+/** Seven identical daily windows — the default schedule for a simple open/close. */
+function uniformWeeklyPeriods(
+  restaurantId: string,
+  openMinute: number,
+  closeMinute: number,
+): Array<{
+  restaurantId: string;
+  dayOfWeek: number;
+  openMinute: number;
+  closeMinute: number;
+}> {
+  return Array.from({ length: 7 }, (_, dayOfWeek) => ({
+    restaurantId,
+    dayOfWeek,
+    openMinute,
+    closeMinute,
+  }));
 }
 
 export async function deleteRestaurant(restaurantId: string, callerId: string) {
@@ -767,4 +864,125 @@ export async function setRestaurantLogo(
   });
 
   return { imageUrl };
+}
+
+// ── Weekly schedule & closures ─────────────────────────────────────────────────
+
+function closureDateIso(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+export async function getRestaurantSchedule(
+  restaurantId: string,
+  callerId: string,
+) {
+  await assertRestaurantOwner(restaurantId, callerId);
+
+  const [periods, closures] = await Promise.all([
+    prisma.servicePeriod.findMany({
+      where: { restaurantId },
+      orderBy: [{ dayOfWeek: 'asc' }, { openMinute: 'asc' }],
+      select: { id: true, dayOfWeek: true, openMinute: true, closeMinute: true },
+    }),
+    prisma.restaurantClosure.findMany({
+      where: { restaurantId },
+      orderBy: { date: 'asc' },
+      select: { id: true, date: true, reason: true },
+    }),
+  ]);
+
+  return {
+    periods,
+    closures: closures.map((c) => ({
+      id: c.id,
+      date: closureDateIso(c.date),
+      reason: c.reason,
+    })),
+  };
+}
+
+export async function replaceRestaurantSchedule(
+  restaurantId: string,
+  callerId: string,
+  periods: Array<{ dayOfWeek: number; openMinute: number; closeMinute: number }>,
+) {
+  const { ownerId } = await assertRestaurantOwner(restaurantId, callerId);
+  await assertOwnerCanOperate(ownerId);
+
+  // Refresh the coarse legacy day-span columns for display. Overnight windows
+  // (closeMinute <= openMinute) count as running to end-of-day for the span.
+  let spanUpdate: { openMinutes: number; closeMinutes: number } | undefined;
+  if (periods.length > 0) {
+    const openMinutes = Math.min(...periods.map((p) => p.openMinute));
+    const closeMinutes = Math.max(
+      ...periods.map((p) => (p.closeMinute > p.openMinute ? p.closeMinute : 1440)),
+    );
+    spanUpdate = {
+      openMinutes,
+      closeMinutes: Math.max(closeMinutes, openMinutes + 1),
+    };
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.servicePeriod.deleteMany({ where: { restaurantId } });
+    if (periods.length > 0) {
+      await tx.servicePeriod.createMany({
+        data: periods.map((p) => ({
+          restaurantId,
+          dayOfWeek: p.dayOfWeek,
+          openMinute: p.openMinute,
+          closeMinute: p.closeMinute,
+        })),
+      });
+    }
+    if (spanUpdate) {
+      await tx.restaurant.update({
+        where: { id: restaurantId },
+        data: spanUpdate,
+      });
+    }
+  });
+
+  return getRestaurantSchedule(restaurantId, callerId);
+}
+
+export async function addRestaurantClosure(
+  restaurantId: string,
+  callerId: string,
+  input: { date: string; reason?: string | undefined },
+) {
+  const { ownerId } = await assertRestaurantOwner(restaurantId, callerId);
+  await assertOwnerCanOperate(ownerId);
+
+  const closure = await prisma.restaurantClosure.create({
+    data: {
+      restaurantId,
+      date: new Date(`${input.date}T00:00:00.000Z`),
+      reason: input.reason ?? null,
+    },
+    select: { id: true, date: true, reason: true },
+  });
+
+  return {
+    id: closure.id,
+    date: closureDateIso(closure.date),
+    reason: closure.reason,
+  };
+}
+
+export async function deleteRestaurantClosure(
+  restaurantId: string,
+  closureId: string,
+  callerId: string,
+) {
+  const { ownerId } = await assertRestaurantOwner(restaurantId, callerId);
+  await assertOwnerCanOperate(ownerId);
+
+  const existing = await prisma.restaurantClosure.findFirst({
+    where: { id: closureId, restaurantId },
+    select: { id: true },
+  });
+  if (!existing) throw new NotFoundError('Closure not found');
+
+  await prisma.restaurantClosure.delete({ where: { id: closureId } });
 }

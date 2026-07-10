@@ -97,7 +97,10 @@ export function LoginPage() {
 
         <div className="rounded-2xl bg-slate-800 p-8 shadow-xl">
           {loginStep.phase === 'credentials' && (
-            <form onSubmit={handleCredentials} className="flex flex-col gap-5">
+            <form
+              onSubmit={(e) => void handleCredentials(e)}
+              className="flex flex-col gap-5"
+            >
               <Input
                 label="Email"
                 type="email"
@@ -122,7 +125,10 @@ export function LoginPage() {
           )}
 
           {loginStep.phase === 'totp-verify' && (
-            <form onSubmit={handleTotpVerify} className="flex flex-col gap-5">
+            <form
+              onSubmit={(e) => void handleTotpVerify(e)}
+              className="flex flex-col gap-5"
+            >
               <div className="text-center">
                 <p className="text-sm font-medium text-slate-300">
                   Enter your authenticator code
@@ -156,7 +162,10 @@ export function LoginPage() {
           )}
 
           {loginStep.phase === 'totp-setup' && (
-            <form onSubmit={handleTotpSetup} className="flex flex-col gap-5">
+            <form
+              onSubmit={(e) => void handleTotpSetup(e)}
+              className="flex flex-col gap-5"
+            >
               <div className="text-center">
                 <p className="text-sm font-semibold text-white">
                   Set up 2-factor authentication

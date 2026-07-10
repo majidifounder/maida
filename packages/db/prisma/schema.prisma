@@ -143,6 +143,10 @@ model Restaurant {
   timezone             String      @default("UTC") @db.VarChar(64) // IANA, e.g. America/New_York
   seatingMode          SeatingMode @default(LOCKED)
   defaultDurationMins  Int         @default(90)      // fallback turn time for standard reservations
+  // Legacy "simple" service window — kept as the coarse day span for display and as the
+  // seed used to generate the per-weekday ServicePeriod rows. The reservation engine reads
+  // ServicePeriod / RestaurantClosure, falling back to these columns only when a restaurant
+  // has no ServicePeriod rows at all (belt-and-suspenders for pre-schedule data).
   openMinutes          Int         @default(660)     // service window start, minutes from local midnight
   closeMinutes         Int         @default(1380)    // service window end, minutes from local midnight
   // Informational fees — displayed to the diner, charged AT the restaurant.
@@ -153,10 +157,12 @@ model Restaurant {
   maxExtraHours Int     @default(2)                  // cap on hours beyond standard turn for CUSTOM reservations
 
   // Relations
-  tables        DiningTable[]
-  combinations  TableCombination[]
-  turnTimeRules TurnTimeRule[]
-  reservations  Reservation[]
+  tables         DiningTable[]
+  combinations   TableCombination[]
+  turnTimeRules  TurnTimeRule[]
+  reservations   Reservation[]
+  servicePeriods ServicePeriod[]
+  closures       RestaurantClosure[]
 
   @@index([ownerId])
   @@index([isActive])
@@ -164,6 +170,43 @@ model Restaurant {
   @@index([cuisine, isActive])
   // trgm index added in raw migration for name ILIKE search
   @@map("restaurants")
+}
+
+// ─── SERVICE PERIOD (weekly opening schedule) ─────────────────────────────────
+// One row per bookable window on a given weekday. A restaurant may have several
+// rows per weekday (e.g. a lunch window and a dinner window) and none at all on
+// a closed weekday. `closeMinute <= openMinute` means the window runs past local
+// midnight into the following calendar day (overnight service, e.g. 18:00–02:00).
+
+model ServicePeriod {
+  id           String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  restaurantId String     @db.Uuid
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  dayOfWeek    Int        // 0 = Sunday … 6 = Saturday (matches JS Date.getUTCDay of the calendar date)
+  openMinute   Int        // minutes from local midnight, 0–1439
+  closeMinute  Int        // 1–1440; if <= openMinute, the window continues into the next local day
+  createdAt    DateTime   @default(now())
+
+  @@index([restaurantId, dayOfWeek])
+  @@map("service_periods")
+}
+
+// ─── RESTAURANT CLOSURE (blackout dates) ──────────────────────────────────────
+// A specific local calendar day on which the restaurant accepts no new service.
+// Overnight windows that START on an open day may still run into a closure day —
+// a closure only suppresses windows that START on that date.
+
+model RestaurantClosure {
+  id           String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  restaurantId String     @db.Uuid
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  date         DateTime   @db.Date
+  reason       String?    @db.VarChar(200)
+  createdAt    DateTime   @default(now())
+
+  @@unique([restaurantId, date])
+  @@index([restaurantId, date])
+  @@map("restaurant_closures")
 }
 
 // ─── DINING TABLE (atomic physical unit) ──────────────────────────────────────
@@ -352,6 +395,10 @@ model Subscription {
   cancelAtPeriodEnd     Boolean            @default(false)
   status                SubscriptionStatus @default(ACTIVE)
   trialStartedAt        DateTime?          @db.Timestamptz
+  // Timestamp of the last Lemon Squeezy event applied to this row. Webhook events
+  // whose attributes.updated_at is older than this are ignored, so out-of-order
+  // deliveries cannot regress billing state.
+  lsUpdatedAt           DateTime?          @db.Timestamptz
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

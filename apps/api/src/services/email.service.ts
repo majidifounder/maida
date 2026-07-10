@@ -5,12 +5,13 @@ import { notifyOnce } from '../lib/notify-once.js';
 const resend = new Resend(env.RESEND_API_KEY);
 
 export interface ReservationEmailData {
-  dinerEmail: string;
+  dinerEmail: string | null; // null for staff-created walk-ins without an account
   ownerEmail: string;
   restaurantName: string;
   startsAt: string;
   partySize: number;
   reservationId: string;
+  restaurantTimezone: string; // IANA tz — emails must show the restaurant's local time
 }
 
 /** @deprecated Use ReservationEmailData */
@@ -19,7 +20,12 @@ export type BookingEmailData = ReservationEmailData & {
   bookingId?: string;
 };
 
-function fmtTime(iso: string): string {
+/**
+ * Formats a reservation instant in the RESTAURANT's local timezone with an
+ * explicit offset label. Never format reservation times in the server's tz —
+ * that shows diners the wrong hour.
+ */
+function fmtTime(iso: string, timeZone: string): string {
   return new Date(iso).toLocaleString('en-US', {
     weekday: 'long',
     year: 'numeric',
@@ -27,6 +33,8 @@ function fmtTime(iso: string): string {
     day: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
+    timeZone,
+    timeZoneName: 'short',
   });
 }
 
@@ -44,15 +52,17 @@ async function sendEmail(
 export async function sendReservationCreated(
   data: ReservationEmailData,
 ): Promise<void> {
-  const time = fmtTime(data.startsAt);
+  const time = fmtTime(data.startsAt, data.restaurantTimezone);
   const ref = reservationRef(data.reservationId);
+  const dinerEmail = data.dinerEmail;
 
-  await notifyOnce(`${data.reservationId}:created:diner`, () =>
-    sendEmail({
-      from: env.EMAIL_FROM,
-      to: data.dinerEmail,
-      subject: `Reservation confirmed — ${data.restaurantName}`,
-      html: `
+  if (dinerEmail) {
+    await notifyOnce(`${data.reservationId}:created:diner`, () =>
+      sendEmail({
+        from: env.EMAIL_FROM,
+        to: dinerEmail,
+        subject: `Reservation confirmed — ${data.restaurantName}`,
+        html: `
         <h2>Your reservation is confirmed!</h2>
         <p><strong>Restaurant:</strong> ${data.restaurantName}</p>
         <p><strong>Date &amp; time:</strong> ${time}</p>
@@ -60,8 +70,9 @@ export async function sendReservationCreated(
         <p style="color:#6b7280;font-size:13px">Reference: ${ref}</p>
         <p>We look forward to seeing you!</p>
       `,
-    }),
-  );
+      }),
+    );
+  }
 
   await notifyOnce(`${data.reservationId}:created:owner`, () =>
     sendEmail({
@@ -82,12 +93,14 @@ export async function sendReservationCreated(
 export async function sendReservationSeated(
   data: ReservationEmailData,
 ): Promise<void> {
-  const time = fmtTime(data.startsAt);
+  const time = fmtTime(data.startsAt, data.restaurantTimezone);
+  const dinerEmail = data.dinerEmail;
+  if (!dinerEmail) return;
 
   await notifyOnce(`${data.reservationId}:seated:diner`, () =>
     sendEmail({
       from: env.EMAIL_FROM,
-      to: data.dinerEmail,
+      to: dinerEmail,
       subject: `You're seated — ${data.restaurantName}`,
       html: `
         <h2>Welcome!</h2>
@@ -102,23 +115,26 @@ export async function sendReservationSeated(
 export async function sendReservationCancelledByDiner(
   data: ReservationEmailData,
 ): Promise<void> {
-  const time = fmtTime(data.startsAt);
+  const time = fmtTime(data.startsAt, data.restaurantTimezone);
   const ref = reservationRef(data.reservationId);
+  const dinerEmail = data.dinerEmail;
 
-  await notifyOnce(`${data.reservationId}:cancelled-by-diner:diner`, () =>
-    sendEmail({
-      from: env.EMAIL_FROM,
-      to: data.dinerEmail,
-      subject: `Reservation cancelled — ${data.restaurantName}`,
-      html: `
+  if (dinerEmail) {
+    await notifyOnce(`${data.reservationId}:cancelled-by-diner:diner`, () =>
+      sendEmail({
+        from: env.EMAIL_FROM,
+        to: dinerEmail,
+        subject: `Reservation cancelled — ${data.restaurantName}`,
+        html: `
         <h2>Reservation cancelled</h2>
         <p>Your cancellation has been processed.</p>
         <p><strong>Restaurant:</strong> ${data.restaurantName}</p>
         <p><strong>Original time:</strong> ${time}</p>
         <p style="color:#6b7280;font-size:13px">Reference: ${ref}</p>
       `,
-    }),
-  );
+      }),
+    );
+  }
 
   await notifyOnce(`${data.reservationId}:cancelled-by-diner:owner`, () =>
     sendEmail({
@@ -139,12 +155,14 @@ export async function sendReservationCancelledByDiner(
 export async function sendReservationCancelledByOwner(
   data: ReservationEmailData,
 ): Promise<void> {
-  const time = fmtTime(data.startsAt);
+  const time = fmtTime(data.startsAt, data.restaurantTimezone);
+  const dinerEmail = data.dinerEmail;
+  if (!dinerEmail) return;
 
   await notifyOnce(`${data.reservationId}:cancelled-by-owner:diner`, () =>
     sendEmail({
       from: env.EMAIL_FROM,
-      to: data.dinerEmail,
+      to: dinerEmail,
       subject: `Your reservation at ${data.restaurantName} has been cancelled`,
       html: `
         <h2>Reservation cancelled by restaurant</h2>

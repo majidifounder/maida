@@ -33,7 +33,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   });
 
   if (!res.ok) {
-    const errorBody = await res.json().catch(() => ({}));
+    const errorBody: unknown = await res.json().catch(() => ({}));
     if (res.status === 401) {
       setAccessToken(null);
       window.dispatchEvent(new CustomEvent('admin:unauthorized'));

@@ -1,11 +1,12 @@
 import { prisma, type Prisma } from '@restaurant/db';
+import { addLocalDays, formatLocalDate } from './timezone.js';
 import {
-  addLocalDays,
-  formatLocalDate,
-  localDayBoundsUtc,
-  zonedTimeToUtc,
-} from './timezone.js';
-import { isOpen24Hours } from './service-hours.js';
+  findContainingWindow,
+  loadRestaurantSchedule,
+  serviceWindowsForLocalDate,
+  type RestaurantSchedule,
+  type ServiceWindow,
+} from './service-schedule.js';
 
 export const AVAILABILITY_STEP_MINS = 15;
 export const MIN_RESERVATION_MINS = 15;
@@ -162,21 +163,31 @@ export function addMinutes(d: Date, mins: number): Date {
   return new Date(d.getTime() + mins * 60_000);
 }
 
-export function serviceWindowBounds(
-  date: string,
-  openMinutes: number,
-  closeMinutes: number,
-  timeZone = 'UTC',
-): { windowStart: Date; windowEnd: Date } {
-  if (isOpen24Hours(openMinutes, closeMinutes)) {
-    const bounds = localDayBoundsUtc(date, timeZone);
-    return { windowStart: bounds.start, windowEnd: bounds.end };
-  }
+export type RestaurantScheduleContext = {
+  id: string;
+  seatingMode: 'LOCKED' | 'FLEXIBLE';
+  defaultDurationMins: number;
+  openMinutes: number;
+  closeMinutes: number;
+  timezone: string;
+};
 
-  return {
-    windowStart: zonedTimeToUtc(date, openMinutes, timeZone),
-    windowEnd: zonedTimeToUtc(date, closeMinutes, timeZone),
-  };
+async function resolveSchedule(
+  restaurant: RestaurantScheduleContext,
+  schedule: RestaurantSchedule | undefined,
+  db: DbClient = prisma,
+): Promise<RestaurantSchedule> {
+  return (
+    schedule ??
+    (await loadRestaurantSchedule(
+      restaurant.id,
+      {
+        openMinutes: restaurant.openMinutes,
+        closeMinutes: restaurant.closeMinutes,
+      },
+      db,
+    ))
+  );
 }
 
 function roundUpToStep(d: Date, stepMins: number): Date {
@@ -184,88 +195,94 @@ function roundUpToStep(d: Date, stepMins: number): Date {
   return new Date(Math.ceil(d.getTime() / stepMs) * stepMs);
 }
 
+/**
+ * Earliest bookable start on/after `requestedStart`, scanning the next two weeks
+ * of the restaurant's weekly schedule (to skip closed days). One occupancy query
+ * per open day, walked in memory — not one query per candidate slot.
+ */
 export async function findNextAvailableStart(
-  restaurant: {
-    id: string;
-    seatingMode: 'LOCKED' | 'FLEXIBLE';
-    defaultDurationMins: number;
-    openMinutes: number;
-    closeMinutes: number;
-    timezone: string;
-  },
+  restaurant: RestaurantScheduleContext,
   partySize: number,
   requestedStart: Date,
   customDurationMins?: number,
+  schedule?: RestaurantSchedule,
 ): Promise<Date | null> {
   const units = await loadBookableUnits(restaurant.id, restaurant.seatingMode);
   if (units.length === 0) return null;
 
+  const sched = await resolveSchedule(restaurant, schedule);
+  const durationMins =
+    customDurationMins ??
+    (await resolveDurationMins(
+      restaurant.id,
+      partySize,
+      restaurant.defaultDurationMins,
+    ));
+
   const baseLocalDate = formatLocalDate(requestedStart, restaurant.timezone);
 
-  for (let dayOffset = 0; dayOffset < 7; dayOffset++) {
+  for (let dayOffset = 0; dayOffset < SUGGESTION_SCAN_DAYS; dayOffset++) {
     const dateStr = addLocalDays(baseLocalDate, dayOffset, restaurant.timezone);
-    const bounds = serviceWindowBounds(
+    const windows = serviceWindowsForLocalDate(
       dateStr,
-      restaurant.openMinutes,
-      restaurant.closeMinutes,
       restaurant.timezone,
+      sched,
+    );
+    if (windows.length === 0) continue;
+
+    const occupancy = await loadDayOccupancy(
+      restaurant.id,
+      windows[0]!.start,
+      windows[windows.length - 1]!.end,
     );
 
-    let cursor =
-      dayOffset === 0
-        ? new Date(
-            Math.max(requestedStart.getTime(), bounds.windowStart.getTime()),
-          )
-        : bounds.windowStart;
+    for (const w of windows) {
+      let cursor =
+        dayOffset === 0
+          ? new Date(Math.max(requestedStart.getTime(), w.start.getTime()))
+          : w.start;
+      cursor = roundUpToStep(cursor, AVAILABILITY_STEP_MINS);
 
-    cursor = roundUpToStep(cursor, AVAILABILITY_STEP_MINS);
+      while (cursor < w.end) {
+        const endsAt = addMinutes(cursor, durationMins);
+        if (endsAt > w.end) break;
 
-    while (cursor < bounds.windowEnd) {
-      const durationMins =
-        customDurationMins ??
-        (await resolveDurationMins(
-          restaurant.id,
+        const unit = findBestFitUnitInMemory(
+          units,
           partySize,
-          restaurant.defaultDurationMins,
-        ));
-      const endsAt = addMinutes(cursor, durationMins);
-      if (endsAt > bounds.windowEnd) break;
+          cursor,
+          endsAt,
+          occupancy,
+        );
+        if (unit) return cursor;
 
-      const unit = await findBestFitUnit(units, partySize, cursor, endsAt);
-      if (unit) return cursor;
-
-      cursor = addMinutes(cursor, AVAILABILITY_STEP_MINS);
+        cursor = addMinutes(cursor, AVAILABILITY_STEP_MINS);
+      }
     }
   }
 
   return null;
 }
 
+const SUGGESTION_SCAN_DAYS = 14;
+
 export async function computeAvailabilityTimes(
-  restaurant: {
-    id: string;
-    seatingMode: 'LOCKED' | 'FLEXIBLE';
-    defaultDurationMins: number;
-    openMinutes: number;
-    closeMinutes: number;
-    timezone: string;
-  },
+  restaurant: RestaurantScheduleContext,
   date: string,
   partySize: number,
+  schedule?: RestaurantSchedule,
 ): Promise<Array<{ startsAt: string; endsAt: string; durationMins: number }>> {
   const units = await loadBookableUnits(restaurant.id, restaurant.seatingMode);
   if (units.length === 0) return [];
 
-  const bounds = serviceWindowBounds(
-    date,
-    restaurant.openMinutes,
-    restaurant.closeMinutes,
-    restaurant.timezone,
-  );
+  const sched = await resolveSchedule(restaurant, schedule);
+  const windows = serviceWindowsForLocalDate(date, restaurant.timezone, sched);
+  if (windows.length === 0) return [];
+
   const occupancy = await loadDayOccupancy(
     restaurant.id,
-    bounds.windowStart,
-    bounds.windowEnd,
+    windows[0]!.start,
+    windows[windows.length - 1]!.end,
   );
 
   const durationMins = await resolveDurationMins(
@@ -281,36 +298,48 @@ export async function computeAvailabilityTimes(
     durationMins: number;
   }> = [];
 
-  let cursor = roundUpToStep(bounds.windowStart, AVAILABILITY_STEP_MINS);
+  for (const w of windows) {
+    let cursor = roundUpToStep(w.start, AVAILABILITY_STEP_MINS);
 
-  while (cursor < bounds.windowEnd) {
-    if (cursor.getTime() <= now) {
+    while (cursor < w.end) {
+      if (cursor.getTime() <= now) {
+        cursor = addMinutes(cursor, AVAILABILITY_STEP_MINS);
+        continue;
+      }
+
+      const endsAt = addMinutes(cursor, durationMins);
+      if (endsAt > w.end) break;
+
+      const unit = findBestFitUnitInMemory(
+        units,
+        partySize,
+        cursor,
+        endsAt,
+        occupancy,
+      );
+      if (unit) {
+        results.push({
+          startsAt: cursor.toISOString(),
+          endsAt: endsAt.toISOString(),
+          durationMins,
+        });
+      }
+
       cursor = addMinutes(cursor, AVAILABILITY_STEP_MINS);
-      continue;
     }
-
-    const endsAt = addMinutes(cursor, durationMins);
-    if (endsAt > bounds.windowEnd) break;
-
-    const unit = findBestFitUnitInMemory(
-      units,
-      partySize,
-      cursor,
-      endsAt,
-      occupancy,
-    );
-    if (unit) {
-      results.push({
-        startsAt: cursor.toISOString(),
-        endsAt: endsAt.toISOString(),
-        durationMins,
-      });
-    }
-
-    cursor = addMinutes(cursor, AVAILABILITY_STEP_MINS);
   }
 
   return results;
+}
+
+/** UTC [start, end) windows the diner-facing availability endpoint should surface. */
+export async function serviceWindowsForDate(
+  restaurant: RestaurantScheduleContext,
+  date: string,
+  schedule?: RestaurantSchedule,
+): Promise<ServiceWindow[]> {
+  const sched = await resolveSchedule(restaurant, schedule);
+  return serviceWindowsForLocalDate(date, restaurant.timezone, sched);
 }
 
 export function isExclusionViolation(err: unknown): boolean {
@@ -462,6 +491,7 @@ export async function resolveCustomReservationWindow(
   startsAt: Date,
   mode: CustomReservationMode,
   db: DbClient = prisma,
+  schedule?: RestaurantSchedule,
 ): Promise<{
   tableIds: string[];
   endsAt: Date;
@@ -479,13 +509,17 @@ export async function resolveCustomReservationWindow(
     maxCustomDurationMins(standardDurationMins, restaurant.maxExtraHours),
   );
 
-  const dateStr = formatLocalDate(startsAt, restaurant.timezone);
-  const { windowEnd: serviceCloseAt } = serviceWindowBounds(
-    dateStr,
-    restaurant.openMinutes,
-    restaurant.closeMinutes,
+  const sched = await resolveSchedule(restaurant, schedule, db);
+  // Until-close is bounded by the close of the service window the booking starts
+  // in. A probe interval is used because until-close resolves its own end time.
+  const probeWindow = findContainingWindow(
+    startsAt,
+    addMinutes(startsAt, MIN_RESERVATION_MINS),
     restaurant.timezone,
+    sched,
   );
+  if (!probeWindow) return null;
+  const serviceCloseAt = probeWindow.end;
 
   const units = await loadBookableUnits(restaurant.id, restaurant.seatingMode, db);
   if (units.length === 0) return null;

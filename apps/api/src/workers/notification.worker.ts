@@ -13,6 +13,7 @@ import {
   sendReservationCancelledByOwner,
   type ReservationEmailData,
 } from '../services/email.service.js';
+import { reportCriticalError } from '../lib/alert.js';
 
 async function fetchEmailData(
   reservationId: string,
@@ -27,6 +28,7 @@ async function fetchEmailData(
       restaurant: {
         select: {
           name: true,
+          timezone: true,
           owner: { select: { email: true } },
         },
       },
@@ -37,9 +39,10 @@ async function fetchEmailData(
     reservationId: reservation.id,
     partySize: reservation.partySize,
     startsAt: reservation.startsAt.toISOString(),
-    dinerEmail: reservation.diner?.email ?? 'guest@walk-in.local',
+    dinerEmail: reservation.diner?.email ?? null,
     ownerEmail: reservation.restaurant.owner.email,
     restaurantName: reservation.restaurant.name,
+    restaurantTimezone: reservation.restaurant.timezone,
   };
 }
 
@@ -98,6 +101,21 @@ export function startNotificationWorker(): () => Promise<void> {
       { jobId: job?.id, eventType: job?.data.eventType, err },
       '[NotificationWorker] job failed',
     );
+    // Alert only once the job has exhausted its retries — a dead notification is
+    // operator-actionable (a diner/owner never got their email).
+    const attempts = job?.opts.attempts ?? 1;
+    if (job && job.attemptsMade >= attempts) {
+      void reportCriticalError({
+        source: 'notification-worker',
+        message: 'Notification job failed after all retries',
+        err,
+        detail: {
+          jobId: job.id,
+          eventType: job.data.eventType,
+          reservationId: job.data.reservationId,
+        },
+      });
+    }
   });
 
   worker.on('error', (err) => {

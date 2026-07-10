@@ -25,9 +25,21 @@ const authenticatePlugin: FastifyPluginAsync = async (fastify) => {
 
       const token = authHeader.slice(7);
 
+      // Step 1 — verify the token itself. A failure here means the token is
+      // genuinely bad or expired → 401.
+      let payload: JWTPayload;
       try {
-        const payload = verifyAccessToken(token);
+        payload = verifyAccessToken(token);
+      } catch {
+        return reply.code(401).send({ error: 'Invalid or expired token' });
+      }
 
+      // Step 2 — check revocation (Redis) and account status (DB). If a BACKING
+      // STORE is unavailable, do NOT report 401: a Redis/DB blip would otherwise
+      // log out every authenticated user at once and the clients would tear down
+      // their sessions. Return 503 so clients retry the same request. Access is
+      // never granted on infrastructure failure.
+      try {
         const redis = await ensureRedisConnected(1_500);
         const revoked = await redis.get(`deny:${payload.jti}`);
         if (revoked) {
@@ -43,11 +55,17 @@ const authenticatePlugin: FastifyPluginAsync = async (fastify) => {
             .code(401)
             .send({ error: 'Account has been deactivated' });
         }
-
-        request.user = payload;
-      } catch {
-        return reply.code(401).send({ error: 'Invalid or expired token' });
+      } catch (err) {
+        request.log.error(
+          { err },
+          '[auth] revocation/account check unavailable — returning 503',
+        );
+        return reply.code(503).send({
+          error: 'Service temporarily unavailable. Please retry.',
+        });
       }
+
+      request.user = payload;
     },
   );
 

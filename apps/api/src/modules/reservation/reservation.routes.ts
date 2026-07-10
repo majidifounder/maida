@@ -11,6 +11,7 @@ import {
 } from './reservation.schema.js';
 import * as ReservationService from './reservation.service.js';
 import { handleRouteError } from '../../lib/handle-route-error.js';
+import { getRealIp } from '../../lib/cloudflare.js';
 
 export async function reservationRoutes(
   fastify: FastifyInstance,
@@ -19,7 +20,26 @@ export async function reservationRoutes(
     preHandler: [fastify.authenticate, fastify.requireRole('diner')],
   };
 
-  fastify.post('/reservations', dinerHooks, async (request, reply) => {
+  fastify.post(
+    '/reservations',
+    {
+      ...dinerHooks,
+      config: {
+        rateLimit: {
+          max: 12,
+          timeWindow: '1 minute',
+          keyGenerator: (req) =>
+            `reservation-create:${getRealIp(req)}:${req.user?.sub ?? 'anon'}`,
+          errorResponseBuilder: () => ({
+            statusCode: 429,
+            error: 'Too Many Requests',
+            message: 'Too many booking attempts. Please wait a moment and try again.',
+            retryAfter: 60,
+          }),
+        },
+      },
+    },
+    async (request, reply) => {
     const body = CreateReservationSchema.safeParse(request.body);
     if (!body.success) {
       return reply

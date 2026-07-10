@@ -221,7 +221,16 @@ export async function refreshTokens(
       throw new UnauthorizedError('Account has been deactivated');
     }
 
-    await tx.refreshToken.delete({ where: { id: existing.id } });
+    // Race-safe rotation: two concurrent refreshes with the same cookie (multiple
+    // tabs, or a mobile client retrying over a flaky network) must not both
+    // proceed. The first deletes the row; the loser's deleteMany matches nothing
+    // and gets a clean 401 instead of a Prisma P2025 → 500 and a wrecked session.
+    const rotated = await tx.refreshToken.deleteMany({
+      where: { id: existing.id },
+    });
+    if (rotated.count === 0) {
+      throw new UnauthorizedError('Refresh token already used');
+    }
 
     const role = await getUserRole(existing.userId, tx);
     const accessResult = signAccessToken({ sub: existing.userId, role });
