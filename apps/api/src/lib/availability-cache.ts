@@ -41,6 +41,30 @@ export async function writeAvailabilityCache(
     .exec();
 }
 
+/**
+ * Batch cache read for search: one MGET round-trip for N restaurants instead
+ * of N sequential GETs. Returns the raw payload (or null) per restaurant id,
+ * in input order. Any Redis failure degrades to "all misses" — the caller
+ * computes; the cache never gates correctness.
+ */
+export async function readAvailabilityCacheBatch(
+  restaurantIds: string[],
+  date: string,
+  partySize: number,
+): Promise<Array<string | null>> {
+  if (restaurantIds.length === 0) return [];
+  try {
+    const redis = getRedisClient();
+    const keys = restaurantIds.map((id) =>
+      availabilityCacheKey(id, date, partySize),
+    );
+    return await redis.mget(...keys);
+  } catch (err) {
+    logger.warn({ err }, '[Redis] batch availability read failed (non-fatal)');
+    return restaurantIds.map(() => null);
+  }
+}
+
 /** Clears every tracked party-size cache entry for a restaurant date. */
 export async function invalidateAvailabilityCacheForDate(
   restaurantId: string,

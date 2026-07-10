@@ -6,6 +6,7 @@ import { validateLogoBuffer } from '../../lib/image-validation.js';
 import { isLogoUploadAvailable, uploadRestaurantLogo as putLogoInR2 } from '../../lib/r2-storage.js';
 import {
   assertOwnerCanOperate,
+  canOwnerOperateFromSubscription,
   getEffectiveLimitsForOwner,
   resolveOwnerBillingState,
 } from '../subscription/subscription.service.js';
@@ -15,6 +16,7 @@ import {
 } from '../../lib/reservation-engine.js';
 import {
   loadRestaurantSchedule,
+  loadRestaurantSchedules,
   serviceWindowsForLocalDate,
 } from '../../lib/service-schedule.js';
 import type {
@@ -29,7 +31,11 @@ import type {
   UpdateTableInput,
 } from './restaurant.schema.js';
 
-import { availabilityCacheKey, writeAvailabilityCache } from '../../lib/availability-cache.js';
+import {
+  availabilityCacheKey,
+  readAvailabilityCacheBatch,
+  writeAvailabilityCache,
+} from '../../lib/availability-cache.js';
 
 const AVAILABILITY_CACHE_TTL = 300;
 
@@ -174,6 +180,164 @@ async function assertTurnTimeRulePlanLimit(
   }
 }
 
+/**
+ * Search-with-availability candidate cap. Beyond this we'd rather ship a
+ * precomputed availability index than fan out further — revisit when a single
+ * market approaches this many candidate restaurants (documented in
+ * docs/ARCHITECTURE-AVAILABILITY.md).
+ */
+const SEARCH_AVAILABILITY_CANDIDATES = 100;
+/** Parallel availability computations for cache misses — bounds pool usage. */
+const SEARCH_COMPUTE_CONCURRENCY = 6;
+
+/** Minimal dependency-free concurrency limiter (p-limit shape). */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    async () => {
+      while (next < items.length) {
+        const i = next++;
+        results[i] = await fn(items[i]!);
+      }
+    },
+  );
+  await Promise.all(workers);
+  return results;
+}
+
+/**
+ * Restaurant ids with ≥1 bookable slot on `date` for `partySize`.
+ *
+ * The old implementation ran the full availability engine for up to 100
+ * restaurants in parallel per anonymous request (~5 queries each). This
+ * version funnels candidates through three near-free gates before any engine
+ * work, then serves the survivors cache-first:
+ *
+ *   1. SQL: active, has tables, matches q/city/cuisine (q was previously NOT
+ *      applied here — availability was computed for restaurants the search
+ *      would never return, and matches beyond the cap were silently dropped).
+ *   2. Billing (1 batched query + pure math): owners who can't operate are
+ *      excluded — search must never advertise a restaurant that will refuse
+ *      the booking.
+ *   3. Schedule (2 batched queries + pure math): closed that day ⇒ out. On a
+ *      Monday this alone typically halves the candidate set for free.
+ *   4. Shared availability cache (ONE Redis MGET round-trip): the same keys
+ *      the detail endpoint reads and mutations invalidate — search hits are
+ *      exactly as fresh as detail-page hits.
+ *   5. Misses only: engine computation at bounded concurrency, writing back
+ *      to the shared cache — every cold search warms the path for both the
+ *      next search AND the detail pages diners click through to.
+ *
+ * Correctness: this filter is advisory (which restaurants to SHOW). The
+ * engine + DB exclusion constraint remain the sole authority at booking time.
+ */
+async function findAvailableRestaurantIds(
+  filters: { q?: string; city?: string; cuisine?: SearchRestaurantsInput['cuisine'] },
+  date: string,
+  partySize: number,
+): Promise<string[]> {
+  const candidates = await prisma.restaurant.findMany({
+    where: {
+      isActive: true,
+      deletedAt: null,
+      tables: { some: { isActive: true } },
+      ...(filters.q && {
+        name: { contains: filters.q, mode: 'insensitive' as const },
+      }),
+      ...(filters.city && {
+        city: { contains: filters.city, mode: 'insensitive' as const },
+      }),
+      ...(filters.cuisine && { cuisine: filters.cuisine }),
+    },
+    select: {
+      id: true,
+      ownerId: true,
+      seatingMode: true,
+      defaultDurationMins: true,
+      openMinutes: true,
+      closeMinutes: true,
+      timezone: true,
+      owner: {
+        select: {
+          createdAt: true,
+          subscription: {
+            select: { status: true, trialStartedAt: true, createdAt: true },
+          },
+        },
+      },
+    },
+    take: SEARCH_AVAILABILITY_CANDIDATES,
+  });
+  if (candidates.length === 0) return [];
+
+  // Gate 2 — billing, pure math on the joined subscription row.
+  const operable = candidates.filter((r) =>
+    canOwnerOperateFromSubscription(r.owner.subscription, r.owner.createdAt),
+  );
+  if (operable.length === 0) return [];
+
+  // Gate 3 — open that day at all? Two batched queries, then pure math.
+  const schedules = await loadRestaurantSchedules(operable);
+  const open = operable.filter(
+    (r) =>
+      serviceWindowsForLocalDate(date, r.timezone, schedules.get(r.id)!)
+        .length > 0,
+  );
+  if (open.length === 0) return [];
+
+  // Gate 4 — shared cache, one MGET round-trip.
+  const cached = await readAvailabilityCacheBatch(
+    open.map((r) => r.id),
+    date,
+    partySize,
+  );
+
+  const available: string[] = [];
+  const misses: typeof open = [];
+  open.forEach((r, i) => {
+    const raw = cached[i];
+    if (raw == null) {
+      misses.push(r);
+      return;
+    }
+    try {
+      const parsed = JSON.parse(raw) as { times: unknown[] };
+      if (parsed.times.length > 0) available.push(r.id);
+    } catch {
+      misses.push(r); // corrupt entry — recompute
+    }
+  });
+
+  // Gate 5 — engine work for misses only, bounded, cache-warming.
+  await mapWithConcurrency(misses, SEARCH_COMPUTE_CONCURRENCY, async (r) => {
+    const times = await computeAvailabilityTimes(
+      r,
+      date,
+      partySize,
+      schedules.get(r.id),
+    );
+    if (times.length > 0) available.push(r.id);
+    try {
+      await writeAvailabilityCache(
+        r.id,
+        date,
+        partySize,
+        JSON.stringify({ times }),
+      );
+    } catch {
+      /* cache write is best-effort */
+    }
+  });
+
+  return available;
+}
+
 export async function searchRestaurants(input: SearchRestaurantsInput) {
   const { q, city, cuisine, date, partySize, page, limit } = input;
   const offset = (page - 1) * limit;
@@ -181,33 +345,15 @@ export async function searchRestaurants(input: SearchRestaurantsInput) {
   let availableRestaurantIds: string[] | undefined;
 
   if (date && partySize) {
-    const restaurantsWithTables = await prisma.restaurant.findMany({
-      where: {
-        isActive: true,
-        deletedAt: null,
-        tables: { some: { isActive: true } },
-        ...(city && { city: { contains: city, mode: 'insensitive' as const } }),
-        ...(cuisine && { cuisine }),
+    availableRestaurantIds = await findAvailableRestaurantIds(
+      {
+        ...(q !== undefined && { q }),
+        ...(city !== undefined && { city }),
+        ...(cuisine !== undefined && { cuisine }),
       },
-      select: {
-        id: true,
-        seatingMode: true,
-        defaultDurationMins: true,
-        openMinutes: true,
-        closeMinutes: true,
-        timezone: true,
-      },
-      take: 100,
-    });
-
-    const available: string[] = [];
-    await Promise.all(
-      restaurantsWithTables.map(async (r) => {
-        const times = await computeAvailabilityTimes(r, date, partySize);
-        if (times.length > 0) available.push(r.id);
-      }),
+      date,
+      partySize,
     );
-    availableRestaurantIds = available;
 
     if (availableRestaurantIds.length === 0) {
       return { restaurants: [], total: 0, page, limit };

@@ -69,6 +69,75 @@ export async function loadRestaurantSchedule(
 }
 
 /**
+ * Batch variant for search: schedules for N restaurants in exactly TWO queries
+ * (periods + closures, `restaurantId IN (...)`), grouped in memory. Restaurants
+ * with no ServicePeriod rows fall back to their legacy single window, same as
+ * loadRestaurantSchedule. Order-independent — returns a Map by restaurant id.
+ */
+export async function loadRestaurantSchedules(
+  restaurants: ReadonlyArray<{
+    id: string;
+    openMinutes: number;
+    closeMinutes: number;
+  }>,
+  db: DbClient = prisma,
+): Promise<Map<string, RestaurantSchedule>> {
+  const ids = restaurants.map((r) => r.id);
+  if (ids.length === 0) return new Map();
+
+  const [periods, closures] = await Promise.all([
+    db.servicePeriod.findMany({
+      where: { restaurantId: { in: ids } },
+      select: {
+        restaurantId: true,
+        dayOfWeek: true,
+        openMinute: true,
+        closeMinute: true,
+      },
+    }),
+    db.restaurantClosure.findMany({
+      where: { restaurantId: { in: ids } },
+      select: { restaurantId: true, date: true },
+    }),
+  ]);
+
+  const periodsByRestaurant = new Map<string, ServicePeriodRow[]>();
+  for (const p of periods) {
+    const list = periodsByRestaurant.get(p.restaurantId) ?? [];
+    list.push({
+      dayOfWeek: p.dayOfWeek,
+      openMinute: p.openMinute,
+      closeMinute: p.closeMinute,
+    });
+    periodsByRestaurant.set(p.restaurantId, list);
+  }
+
+  const closuresByRestaurant = new Map<string, Set<string>>();
+  for (const c of closures) {
+    const set = closuresByRestaurant.get(c.restaurantId) ?? new Set<string>();
+    set.add(dateColumnToIso(c.date));
+    closuresByRestaurant.set(c.restaurantId, set);
+  }
+
+  const result = new Map<string, RestaurantSchedule>();
+  for (const r of restaurants) {
+    const rows = periodsByRestaurant.get(r.id);
+    result.set(r.id, {
+      periods:
+        rows && rows.length > 0
+          ? rows
+          : Array.from({ length: 7 }, (_, dayOfWeek) => ({
+              dayOfWeek,
+              openMinute: r.openMinutes,
+              closeMinute: r.closeMinutes,
+            })),
+      closureDates: closuresByRestaurant.get(r.id) ?? new Set(),
+    });
+  }
+  return result;
+}
+
+/**
  * Every service window that STARTS on the given local calendar date, as UTC
  * [start, end) ranges. Windows whose closeMinute is <= openMinute run past local
  * midnight into the following day. A closure date yields no windows.
