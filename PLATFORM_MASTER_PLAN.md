@@ -1,6 +1,16 @@
 # PLATFORM MASTER PLAN — Maida
 
-*Written 2026-07-10, derived entirely from source code in this repository (including the uncommitted "Phase 17" working tree). File-level system documentation lives in [PLATFORM_REVIEW.md](PLATFORM_REVIEW.md); this document assumes that baseline and goes further: it judges the business, the product, and the architecture, and lays out the path to market leadership. Nothing here defers to existing decisions.*
+*Written 2026-07-10, derived entirely from source code in this repository (including the then-uncommitted "Phase 17" working tree). File-level system documentation lives in [PLATFORM_REVIEW.md](PLATFORM_REVIEW.md); this document assumes that baseline and goes further: it judges the business, the product, and the architecture, and lays out the path to market leadership. Nothing here defers to existing decisions.*
+
+> **Execution log (updated 2026-07-10, same day):** Phase A is largely done and committed to `main`:
+> **R1** Phase 17 committed; `lsUpdatedAt` webhook ordering guard wired (transactional, stale events dropped, test-covered); admin plan override now sets `status: ACTIVE` (comps actually work).
+> **R2** New `@restaurant/api-client` workspace package (single-flight refresh, 401→refresh→replay, proactive refresh + focus recovery, session-death only on server rejection; 14 unit tests). All three SPAs consume it via their old import paths; the dashboard WebSocket reconnects with a fresh token on close 4001. **The 15-minute session death is fixed.**
+> **R3** WeeklySchedulePanel (per-day multi-window editor, overnight, closures) shipped in the dashboard; config panel no longer sends open/close (schedule-wipe footgun closed); server rejects overlapping same-day windows; diner app consumes `serviceWindows[]`, `bookable`/`notice`, and the authoritative `offersCustomReservations` flag; until-close now caps at the *containing* window on split-service days.
+> **R5** CI runs the full integration suite against ephemeral Postgres 16 + Redis 7 with migrations and generated keys.
+> **R6** Maintenance worker (BullMQ schedulers): reservation status reconciliation + hold release every 5 min (keeps the partial GiST index small), daily refresh-token purge and audit-log retention (`AUDIT_LOG_RETENTION_DAYS`). Adjacent-day availability-cache invalidation fixed.
+> **R7 (part)** Day-of reminder emails (24h/2h lead, cancel-safe, ICS calendar attachment on confirmations). *Email verification at signup is still open.*
+> **Still open in Phase A→B:** email verification (R7b), pricing restructure decision (R8), dashboard service view (R4 — next major build), search fan-out (R15), CF IP trust, pgbouncer enforcement.
+> **Operator action required:** the new migration is not yet applied to the dev database — run `pnpm db:migrate` (it was permission-gated for the agent). The API integration suite needs it locally; CI is self-contained.
 
 ---
 
