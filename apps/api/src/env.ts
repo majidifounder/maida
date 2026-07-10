@@ -44,6 +44,9 @@ const EnvSchema = z.object({
   // Optional webhook (e.g. Slack Incoming Webhook) that critical alerts POST to.
   // When unset, alerts are logged at error level only.
   ALERT_WEBHOOK_URL: z.string().url().optional(),
+  // Audit log retention. Rows older than this are pruned by the maintenance
+  // worker. Minimum 30 days — the audit trail is a compliance surface.
+  AUDIT_LOG_RETENTION_DAYS: z.coerce.number().int().min(30).default(365),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

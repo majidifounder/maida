@@ -27,6 +27,7 @@ import multipart from '@fastify/multipart';
 import { MAX_LOGO_BYTES } from './lib/image-validation.js';
 import { feedbackRoutes } from './modules/feedback/feedback.routes.js';
 import { startNotificationWorker } from './workers/notification.worker.js';
+import { startMaintenanceWorker } from './workers/maintenance.worker.js';
 import { AppError, ConflictError, UnprocessableError } from './errors/index.js';
 import { mapPrismaError } from './lib/handle-route-error.js';
 import { registerLocalLogoRoutes } from './lib/local-logo-routes.js';
@@ -298,10 +299,12 @@ async function buildServer() {
 async function start() {
   const server = await buildServer();
   let stopWorker: (() => Promise<void>) | null = null;
+  let stopMaintenance: (() => Promise<void>) | null = null;
 
   const shutdown = async (signal: string) => {
     logger.info(`Received ${signal}, shutting down gracefully…`);
     if (stopWorker) await stopWorker();
+    if (stopMaintenance) await stopMaintenance();
     await server.close();
     process.exit(0);
   };
@@ -329,6 +332,7 @@ async function start() {
     await server.listen({ port: env.PORT, host: '0.0.0.0' });
     if (env.RUN_WORKER_IN_PROCESS) {
       stopWorker = startNotificationWorker();
+      stopMaintenance = startMaintenanceWorker();
       logger.info('[NotificationWorker] running in-process (RUN_WORKER_IN_PROCESS=true)');
     } else {
       logger.info(
@@ -338,6 +342,7 @@ async function start() {
     logger.info(`✅ API server listening on port ${env.PORT}`);
   } catch (err) {
     if (stopWorker) await stopWorker();
+    if (stopMaintenance) await stopMaintenance();
     server.log.error(err);
     process.exit(1);
   }

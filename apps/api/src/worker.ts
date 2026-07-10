@@ -1,6 +1,7 @@
 import { logger } from './lib/logger.js';
 import { warmupStores } from './lib/store-warmup.js';
 import { startNotificationWorker } from './workers/notification.worker.js';
+import { startMaintenanceWorker } from './workers/maintenance.worker.js';
 import { reportCriticalError } from './lib/alert.js';
 import { prisma } from '@restaurant/db';
 
@@ -16,11 +17,13 @@ import { prisma } from '@restaurant/db';
 async function start(): Promise<void> {
   await warmupStores();
   const stopWorker = startNotificationWorker();
-  logger.info('✅ Notification worker process started');
+  const stopMaintenance = startMaintenanceWorker();
+  logger.info('✅ Notification + maintenance worker process started');
 
   const shutdown = async (signal: string) => {
     logger.info(`Received ${signal}, shutting down worker…`);
     await stopWorker();
+    await stopMaintenance();
     await prisma.$disconnect().catch(() => {});
     process.exit(0);
   };
