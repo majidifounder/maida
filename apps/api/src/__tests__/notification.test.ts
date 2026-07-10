@@ -78,6 +78,7 @@ const MOCK_DB_RESERVATION = {
   diner: { email: 'diner@example.com' },
   restaurant: {
     name: 'La Bella',
+    timezone: 'Europe/Paris',
     owner: { email: 'owner@labella.com' },
   },
 };
@@ -89,6 +90,7 @@ const BASE_EMAIL_DATA: ReservationEmailData = {
   dinerEmail: MOCK_DB_RESERVATION.diner.email,
   ownerEmail: MOCK_DB_RESERVATION.restaurant.owner.email,
   restaurantName: MOCK_DB_RESERVATION.restaurant.name,
+  restaurantTimezone: MOCK_DB_RESERVATION.restaurant.timezone,
 };
 
 function emailCalls(): Array<{ to: string; subject: string; html: string }> {

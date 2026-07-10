@@ -34,6 +34,16 @@ const EnvSchema = z.object({
   R2_SECRET_ACCESS_KEY: z.string().min(1).optional(),
   R2_BUCKET_NAME: z.string().min(1).optional(),
   R2_PUBLIC_URL: z.string().url().optional(),
+  // Run the BullMQ notification worker inside the API process. Set to 'false' in
+  // production to run it as a separate process (pnpm --filter @restaurant/api worker),
+  // so an email backlog or worker crash cannot take the API down and vice versa.
+  RUN_WORKER_IN_PROCESS: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+  // Optional webhook (e.g. Slack Incoming Webhook) that critical alerts POST to.
+  // When unset, alerts are logged at error level only.
+  ALERT_WEBHOOK_URL: z.string().url().optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

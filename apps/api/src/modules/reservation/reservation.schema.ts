@@ -59,15 +59,32 @@ export const ListRestaurantReservationsQuerySchema =
       .optional(),
   });
 
-export const StaffCreateReservationSchema = z.object({
-  partySize: z.number().int().min(1).max(50),
-  startsAt: z.string().datetime(),
-  guestName: z.string().min(1).max(120),
-  reservationType: z.enum(['STANDARD', 'CUSTOM']).default('STANDARD'),
-  durationMins: z.number().int().min(15).max(720).optional(),
-  notes: z.string().max(500).optional(),
-  dinerId: z.string().uuid().optional(),
-});
+export const StaffCreateReservationSchema = z
+  .object({
+    partySize: z.number().int().min(1).max(50),
+    startsAt: z.string().datetime(),
+    guestName: z.string().min(1).max(120),
+    reservationType: z.enum(['STANDARD', 'CUSTOM']).default('STANDARD'),
+    durationMins: z.number().int().min(15).max(720).optional(),
+    notes: z.string().max(500).optional(),
+    dinerId: z.string().uuid().optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.reservationType === 'STANDARD' && data.durationMins !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Standard reservations cannot include a custom duration.',
+        path: ['durationMins'],
+      });
+    }
+    if (data.reservationType === 'CUSTOM' && data.durationMins === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Custom staff reservations require durationMins.',
+        path: ['durationMins'],
+      });
+    }
+  });
 
 export const WalkInSchema = z.object({
   partySize: z.number().int().min(1).max(50),

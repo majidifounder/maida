@@ -27,9 +27,11 @@ import multipart from '@fastify/multipart';
 import { MAX_LOGO_BYTES } from './lib/image-validation.js';
 import { feedbackRoutes } from './modules/feedback/feedback.routes.js';
 import { startNotificationWorker } from './workers/notification.worker.js';
-import { AppError } from './errors/index.js';
+import { AppError, ConflictError, UnprocessableError } from './errors/index.js';
+import { mapPrismaError } from './lib/handle-route-error.js';
 import { registerLocalLogoRoutes } from './lib/local-logo-routes.js';
 import { warmupStores } from './lib/store-warmup.js';
+import { reportCriticalError } from './lib/alert.js';
 
 const BLOCKED_UA_PATTERNS = [
   /sqlmap/i,
@@ -263,10 +265,17 @@ async function buildServer() {
   });
 
   fastify.setErrorHandler((error: unknown, _request, reply) => {
-    if (error instanceof AppError) {
-      return reply.code(error.statusCode).send({
-        error: error.message,
-        code: error.code,
+    const appError = error instanceof AppError ? error : mapPrismaError(error);
+    if (appError) {
+      return reply.code(appError.statusCode).send({
+        error: appError.message,
+        code: appError.code,
+        ...(appError instanceof ConflictError && appError.details
+          ? appError.details
+          : {}),
+        ...(appError instanceof UnprocessableError && appError.details
+          ? appError.details
+          : {}),
       });
     }
 
@@ -300,10 +309,32 @@ async function start() {
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
   process.on('SIGINT', () => void shutdown('SIGINT'));
 
+  process.on('unhandledRejection', (reason) => {
+    void reportCriticalError({
+      source: 'unhandled-rejection',
+      message: 'Unhandled promise rejection in the API process',
+      err: reason,
+    });
+  });
+  process.on('uncaughtException', (err) => {
+    void reportCriticalError({
+      source: 'uncaught-exception',
+      message: 'Uncaught exception in the API process',
+      err,
+    });
+  });
+
   try {
     await warmupStores();
     await server.listen({ port: env.PORT, host: '0.0.0.0' });
-    stopWorker = startNotificationWorker();
+    if (env.RUN_WORKER_IN_PROCESS) {
+      stopWorker = startNotificationWorker();
+      logger.info('[NotificationWorker] running in-process (RUN_WORKER_IN_PROCESS=true)');
+    } else {
+      logger.info(
+        '[NotificationWorker] not started in-process — run it separately (pnpm --filter @restaurant/api worker)',
+      );
+    }
     logger.info(`✅ API server listening on port ${env.PORT}`);
   } catch (err) {
     if (stopWorker) await stopWorker();

@@ -24,8 +24,20 @@ import {
   computeEstimatedFee,
   maxCustomDurationMins,
 } from '../../lib/reservation-engine.js';
+import {
+  findContainingWindow,
+  loadRestaurantSchedule,
+} from '../../lib/service-schedule.js';
 import { localDayBoundsUtc, formatLocalDate } from '../../lib/timezone.js';
 import { invalidateAvailabilityCacheForDate } from '../../lib/availability-cache.js';
+
+// ── Diner-facing booking guards (abuse controls) ──────────────────────────────
+// Furthest ahead a diner may book online. Staff/override paths are exempt so
+// owners can still take private-event bookings months out.
+const MAX_ADVANCE_DAYS = 365;
+// Most concurrent upcoming reservations a single diner may hold across the whole
+// platform — caps enumeration/hoarding of tables at zero cost.
+const MAX_ACTIVE_RESERVATIONS_PER_DINER = 20;
 import type {
   CancelReservationSchema,
   CreateReservationInput,
@@ -158,30 +170,100 @@ function serializeReservation<T extends Record<string, unknown>>(
   };
 }
 
-async function assertReservationPlanLimit(restaurantId: string): Promise<void> {
+// Cancelled and no-show reservations do not consume the owner's monthly quota —
+// otherwise a diner could burn a restaurant's allowance with fake no-shows.
+const RESERVATION_QUOTA_STATUS_EXCLUDED = ['CANCELLED', 'NO_SHOW'] as const;
+
+function reservationQuotaMessage(limit: number): string {
+  return `This restaurant has reached its monthly limit of ${limit} reservations. The owner needs to upgrade on Billing before more bookings can be accepted.`;
+}
+
+type ReservationQuota = { ownerId: string; monthlyLimit: number };
+
+async function assertReservationPlanLimit(
+  restaurantId: string,
+): Promise<ReservationQuota> {
   const restaurant = await prisma.restaurant.findFirst({
     where: { id: restaurantId },
     select: { ownerId: true },
   });
-  if (!restaurant) return;
+  if (!restaurant) throw new NotFoundError('Restaurant not found');
 
   await assertOwnerCanOperate(restaurant.ownerId);
   const limits = await getEffectiveLimitsForOwner(restaurant.ownerId);
-  if (limits.reservationsPerMonth === Infinity) return;
+  const monthlyLimit = limits.reservationsPerMonth;
+  if (monthlyLimit === Infinity) {
+    return { ownerId: restaurant.ownerId, monthlyLimit: Infinity };
+  }
 
-  const monthStart = startOfCurrentMonth();
   const count = await prisma.reservation.count({
     where: {
       restaurant: { ownerId: restaurant.ownerId },
-      status: { notIn: ['CANCELLED'] },
-      createdAt: { gte: monthStart },
+      status: { notIn: [...RESERVATION_QUOTA_STATUS_EXCLUDED] },
+      createdAt: { gte: startOfCurrentMonth() },
     },
   });
 
-  if (count >= limits.reservationsPerMonth) {
+  if (count >= monthlyLimit) {
+    throw new UnprocessableError(reservationQuotaMessage(monthlyLimit));
+  }
+
+  return { ownerId: restaurant.ownerId, monthlyLimit };
+}
+
+/** Diner-facing abuse guards: booking horizon, overlap, and concurrent-hold cap. */
+async function assertDinerBookingAllowed(
+  dinerId: string,
+  startsAt: Date,
+  endsAt: Date,
+): Promise<void> {
+  const now = Date.now();
+  if (startsAt.getTime() > now + MAX_ADVANCE_DAYS * 86_400_000) {
     throw new UnprocessableError(
-      `This restaurant has reached its monthly limit of ${limits.reservationsPerMonth} reservations. The owner needs to upgrade on Billing before more bookings can be accepted.`,
+      `Reservations can be made up to ${MAX_ADVANCE_DAYS} days in advance.`,
     );
+  }
+
+  const overlapping = await prisma.reservation.findFirst({
+    where: {
+      dinerId,
+      status: { in: ['SCHEDULED', 'SEATED'] },
+      startsAt: { lt: endsAt },
+      endsAt: { gt: startsAt },
+    },
+    select: { id: true },
+  });
+  if (overlapping) {
+    throw new ConflictError(
+      'You already have a reservation that overlaps this time. Cancel it first or choose another time.',
+    );
+  }
+
+  const activeCount = await prisma.reservation.count({
+    where: {
+      dinerId,
+      status: { in: ['SCHEDULED', 'SEATED'] },
+      endsAt: { gt: new Date(now) },
+    },
+  });
+  if (activeCount >= MAX_ACTIVE_RESERVATIONS_PER_DINER) {
+    throw new UnprocessableError(
+      `You have reached the maximum of ${MAX_ACTIVE_RESERVATIONS_PER_DINER} upcoming reservations. Cancel one before booking again.`,
+    );
+  }
+}
+
+/** Rejects a table set that does not consist of active tables of this restaurant. */
+async function assertTablesBelongToRestaurant(
+  restaurantId: string,
+  tableIds: string[],
+): Promise<void> {
+  const uniqueIds = [...new Set(tableIds)];
+  const found = await prisma.diningTable.count({
+    where: { id: { in: uniqueIds }, restaurantId, isActive: true },
+  });
+  if (found !== uniqueIds.length) {
+    throw new NotFoundError('One or more tables not found for this restaurant');
   }
 }
 
@@ -218,8 +300,11 @@ async function loadRestaurantForBooking(restaurantId: string) {
   return restaurant;
 }
 
+// Ownership check ONLY — does NOT require an operable subscription. Managing
+// reservations that already exist (view, seat, cancel, no-show, extend, free
+// early) must keep working after a trial or paid plan lapses; only creating new
+// bookings is gated (via assertReservationPlanLimit → assertOwnerCanOperate).
 async function assertOwnerAccess(restaurantId: string, ownerId: string) {
-  await assertOwnerCanOperate(ownerId);
   const restaurant = await prisma.restaurant.findFirst({
     where: { id: restaurantId, ownerId, deletedAt: null },
     select: { id: true },
@@ -253,8 +338,26 @@ async function createReservationWithHolds(
   params: CreateHoldParams,
   actorId?: string,
   auditAction = 'reservation.created',
+  quota?: ReservationQuota,
 ) {
   const reservation = await prisma.$transaction(async (tx) => {
+    // Enforce the owner's monthly reservation quota exactly, even under
+    // concurrent bookings: a per-owner advisory lock serialises the count-then-
+    // insert so parallel requests cannot both slip past the limit.
+    if (quota && Number.isFinite(quota.monthlyLimit)) {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${quota.ownerId}))`;
+      const used = await tx.reservation.count({
+        where: {
+          restaurant: { ownerId: quota.ownerId },
+          status: { notIn: [...RESERVATION_QUOTA_STATUS_EXCLUDED] },
+          createdAt: { gte: startOfCurrentMonth() },
+        },
+      });
+      if (used >= quota.monthlyLimit) {
+        throw new UnprocessableError(reservationQuotaMessage(quota.monthlyLimit));
+      }
+    }
+
     const created = await tx.reservation.create({
       data: {
         restaurantId: params.restaurantId,
@@ -323,6 +426,7 @@ async function createWithAllocation(
     status?: 'SCHEDULED' | 'SEATED';
   },
   actorId?: string,
+  quota?: ReservationQuota,
 ): Promise<{
   row: Awaited<ReturnType<typeof createReservationWithHolds>>;
   wasCapped: boolean;
@@ -335,6 +439,14 @@ async function createWithAllocation(
   if (params.reservationType === 'CUSTOM') {
     await assertCustomReservationAllowed(restaurant.ownerId);
   }
+
+  // Any explicitly provided tables must be active tables of THIS restaurant —
+  // never another tenant's, which would silently block their inventory.
+  if (params.tableIds?.length) {
+    await assertTablesBelongToRestaurant(restaurant.id, params.tableIds);
+  }
+
+  const schedule = await loadRestaurantSchedule(restaurant.id, restaurant);
 
   const standardDurationMins = await resolveDurationMins(
     restaurant.id,
@@ -363,6 +475,8 @@ async function createWithAllocation(
         params.partySize,
         params.startsAt,
         { kind: 'untilClose' },
+        prisma,
+        schedule,
       );
       if (!resolved) {
         const nextAvailable = await findNextAvailableStart(
@@ -370,6 +484,7 @@ async function createWithAllocation(
           params.partySize,
           params.startsAt,
           maxCustomDurationMins(standardDurationMins, restaurant.maxExtraHours),
+          schedule,
         );
         throw new ConflictError(
           'No table available for the requested time',
@@ -403,6 +518,8 @@ async function createWithAllocation(
         params.partySize,
         params.startsAt,
         { kind: 'extended', durationMins },
+        prisma,
+        schedule,
       );
       if (!resolved) {
         const nextAvailable = await findNextAvailableStart(
@@ -410,6 +527,7 @@ async function createWithAllocation(
           params.partySize,
           params.startsAt,
           durationMins,
+          schedule,
         );
         throw new ConflictError(
           'No table available for the requested time',
@@ -451,6 +569,8 @@ async function createWithAllocation(
           restaurant,
           params.partySize,
           params.startsAt,
+          undefined,
+          schedule,
         );
         throw new ConflictError(
           'No table available for the requested time',
@@ -462,6 +582,43 @@ async function createWithAllocation(
 
       tableIds = unit.tableIds;
     }
+  }
+
+  // The requested interval must fall within the restaurant's opening schedule.
+  // Walk-ins (seated now, at staff discretion) and explicit overrides are exempt;
+  // online and staff-placed future bookings are not — this is the server-side
+  // guard the availability UI relies on but never itself enforced.
+  if (params.source === 'ONLINE' || params.source === 'STAFF') {
+    const window = findContainingWindow(
+      params.startsAt,
+      endsAt,
+      restaurant.timezone,
+      schedule,
+    );
+    if (!window) {
+      const nextAvailable = await findNextAvailableStart(
+        restaurant,
+        params.partySize,
+        params.startsAt,
+        params.reservationType === 'CUSTOM' && params.durationMins
+          ? params.durationMins
+          : undefined,
+        schedule,
+      );
+      throw new ConflictError(
+        'The restaurant is not open for the selected time.',
+        nextAvailable
+          ? { suggestedNextAvailableAt: nextAvailable.toISOString() }
+          : undefined,
+      );
+    }
+  }
+
+  // Diner-initiated online bookings are subject to abuse guards (booking horizon,
+  // no overlapping holds, concurrent-reservation cap). Staff/walk-in/override
+  // paths are owner-initiated and exempt.
+  if (params.source === 'ONLINE' && params.dinerId) {
+    await assertDinerBookingAllowed(params.dinerId, params.startsAt, endsAt);
   }
 
   const feeSnapshots =
@@ -493,6 +650,8 @@ async function createWithAllocation(
         ...(params.status === 'SEATED' && { seatedAt: new Date() }),
       },
       actorId,
+      'reservation.created',
+      quota,
     );
     return { row, wasCapped, standardDurationMins };
   } catch (err) {
@@ -504,6 +663,7 @@ async function createWithAllocation(
         params.reservationType === 'CUSTOM' && params.durationMins
           ? params.durationMins
           : undefined,
+        schedule,
       );
       throw new ConflictError(
         'The requested time is no longer available',
@@ -521,7 +681,7 @@ export async function createReservation(
   input: CreateReservationInput,
 ) {
   const restaurant = await loadRestaurantForBooking(input.restaurantId);
-  await assertReservationPlanLimit(input.restaurantId);
+  const quota = await assertReservationPlanLimit(input.restaurantId);
 
   const startsAt = new Date(input.startsAt);
   const { row: reservation, wasCapped, standardDurationMins } =
@@ -538,6 +698,7 @@ export async function createReservation(
       ...(input.notes !== undefined && { notes: input.notes }),
     },
     dinerId,
+    quota,
   );
 
   await invalidateAvailabilityCache(input.restaurantId, startsAt);
@@ -1044,7 +1205,7 @@ export async function createWalkIn(
   input: WalkInInput,
 ) {
   await assertOwnerAccess(restaurantId, ownerId);
-  await assertReservationPlanLimit(restaurantId);
+  const quota = await assertReservationPlanLimit(restaurantId);
 
   const restaurant = await loadRestaurantForBooking(restaurantId);
   const now = new Date();
@@ -1070,6 +1231,7 @@ export async function createWalkIn(
       status: 'SEATED',
     },
     ownerId,
+    quota,
   );
 
   await invalidateAvailabilityCache(restaurantId, now);
@@ -1097,7 +1259,7 @@ export async function createStaffReservation(
   input: StaffCreateReservationInput,
 ) {
   await assertOwnerAccess(restaurantId, ownerId);
-  await assertReservationPlanLimit(restaurantId);
+  const quota = await assertReservationPlanLimit(restaurantId);
 
   const restaurant = await loadRestaurantForBooking(restaurantId);
   const startsAt = new Date(input.startsAt);
@@ -1115,6 +1277,7 @@ export async function createStaffReservation(
       ...(input.notes !== undefined && { notes: input.notes }),
     },
     ownerId,
+    quota,
   );
 
   await invalidateAvailabilityCache(restaurantId, startsAt);
@@ -1142,7 +1305,7 @@ export async function createOverrideReservation(
   input: OverrideReservationInput,
 ) {
   await assertOwnerAccess(restaurantId, ownerId);
-  await assertReservationPlanLimit(restaurantId);
+  const quota = await assertReservationPlanLimit(restaurantId);
 
   const startsAt = new Date(input.startsAt);
   const endsAt = new Date(input.endsAt);
@@ -1180,6 +1343,7 @@ export async function createOverrideReservation(
       },
       ownerId,
       'reservation.override_created',
+      quota,
     );
 
     await invalidateAvailabilityCache(restaurantId, startsAt);

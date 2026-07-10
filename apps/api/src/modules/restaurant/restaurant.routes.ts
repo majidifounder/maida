@@ -1,10 +1,12 @@
 import type { FastifyInstance } from 'fastify';
 import {
+  CreateClosureSchema,
   CreateCombinationSchema,
   CreateRestaurantSchema,
   CreateTableSchema,
   CreateTurnTimeRuleSchema,
   GetAvailabilityQuerySchema,
+  ReplaceScheduleSchema,
   SearchRestaurantsSchema,
   UpdateCombinationSchema,
   UpdateReservationConfigSchema,
@@ -440,6 +442,82 @@ export async function restaurantRoutes(fastify: FastifyInstance): Promise<void> 
         await RestaurantService.deleteTurnTimeRule(
           id,
           ruleId,
+          request.user!.sub,
+        );
+        return reply.code(204).send();
+      } catch (err) {
+        return handleRouteError(err, reply);
+      }
+    },
+  );
+
+  // ── Weekly schedule & closures ────────────────────────────────────────────────
+
+  fastify.get('/restaurants/:id/schedule', ownerHooks, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    try {
+      const schedule = await RestaurantService.getRestaurantSchedule(
+        id,
+        request.user!.sub,
+      );
+      return reply.code(200).send({ schedule });
+    } catch (err) {
+      return handleRouteError(err, reply);
+    }
+  });
+
+  fastify.put('/restaurants/:id/schedule', ownerHooks, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = ReplaceScheduleSchema.safeParse(request.body);
+    if (!body.success) {
+      return reply
+        .code(422)
+        .send({ error: 'Validation failed', details: body.error.flatten() });
+    }
+    try {
+      const schedule = await RestaurantService.replaceRestaurantSchedule(
+        id,
+        request.user!.sub,
+        body.data.periods,
+      );
+      return reply.code(200).send({ schedule });
+    } catch (err) {
+      return handleRouteError(err, reply);
+    }
+  });
+
+  fastify.post('/restaurants/:id/closures', ownerHooks, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = CreateClosureSchema.safeParse(request.body);
+    if (!body.success) {
+      return reply
+        .code(422)
+        .send({ error: 'Validation failed', details: body.error.flatten() });
+    }
+    try {
+      const closure = await RestaurantService.addRestaurantClosure(
+        id,
+        request.user!.sub,
+        body.data,
+      );
+      return reply.code(201).send({ closure });
+    } catch (err) {
+      return handleRouteError(err, reply);
+    }
+  });
+
+  fastify.delete(
+    '/restaurants/:id/closures/:closureId',
+    ownerHooks,
+    async (request, reply) => {
+      const { id, closureId } = request.params as {
+        id: string;
+        closureId: string;
+      };
+      try {
+        await RestaurantService.deleteRestaurantClosure(
+          id,
+          closureId,
           request.user!.sub,
         );
         return reply.code(204).send();

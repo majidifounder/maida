@@ -119,6 +119,24 @@ export const CreateTurnTimeRuleSchema = z.object({
   durationMins: z.number().int().min(15).max(720),
 });
 
+// A single service window on one weekday. `closeMinute <= openMinute` means the
+// window runs past local midnight into the next day (overnight service).
+const ServicePeriodSchema = z.object({
+  dayOfWeek: z.number().int().min(0).max(6),
+  openMinute: z.number().int().min(0).max(1439),
+  closeMinute: z.number().int().min(1).max(1440),
+});
+
+export const ReplaceScheduleSchema = z.object({
+  // At most a handful of windows per day across the week; cap defensively.
+  periods: z.array(ServicePeriodSchema).max(70),
+});
+
+export const CreateClosureSchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD'),
+  reason: z.string().max(200).trim().optional(),
+});
+
 export type CreateRestaurantInput = z.infer<typeof CreateRestaurantSchema>;
 export type UpdateRestaurantInput = z.infer<typeof UpdateRestaurantSchema>;
 export type UpdateReservationConfigInput = z.infer<
@@ -130,3 +148,5 @@ export type UpdateTableInput = z.infer<typeof UpdateTableSchema>;
 export type CreateCombinationInput = z.infer<typeof CreateCombinationSchema>;
 export type UpdateCombinationInput = z.infer<typeof UpdateCombinationSchema>;
 export type CreateTurnTimeRuleInput = z.infer<typeof CreateTurnTimeRuleSchema>;
+export type ReplaceScheduleInput = z.infer<typeof ReplaceScheduleSchema>;
+export type CreateClosureInput = z.infer<typeof CreateClosureSchema>;

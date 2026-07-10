@@ -50,7 +50,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       ([, messages]) => messages?.length,
     );
     if (fieldError) {
-      message = fieldError[1]![0] ?? message;
+      message = fieldError[1][0] ?? message;
     } else if (body.details?.formErrors?.[0]) {
       message = body.details.formErrors[0];
     }

@@ -9,9 +9,21 @@ export class AppError extends Error {
   }
 }
 
+export class BadRequestError extends AppError {
+  constructor(message = 'Bad request') {
+    super(400, message, 'BAD_REQUEST');
+  }
+}
+
 export class UnauthorizedError extends AppError {
   constructor(message = 'Unauthorized') {
     super(401, message, 'UNAUTHORIZED');
+  }
+}
+
+export class ServiceUnavailableError extends AppError {
+  constructor(message = 'Service temporarily unavailable') {
+    super(503, message, 'SERVICE_UNAVAILABLE');
   }
 }
 
