@@ -218,11 +218,19 @@ export interface UpsertFromWebhookInput {
   renewsAt: string | null;
   endsAt: string | null;
   cancelled: boolean;
+  /** Lemon Squeezy attributes.updated_at — used to reject out-of-order events. */
+  updatedAt: string;
 }
 
+/**
+ * Applies a Lemon Squeezy subscription event. Returns false when the event is
+ * older than the last applied one (per `lsUpdatedAt`) and was ignored — webhook
+ * deliveries are not ordered, and a late `active` must never resurrect a
+ * subscription that a newer `expired` already closed (or vice versa).
+ */
 export async function upsertSubscriptionFromWebhook(
   input: UpsertFromWebhookInput,
-): Promise<void> {
+): Promise<boolean> {
   const internalStatus = lsStatusToInternal(input.lsStatus);
   const mappedPlan = variantIdToPlan(input.variantId);
 
@@ -232,28 +240,54 @@ export async function upsertSubscriptionFromWebhook(
       : (mappedPlan ?? undefined);
 
   const variantIdStr = String(input.variantId);
+  const eventUpdatedAt = new Date(input.updatedAt);
+  const hasValidTimestamp = !Number.isNaN(eventUpdatedAt.getTime());
 
-  await prisma.subscription.upsert({
-    where: { userId: input.userId },
-    create: {
-      userId: input.userId,
-      lemonSqueezyId: input.lemonSqueezyId,
-      lemonSqueezyVariantId: variantIdStr,
-      plan: effectivePlan ?? Plan.STARTER,
-      status: internalStatus,
-      renewsAt: input.renewsAt ? new Date(input.renewsAt) : null,
-      currentPeriodEnd: input.endsAt ? new Date(input.endsAt) : null,
-      cancelAtPeriodEnd: input.cancelled,
-    },
-    update: {
-      lemonSqueezyId: input.lemonSqueezyId,
-      lemonSqueezyVariantId: variantIdStr,
-      status: internalStatus,
-      renewsAt: input.renewsAt ? new Date(input.renewsAt) : null,
-      currentPeriodEnd: input.endsAt ? new Date(input.endsAt) : null,
-      cancelAtPeriodEnd: input.cancelled,
-      ...(effectivePlan !== undefined && { plan: effectivePlan }),
-    },
+  return prisma.$transaction(async (tx) => {
+    const existing = await tx.subscription.findUnique({
+      where: { userId: input.userId },
+      select: { id: true, lsUpdatedAt: true },
+    });
+
+    // Ordering guard: strictly-older events are dropped. Equal timestamps are
+    // applied (distinct events can share updated_at; exact duplicates are
+    // already filtered by the Redis idempotency key upstream).
+    if (
+      existing?.lsUpdatedAt &&
+      hasValidTimestamp &&
+      eventUpdatedAt.getTime() < existing.lsUpdatedAt.getTime()
+    ) {
+      return false;
+    }
+
+    const lsUpdatedAt = hasValidTimestamp ? eventUpdatedAt : new Date();
+
+    await tx.subscription.upsert({
+      where: { userId: input.userId },
+      create: {
+        userId: input.userId,
+        lemonSqueezyId: input.lemonSqueezyId,
+        lemonSqueezyVariantId: variantIdStr,
+        plan: effectivePlan ?? Plan.STARTER,
+        status: internalStatus,
+        renewsAt: input.renewsAt ? new Date(input.renewsAt) : null,
+        currentPeriodEnd: input.endsAt ? new Date(input.endsAt) : null,
+        cancelAtPeriodEnd: input.cancelled,
+        lsUpdatedAt,
+      },
+      update: {
+        lemonSqueezyId: input.lemonSqueezyId,
+        lemonSqueezyVariantId: variantIdStr,
+        status: internalStatus,
+        renewsAt: input.renewsAt ? new Date(input.renewsAt) : null,
+        currentPeriodEnd: input.endsAt ? new Date(input.endsAt) : null,
+        cancelAtPeriodEnd: input.cancelled,
+        lsUpdatedAt,
+        ...(effectivePlan !== undefined && { plan: effectivePlan }),
+      },
+    });
+
+    return true;
   });
 }
 

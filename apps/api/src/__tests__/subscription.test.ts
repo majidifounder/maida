@@ -284,7 +284,7 @@ describe('upsertSubscriptionFromWebhook (integration)', () => {
       typeof import('../modules/subscription/subscription.service.js')
     >('../modules/subscription/subscription.service.js');
 
-    await upsertSubscriptionFromWebhook({
+    const applied = await upsertSubscriptionFromWebhook({
       userId: owner.userId,
       lemonSqueezyId: 'ls-1',
       lsStatus: 'active',
@@ -292,7 +292,9 @@ describe('upsertSubscriptionFromWebhook (integration)', () => {
       renewsAt: '2026-07-27T00:00:00.000Z',
       endsAt: null,
       cancelled: false,
+      updatedAt: '2026-07-01T10:00:00.000Z',
     });
+    expect(applied).toBe(true);
 
     let sub = await prisma.subscription.findUnique({
       where: { userId: owner.userId },
@@ -309,7 +311,28 @@ describe('upsertSubscriptionFromWebhook (integration)', () => {
       renewsAt: null,
       endsAt: '2026-08-01T00:00:00.000Z',
       cancelled: false,
+      updatedAt: '2026-07-02T10:00:00.000Z',
     });
+
+    sub = await prisma.subscription.findUnique({
+      where: { userId: owner.userId },
+    });
+    expect(sub?.plan).toBe('STARTER');
+    expect(sub?.status).toBe('EXPIRED');
+
+    // A late out-of-order delivery (older updated_at) must NOT resurrect the
+    // expired subscription.
+    const staleApplied = await upsertSubscriptionFromWebhook({
+      userId: owner.userId,
+      lemonSqueezyId: 'ls-1',
+      lsStatus: 'active',
+      variantId: 200,
+      renewsAt: '2026-07-27T00:00:00.000Z',
+      endsAt: null,
+      cancelled: false,
+      updatedAt: '2026-07-01T12:00:00.000Z',
+    });
+    expect(staleApplied).toBe(false);
 
     sub = await prisma.subscription.findUnique({
       where: { userId: owner.userId },

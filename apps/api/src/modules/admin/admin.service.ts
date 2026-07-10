@@ -334,10 +334,20 @@ export async function updateUserPlan(
     throw new ForbiddenError('Plans only apply to owners');
   }
 
+  // An admin plan override is a comp: the owner gets the plan's limits NOW.
+  // Status must move to ACTIVE too — a TRIALING/EXPIRED subscription resolves
+  // its limits from status, so writing only `plan` would silently do nothing.
+  // If the owner later pays through Lemon Squeezy, webhooks overwrite this
+  // (LS remains the billing source of truth for paying customers).
+  const previous = await prisma.subscription.findUnique({
+    where: { userId },
+    select: { plan: true, status: true },
+  });
+
   await prisma.subscription.upsert({
     where: { userId },
-    create: { userId, plan: input.plan },
-    update: { plan: input.plan },
+    create: { userId, plan: input.plan, status: 'ACTIVE' },
+    update: { plan: input.plan, status: 'ACTIVE' },
   });
 
   await prisma.auditLog.create({
@@ -346,7 +356,11 @@ export async function updateUserPlan(
       action: 'ADMIN_PLAN_CHANGED',
       entityType: 'User',
       entityId: userId,
-      metadata: { plan: input.plan },
+      metadata: {
+        plan: input.plan,
+        previousPlan: previous?.plan ?? null,
+        previousStatus: previous?.status ?? null,
+      },
     },
   });
 }
