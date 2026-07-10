@@ -108,7 +108,7 @@ export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       try {
-        await upsertSubscriptionFromWebhook({
+        const applied = await upsertSubscriptionFromWebhook({
           userId,
           lemonSqueezyId: data.id,
           lsStatus: data.attributes.status,
@@ -116,10 +116,13 @@ export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
           renewsAt: data.attributes.renews_at,
           endsAt: data.attributes.ends_at,
           cancelled: data.attributes.cancelled,
+          updatedAt: data.attributes.updated_at,
         });
 
         req.log.info(
-          `[Webhook/LS] ✓ ${event_name} — user ${userId} — sub ${data.id}`,
+          applied
+            ? `[Webhook/LS] ✓ ${event_name} — user ${userId} — sub ${data.id}`
+            : `[Webhook/LS] ↷ ${event_name} — user ${userId} — stale (older than stored lsUpdatedAt), ignored`,
         );
       } catch (err) {
         await redis.del(idemKey);
