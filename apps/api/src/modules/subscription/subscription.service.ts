@@ -162,6 +162,28 @@ export async function getEffectiveLimitsForOwner(
   return state.limits;
 }
 
+/**
+ * PURE operability check for batch read paths (search). Applies exactly the
+ * rules of resolveOwnerBillingState without touching the database:
+ * TRIALING → trial window still open; ACTIVE/PAST_DUE/PAUSED/CANCELLED → yes;
+ * EXPIRED → no. A missing subscription row is what the lazy initializer would
+ * create — a trial running from the owner's account creation.
+ */
+export function canOwnerOperateFromSubscription(
+  sub: {
+    status: SubscriptionStatus;
+    trialStartedAt: Date | null;
+    createdAt: Date;
+  } | null,
+  ownerCreatedAt: Date,
+): boolean {
+  if (!sub) return !isTrialPeriodExpired(ownerCreatedAt);
+  if (sub.status === SubscriptionStatus.TRIALING) {
+    return !isTrialPeriodExpired(resolveTrialStart(sub));
+  }
+  return isPaidSubscriptionActive(sub.status);
+}
+
 export async function assertOwnerCanOperate(userId: string): Promise<void> {
   const state = await resolveOwnerBillingState(userId);
   if (!state.canOperate) {
