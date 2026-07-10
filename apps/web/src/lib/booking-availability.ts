@@ -6,18 +6,45 @@ import {
   type MealPeriod,
 } from './restaurant-time.js';
 
+export interface ServiceWindowIso {
+  open: string;
+  close: string;
+}
+
 export interface DayAvailability {
   date: string;
   times: AvailabilityTime[];
   standardDurationMins: number;
-  serviceWindow: { open: string; close: string };
+  /** Coarse day span; null when the restaurant is closed that day. */
+  serviceWindow: ServiceWindowIso | null;
+  /** Every window starting on this local date (may be absent on old payloads). */
+  serviceWindows?: ServiceWindowIso[];
+  /** False when the restaurant cannot take online bookings right now. */
+  bookable?: boolean;
+  notice?: string;
 }
 
 export interface ScannedSlot {
   slot: AvailabilityTime;
   date: string;
   standardDurationMins: number;
-  serviceWindow: { open: string; close: string };
+  /** The service window CONTAINING this slot (matters on split-service days). */
+  serviceWindow: ServiceWindowIso;
+}
+
+/** The window containing `startsAt`, else the coarse span, else a zero window. */
+export function windowForSlot(
+  startsAt: string,
+  windows: ServiceWindowIso[] | undefined,
+  fallback: ServiceWindowIso | null,
+): ServiceWindowIso {
+  const t = new Date(startsAt).getTime();
+  const containing = windows?.find(
+    (w) => new Date(w.open).getTime() <= t && t < new Date(w.close).getTime(),
+  );
+  return (
+    containing ?? fallback ?? { open: startsAt, close: startsAt }
+  );
 }
 
 export function flattenScannedSlots(days: DayAvailability[]): ScannedSlot[] {
@@ -28,7 +55,11 @@ export function flattenScannedSlots(days: DayAvailability[]): ScannedSlot[] {
         slot,
         date: day.date,
         standardDurationMins: day.standardDurationMins,
-        serviceWindow: day.serviceWindow,
+        serviceWindow: windowForSlot(
+          slot.startsAt,
+          day.serviceWindows,
+          day.serviceWindow,
+        ),
       });
     }
   }

@@ -242,6 +242,18 @@ export function ReservationBookingFlow({
 
   );
 
+  // The owner cannot accept online bookings right now (lapsed trial/plan).
+  // The API returns bookable:false with a diner-safe notice on every date.
+  const unbookableNotice = useMemo(() => {
+    const days = scanQuery.data ?? [];
+    if (days.length === 0) return null;
+    if (days.some((d) => d.bookable !== false)) return null;
+    return (
+      days.find((d) => d.notice)?.notice ??
+      'This restaurant is not currently accepting online reservations.'
+    );
+  }, [scanQuery.data]);
+
 
 
   const quickPicks = useMemo(
@@ -756,7 +768,21 @@ export function ReservationBookingFlow({
 
 
 
-      {step === 'datetime' && (
+      {step === 'datetime' && unbookableNotice && (
+        <div
+          role="status"
+          className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800"
+        >
+          {unbookableNotice}
+          <div className="mt-3">
+            <Button variant="secondary" onClick={() => setStep('party')}>
+              Back
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {step === 'datetime' && !unbookableNotice && (
 
         <TimeQuickPicks
 
@@ -803,6 +829,8 @@ export function ReservationBookingFlow({
           pickerTimes={pickerQuery.data?.times ?? []}
 
           pickerServiceWindow={pickerQuery.data?.serviceWindow ?? null}
+
+          pickerServiceWindows={pickerQuery.data?.serviceWindows}
 
           pickerStandardDurationMins={
 

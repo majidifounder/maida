@@ -12,6 +12,7 @@ import {
 import type { OwnerRestaurant, ReservationsResponse } from '../types/api.js';
 import { CombinationsPanel } from '../components/restaurant/CombinationsPanel.js';
 import { ReservationConfigPanel } from '../components/restaurant/ReservationConfigPanel.js';
+import { WeeklySchedulePanel } from '../components/restaurant/WeeklySchedulePanel.js';
 import { TablesPanel } from '../components/restaurant/TablesPanel.js';
 import { TurnTimeRulesPanel } from '../components/restaurant/TurnTimeRulesPanel.js';
 import { LogoUploadPanel } from '../components/restaurant/LogoUploadPanel.js';
@@ -224,6 +225,7 @@ export function RestaurantDetailPage() {
       </Card>
 
       <ReservationConfigPanel restaurantId={id!} config={restaurant} />
+      <WeeklySchedulePanel restaurantId={id!} timezone={restaurant.timezone} />
       <TablesPanel restaurantId={id!} />
       <CombinationsPanel restaurantId={id!} seatingMode={restaurant.seatingMode} />
       <TurnTimeRulesPanel restaurantId={id!} />

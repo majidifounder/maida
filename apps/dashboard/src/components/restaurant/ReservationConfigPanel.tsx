@@ -3,12 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { api, ApiError } from '../../lib/api.js';
 import type { OwnerRestaurant, SeatingMode } from '../../types/api.js';
-import {
-  formatServiceWindow,
-  isOpen24Hours,
-  minutesToTimeInput,
-  resolveTimezone,
-} from '../../lib/restaurant-time.js';
+import { resolveTimezone } from '../../lib/restaurant-time.js';
 import { useOwnerPlan } from '../../hooks/useOwnerPlan.js';
 import { Card } from '../ui/Card.js';
 import { Input } from '../ui/Input.js';
@@ -16,11 +11,6 @@ import { Button } from '../ui/Button.js';
 import { PlanGateNotice } from '../PlanGateNotice.js';
 import { SeatingModeChoice } from './SeatingModeChoice.js';
 import { TimezonePicker } from './TimezonePicker.js';
-import {
-  resolveServiceHoursPayload,
-  ServiceHoursFields,
-  validateServiceHoursInput,
-} from './ServiceHoursFields.js';
 
 interface ReservationConfigPanelProps {
   restaurantId: string;
@@ -36,11 +26,6 @@ export function ReservationConfigPanel({
 
   const [timezone, setTimezone] = useState(config.timezone);
   const [seatingMode, setSeatingMode] = useState<SeatingMode>(config.seatingMode);
-  const [open24Hours, setOpen24Hours] = useState(
-    isOpen24Hours(config.openMinutes, config.closeMinutes),
-  );
-  const [openTime, setOpenTime] = useState(minutesToTimeInput(config.openMinutes));
-  const [closeTime, setCloseTime] = useState(minutesToTimeInput(config.closeMinutes));
   const [defaultDurationMins, setDefaultDurationMins] = useState(
     String(config.defaultDurationMins),
   );
@@ -52,9 +37,6 @@ export function ReservationConfigPanel({
   useEffect(() => {
     setTimezone(config.timezone);
     setSeatingMode(config.seatingMode);
-    setOpen24Hours(isOpen24Hours(config.openMinutes, config.closeMinutes));
-    setOpenTime(minutesToTimeInput(config.openMinutes));
-    setCloseTime(minutesToTimeInput(config.closeMinutes));
     setDefaultDurationMins(String(config.defaultDurationMins));
     setCustomFee(config.customFee ?? '');
     setExtraHourFee(config.extraHourFee ?? '');
@@ -64,24 +46,17 @@ export function ReservationConfigPanel({
 
   const saveMutation = useMutation({
     mutationFn: () => {
-      const hoursError = validateServiceHoursInput(openTime, closeTime, open24Hours);
-      if (hoursError) throw new ApiError(422, hoursError);
-
-      const hours = resolveServiceHoursPayload(openTime, closeTime, open24Hours);
       const duration = Number(defaultDurationMins);
-
-      if (!hours) {
-        throw new ApiError(422, 'Enter valid service hours.');
-      }
       if (!Number.isInteger(duration) || duration < 15 || duration > 720) {
         throw new ApiError(422, 'Default table turn must be between 15 and 720 minutes.');
       }
 
+      // NOTE: openMinutes/closeMinutes are deliberately NOT sent here — the
+      // server resets the weekly schedule to a uniform one whenever they are
+      // included. Opening hours are managed by the WeeklySchedulePanel.
       const body: Record<string, unknown> = {
         timezone: resolveTimezone(timezone),
         seatingMode: limits.flexibleSeating ? seatingMode : 'LOCKED',
-        openMinutes: hours.openMinutes,
-        closeMinutes: hours.closeMinutes,
         defaultDurationMins: duration,
       };
       if (!feesLocked) {
@@ -114,10 +89,9 @@ export function ReservationConfigPanel({
     <Card>
       <h2 className="mb-1 text-xl font-semibold">Reservation settings</h2>
       <p className="mb-6 text-sm text-gray-500">
-        Controls how availability is calculated and how long guests stay at a table.
-        Current service window:{' '}
-        <strong>{formatServiceWindow(config.openMinutes, config.closeMinutes)}</strong>{' '}
-        ({config.timezone}).
+        Controls how availability is calculated and how long guests stay at a
+        table. Opening hours are managed in the &ldquo;Opening hours&rdquo;
+        panel below.
       </p>
 
       <form
@@ -131,16 +105,20 @@ export function ReservationConfigPanel({
 
         <SeatingModeChoice value={seatingMode} onChange={setSeatingMode} />
 
-        <ServiceHoursFields
-          openTime={openTime}
-          closeTime={closeTime}
-          defaultDurationMins={defaultDurationMins}
-          open24Hours={open24Hours}
-          onOpenTimeChange={setOpenTime}
-          onCloseTimeChange={setCloseTime}
-          onDefaultDurationChange={setDefaultDurationMins}
-          onOpen24HoursChange={setOpen24Hours}
-        />
+        <div className="max-w-xs">
+          <Input
+            label="Default table turn (minutes)"
+            type="number"
+            min={15}
+            max={720}
+            step={15}
+            value={defaultDurationMins}
+            onChange={(e) => setDefaultDurationMins(e.target.value)}
+          />
+          <p className="mt-1 text-xs text-gray-500">
+            Used when no party-size turn-time rule matches (15–720 minutes).
+          </p>
+        </div>
 
         <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
           <h3 className="text-sm font-semibold text-gray-900">

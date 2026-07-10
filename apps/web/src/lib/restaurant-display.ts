@@ -32,7 +32,14 @@ export function formatFee(
 export function restaurantOffersCustomReservations(restaurant: {
   customFee: string | null;
   extraHourFee: string | null;
+  offersCustomReservations?: boolean;
 }): boolean {
+  // The server flag is authoritative (owner's plan ∧ restaurant config). The
+  // fee heuristic remains only for payloads that don't carry the flag — fees
+  // alone never unlock the flow the API would reject.
+  if (restaurant.offersCustomReservations !== undefined) {
+    return restaurant.offersCustomReservations;
+  }
   return (
     (restaurant.customFee != null && restaurant.customFee !== '') ||
     (restaurant.extraHourFee != null && restaurant.extraHourFee !== '')

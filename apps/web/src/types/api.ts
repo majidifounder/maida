@@ -13,6 +13,12 @@ export type PublicRestaurant = Restaurant & {
   extraHourFee: string | null;
   feeCurrency: string;
   maxExtraHours: number;
+  /**
+   * Server-computed: owner's plan allows custom-length reservations AND the
+   * restaurant permits extra time. Present on the detail endpoint; list
+   * endpoints omit it (undefined = fall back to the fee heuristic).
+   */
+  offersCustomReservations?: boolean;
 };
 
 export interface AvailabilityTime {
@@ -24,7 +30,14 @@ export interface AvailabilityTime {
 export interface AvailabilityResponse {
   times: AvailabilityTime[];
   standardDurationMins: number;
-  serviceWindow: { open: string; close: string };
+  /** Coarse day span; null when the restaurant is closed that day. */
+  serviceWindow: { open: string; close: string } | null;
+  /** Every service window that starts on the requested local date. */
+  serviceWindows: Array<{ open: string; close: string }>;
+  /** False when the owner cannot currently accept online reservations. */
+  bookable: boolean;
+  /** Diner-safe explanation shown when bookable is false. */
+  notice?: string;
 }
 
 export interface ReservationWithDetails {
