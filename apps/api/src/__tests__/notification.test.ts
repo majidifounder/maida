@@ -75,10 +75,14 @@ const MOCK_DB_RESERVATION = {
   id: MOCK_RESERVATION_ID,
   partySize: 3,
   startsAt: new Date('2026-09-15T19:00:00.000Z'),
+  endsAt: new Date('2026-09-15T20:30:00.000Z'),
+  status: 'SCHEDULED',
   diner: { email: 'diner@example.com' },
   restaurant: {
     name: 'La Bella',
     timezone: 'Europe/Paris',
+    address: '12 Rue des Fleurs',
+    city: 'Paris',
     owner: { email: 'owner@labella.com' },
   },
 };
@@ -91,6 +95,10 @@ const BASE_EMAIL_DATA: ReservationEmailData = {
   ownerEmail: MOCK_DB_RESERVATION.restaurant.owner.email,
   restaurantName: MOCK_DB_RESERVATION.restaurant.name,
   restaurantTimezone: MOCK_DB_RESERVATION.restaurant.timezone,
+  endsAt: MOCK_DB_RESERVATION.endsAt.toISOString(),
+  status: MOCK_DB_RESERVATION.status,
+  restaurantAddress: MOCK_DB_RESERVATION.restaurant.address,
+  restaurantCity: MOCK_DB_RESERVATION.restaurant.city,
 };
 
 function emailCalls(): Array<{ to: string; subject: string; html: string }> {
@@ -230,6 +238,50 @@ describe('processNotificationJob', () => {
     );
 
     expect(mockEmailSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('reservation.reminder + still SCHEDULED → 1 email to diner', async () => {
+    await processNotificationJob(
+      makeJob({
+        eventType: 'reservation.reminder',
+        reservationId: MOCK_RESERVATION_ID,
+      }),
+    );
+
+    expect(mockEmailSend).toHaveBeenCalledTimes(1);
+    const call = emailCalls()[0]!;
+    expect(call.to).toBe('diner@example.com');
+    expect(call.subject).toContain('Reminder');
+  });
+
+  it('reservation.reminder after cancellation → no email', async () => {
+    mockFindUniqueOrThrow.mockResolvedValue({
+      ...MOCK_DB_RESERVATION,
+      status: 'CANCELLED',
+    });
+
+    await processNotificationJob(
+      makeJob({
+        eventType: 'reservation.reminder',
+        reservationId: MOCK_RESERVATION_ID,
+      }),
+    );
+
+    expect(mockEmailSend).not.toHaveBeenCalled();
+  });
+
+  it('reservation.created confirmation carries a calendar attachment', async () => {
+    await processNotificationJob(
+      makeJob({
+        eventType: 'reservation.created',
+        reservationId: MOCK_RESERVATION_ID,
+      }),
+    );
+
+    const dinerCall = mockEmailSend.mock.calls
+      .map(([arg]) => arg as { to: string; attachments?: unknown[] })
+      .find((c) => c.to === 'diner@example.com');
+    expect(dinerCall?.attachments).toHaveLength(1);
   });
 
   it('calls findUniqueOrThrow with the reservation id', async () => {
