@@ -29,25 +29,47 @@ This division of labor is what lets the read path be aggressive.
 |---|---|---|---|
 | Booking transaction | Absolute (constraint) | 1 interactive tx | `POST /reservations`, walk-in/staff/override |
 | `computeAvailabilityTimes` | Exact at compute time | ~3 queries + O(slots × units) memory walk | Detail endpoint (cache miss), search (cache miss) |
-| Availability cache | ≤ 300s stale, mutation-invalidated | 1 Redis GET | Detail endpoint |
+| Availability cache | mutation-invalidated (per-date + version); TTL 300s backstop | 1 DB query + 1 Redis MGET | Detail endpoint |
 | Search availability filter | Same cache | 1 Redis MGET for N restaurants | `GET /restaurants?date&partySize` |
 
-## 3. The availability cache (shared, demand-driven)
+## 3. The availability cache (shared, demand-driven, versioned)
 
-- **Key:** `restaurant:{id}:availability:{date}:{partySize}` → `{times: [...]}`,
-  TTL 300s. A per-`(restaurant,date)` index set tracks written party sizes.
-- **Invalidation:** every reservation mutation (create/cancel/no-show/extend/
-  free-early, all sources) deletes the tracked keys for the reservation's
-  **start date and end date** in restaurant-local terms (two dates when the
-  hold crosses local midnight — overnight windows, until-close, extensions).
-- **Failure mode:** the cache fails open in both directions — read failures
-  compute, write failures skip. Redis being down makes availability slower,
-  never wrong, never unavailable.
+- **Entry:** `restaurant:{id}:availability:{date}:{partySize}` → the FULL
+  response (`{v, times, serviceWindows, standardDurationMins}`), TTL 300s.
+  Caching the whole response — not just the slot list — is what makes a hit
+  cheap: the detail endpoint answers from **1 DB query (restaurant + joined
+  subscription) + 1 Redis MGET**, touching neither the schedule nor the
+  turn-time rules nor the engine. A per-`(restaurant,date)` index set tracks
+  written party sizes.
+- **Two invalidation channels, matched to the two mutation shapes:**
+  - *Reservation mutations* (create/cancel/no-show/extend/free-early) affect
+    one or two known dates → delete the tracked keys for the reservation's
+    start/end dates in restaurant-local terms. Precise and immediate.
+  - *Config mutations* (weekly schedule, closures, tables, combinations,
+    turn-time rules, engine settings) reshape availability for EVERY future
+    date — unenumerable with per-date sets. Each restaurant carries a
+    **version counter** (`restaurant:{id}:availver`, plain INCR, no TTL);
+    entries embed the version they were computed under, and a reader treats a
+    mismatch as a miss. One INCR = O(1) invalidation across all dates and
+    party sizes. An owner changing hours sees the change on the very next
+    read, not after a TTL.
+  - Billing operability is **never cached**: it's pure math over a
+    subscription row joined into the restaurant fetch, checked live on every
+    request — a lapsed owner stops advertising slots instantly, even through
+    warm entries.
+- **Failure mode:** the cache fails open in every direction — read failures
+  compute, write failures skip, a failed version bump degrades to the TTL
+  bound (≤300s). Redis being down makes availability slower, never wrong.
 - **Why demand-driven, not precomputed:** the key space is
   restaurants × dates × party sizes; almost all of it is never asked for.
   Demand-driven caching concentrates warmth exactly where diners are looking
   (tonight, this weekend, party of 2/4), and one popular restaurant's cache
   entry serves *every* searcher and *every* detail view for 5 minutes.
+- **Guardrail:** an empty weekly schedule is rejected at the API (min 1
+  window) — zero ServicePeriod rows is indistinguishable from pre-migration
+  data, which the engine backstops with the legacy always-open window.
+  "Closed indefinitely" is expressed with closures or by deactivating the
+  listing, never by an empty week.
 
 ## 4. Search with availability (R15 rework)
 
@@ -59,52 +81,55 @@ the search could never return, and silently missing matches beyond the cap),
 and happily advertised restaurants whose owners could no longer accept
 bookings.
 
-The pipeline is now five gates, ordered so that each is cheaper than the next
-is expensive:
+The pipeline is five gates, ordered so that each is cheaper than the next is
+expensive:
 
 ```
 SQL candidates (q + city + cuisine + active + has-tables, cap 100)   1 query
-  → billing gate      (joined subscription row, pure math)           0 extra
-  → schedule gate     (batched periods + closures, pure math)        2 queries
-  → cache gate        (shared availability cache)                    1 MGET
-  → engine, misses only (bounded concurrency 6, writes cache)        ~3 q/miss
+  → billing gate    (joined subscription row, pure math)             0 extra
+  → cache gate      (version-checked MGET, 2N keys, 1 round-trip)    0 queries
+  → schedule gate   (batched periods + closures, MISSES only)        2 queries
+  → engine          (bounded concurrency 6, writes full entries)     ~3 q/miss
 ```
 
-**Steady-state (warm) cost: ~5 DB queries + 1 Redis round-trip for the whole
-request, independent of candidate count.** Cold cost is bounded by the
-concurrency limiter — the pool can never be exhausted by search — and every
-cold computation warms the exact cache the detail page reads, so a search
-immediately followed by a click-through is a guaranteed cache hit.
+**Steady-state (warm) cost: 3 DB queries + 1 Redis round-trip for the whole
+request — candidates, final page, final count — independent of candidate
+count.** Cold cost is bounded by the concurrency limiter — the pool can never
+be exhausted by search — and every cold computation writes a full-response
+entry, so a search immediately followed by a detail-page click-through is a
+guaranteed cache hit.
 
 Ordering rationale:
 
-- **Billing before schedule/cache:** a lapsed owner's restaurant must never
-  appear bookable, even if a cache entry from before the lapse is still warm.
-  The gate is pure math over a row already joined into the candidate query
+- **Billing before cache:** a lapsed owner's restaurant must never appear
+  bookable, even through a still-warm entry. The gate is pure math over a row
+  already joined into the candidate query
   (`canOwnerOperateFromSubscription` — the same rules as
   `resolveOwnerBillingState`, without the lazy row creation).
-- **Schedule before cache:** on a Monday, closed-that-day typically eliminates
-  a large slice of candidates with zero I/O beyond the two batched queries —
-  and those two queries would be needed for the engine fallback anyway.
+- **Cache before schedule:** version-checked entries already encode the
+  schedule outcome (a closed day cached as zero slots, and any schedule change
+  bumps the version), so the two schedule queries are spent only on misses —
+  where they cheaply eliminate closed-that-day candidates before engine work.
 - **Cache before engine:** self-evident; the point of the design.
 
 ### Correctness boundaries (deliberate)
 
-- A cached "has availability" may be up to 300s stale in either direction
-  (a table freed 2 minutes ago may not show; one booked 2 minutes ago may
-  still show). Both resolve at the next hop: the detail page recomputes on
-  miss, the booking path is exact. This is the correct trade for an anonymous,
-  unauthenticated, high-fan-out endpoint.
+- **Reservation changes:** invalidated per-date at mutation time — effectively
+  instant. The 300s TTL is only the backstop for a failed invalidation.
+- **Config changes (hours/tables/rules/closures):** version bump at mutation
+  time — visible on the next read. A failed bump degrades to the TTL bound.
+- **Billing changes:** never cached; live on every read.
 - Past-slot filtering happens at compute time, so an entry cached at 18:58 may
-  count a 19:00 slot until 19:03. Same bound, same absorption.
-- The 100-candidate cap is now a cap on *relevant* (q-filtered) candidates.
+  count a 19:00 slot until 19:03 — absorbed by the detail/booking hops, which
+  are exact where it matters.
+- The 100-candidate cap is a cap on *relevant* (q-filtered) candidates.
 
 ## 5. Scale model (validate against, revisit at thresholds)
 
 Assumptions: one metro ~200 listed restaurants; peak diner search ~50 req/s
 platform-wide; bookings ~10/s peak.
 
-- **Search:** warm ≈ 5 pooled queries + 1 MGET ⇒ trivially inside a 10-conn
+- **Search:** warm ≈ 3 pooled queries + 1 MGET ⇒ trivially inside a 10-conn
   pool at 50 req/s. Worst-case cold storm (cache flush at peak): misses ×3
   queries at concurrency 6 per request — pool-bounded, latency degrades, no
   failure.
@@ -126,7 +151,7 @@ platform-wide; bookings ~10/s peak.
 
 ## 6. Validation status
 
-- Integration tests (`search-availability.test.ts`) pin the three new
+- Integration tests (`search-availability.test.ts`, `availability-cache.test.ts`) pin the
   correctness properties: closed-day exclusion, lapsed-owner exclusion, and
   q-filtered candidates — including the gate-ordering case where a lapsed
   owner still has a warm cache entry.

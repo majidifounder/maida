@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import { prisma } from '@restaurant/db';
-import { getRedisClient } from '../../lib/redis.js';
 import { NotFoundError, UnprocessableError } from '../../errors/index.js';
 import { validateLogoBuffer } from '../../lib/image-validation.js';
 import { isLogoUploadAvailable, uploadRestaurantLogo as putLogoInR2 } from '../../lib/r2-storage.js';
@@ -8,7 +7,6 @@ import {
   assertOwnerCanOperate,
   canOwnerOperateFromSubscription,
   getEffectiveLimitsForOwner,
-  resolveOwnerBillingState,
 } from '../subscription/subscription.service.js';
 import {
   computeAvailabilityTimes,
@@ -32,12 +30,11 @@ import type {
 } from './restaurant.schema.js';
 
 import {
-  availabilityCacheKey,
-  readAvailabilityCacheBatch,
-  writeAvailabilityCache,
+  bumpAvailabilityVersion,
+  readAvailabilityEntriesBatch,
+  readAvailabilityEntry,
+  writeAvailabilityEntry,
 } from '../../lib/availability-cache.js';
-
-const AVAILABILITY_CACHE_TTL = 300;
 
 async function assertRestaurantOwner(restaurantId: string, callerId: string) {
   const restaurant = await prisma.restaurant.findFirst({
@@ -276,64 +273,81 @@ async function findAvailableRestaurantIds(
   });
   if (candidates.length === 0) return [];
 
-  // Gate 2 — billing, pure math on the joined subscription row.
+  // Gate 2 — billing, pure math on the joined subscription row. Runs before
+  // the cache so a lapsed owner can never leak through a warm entry.
   const operable = candidates.filter((r) =>
     canOwnerOperateFromSubscription(r.owner.subscription, r.owner.createdAt),
   );
   if (operable.length === 0) return [];
 
-  // Gate 3 — open that day at all? Two batched queries, then pure math.
-  const schedules = await loadRestaurantSchedules(operable);
-  const open = operable.filter(
-    (r) =>
-      serviceWindowsForLocalDate(date, r.timezone, schedules.get(r.id)!)
-        .length > 0,
-  );
-  if (open.length === 0) return [];
-
-  // Gate 4 — shared cache, one MGET round-trip.
-  const cached = await readAvailabilityCacheBatch(
-    open.map((r) => r.id),
+  // Gate 3 — shared version-checked cache, one MGET round-trip for everyone.
+  // A warm search touches the database exactly twice (candidates + final page).
+  const cached = await readAvailabilityEntriesBatch(
+    operable.map((r) => r.id),
     date,
     partySize,
   );
 
   const available: string[] = [];
-  const misses: typeof open = [];
-  open.forEach((r, i) => {
-    const raw = cached[i];
-    if (raw == null) {
+  const misses: typeof operable = [];
+  operable.forEach((r, i) => {
+    const entry = cached[i];
+    if (entry == null) {
       misses.push(r);
       return;
     }
-    try {
-      const parsed = JSON.parse(raw) as { times: unknown[] };
-      if (parsed.times.length > 0) available.push(r.id);
-    } catch {
-      misses.push(r); // corrupt entry — recompute
-    }
+    if (entry.times.length > 0) available.push(r.id);
   });
+  if (misses.length === 0) return available;
 
-  // Gate 5 — engine work for misses only, bounded, cache-warming.
-  await mapWithConcurrency(misses, SEARCH_COMPUTE_CONCURRENCY, async (r) => {
-    const times = await computeAvailabilityTimes(
-      r,
+  // Gate 4 — schedules for the MISSES only (two batched queries): closed that
+  // day drops out with zero engine work. On a Monday this typically halves
+  // the remaining set for free.
+  const schedules = await loadRestaurantSchedules(misses);
+  const toCompute: Array<{
+    restaurant: (typeof misses)[number];
+    serviceWindows: Array<{ open: string; close: string }>;
+  }> = [];
+  for (const r of misses) {
+    const windows = serviceWindowsForLocalDate(
       date,
-      partySize,
-      schedules.get(r.id),
+      r.timezone,
+      schedules.get(r.id)!,
     );
-    if (times.length > 0) available.push(r.id);
-    try {
-      await writeAvailabilityCache(
-        r.id,
-        date,
-        partySize,
-        JSON.stringify({ times }),
-      );
-    } catch {
-      /* cache write is best-effort */
+    if (windows.length > 0) {
+      toCompute.push({
+        restaurant: r,
+        serviceWindows: windows.map((w) => ({
+          open: w.start.toISOString(),
+          close: w.end.toISOString(),
+        })),
+      });
     }
-  });
+  }
+
+  // Gate 5 — engine work, bounded concurrency, writing FULL response entries
+  // so both the next search and the detail pages diners click through to are
+  // warm.
+  await mapWithConcurrency(
+    toCompute,
+    SEARCH_COMPUTE_CONCURRENCY,
+    async ({ restaurant: r, serviceWindows }) => {
+      const [times, standardDurationMins] = await Promise.all([
+        computeAvailabilityTimes(r, date, partySize, schedules.get(r.id)),
+        resolveDurationMins(r.id, partySize, r.defaultDurationMins),
+      ]);
+      if (times.length > 0) available.push(r.id);
+      try {
+        await writeAvailabilityEntry(r.id, date, partySize, {
+          times,
+          serviceWindows,
+          standardDurationMins,
+        });
+      } catch {
+        /* cache write is best-effort */
+      }
+    },
+  );
 
   return available;
 }
@@ -417,6 +431,32 @@ export async function getRestaurantConfig(
   return formatPublicRestaurant(restaurant);
 }
 
+/** Coarse day span [first open, last close] for display; null on closed days. */
+function spanOf(
+  serviceWindows: Array<{ open: string; close: string }>,
+): { open: string; close: string } | null {
+  if (serviceWindows.length === 0) return null;
+  return {
+    open: serviceWindows[0]!.open,
+    close: serviceWindows[serviceWindows.length - 1]!.close,
+  };
+}
+
+/**
+ * Diner-facing availability. The hot path of the diner app — the booking flow
+ * fires SEVEN of these in parallel (a 7-day scan) the moment a guest picks a
+ * party size, so the cache-hit cost is what the product feels like.
+ *
+ * Hit:  1 DB query (restaurant + joined subscription for the billing gate)
+ *       + 1 Redis MGET (version + full-response entry). Nothing else.
+ * Miss: + schedule (2) + turn-time (1) + engine occupancy (1) — then cached.
+ *
+ * Billing is checked LIVE on every request (pure math over the joined row) so
+ * a lapsed owner's restaurant stops advertising slots immediately, even while
+ * its cache entries are still warm. Config mutations bump the restaurant's
+ * availability version (see availability-cache.ts), so hours/table/rule
+ * changes take effect on the very next read, not after a TTL.
+ */
 export async function getAvailability(
   restaurantId: string,
   date: string,
@@ -432,9 +472,44 @@ export async function getAvailability(
       openMinutes: true,
       closeMinutes: true,
       timezone: true,
+      owner: {
+        select: {
+          createdAt: true,
+          subscription: {
+            select: { status: true, trialStartedAt: true, createdAt: true },
+          },
+        },
+      },
     },
   });
   if (!restaurant) throw new NotFoundError('Restaurant not found');
+
+  const canOperate = canOwnerOperateFromSubscription(
+    restaurant.owner.subscription,
+    restaurant.owner.createdAt,
+  );
+
+  const cached = await readAvailabilityEntry(restaurantId, date, partySize);
+  if (cached) {
+    if (!canOperate) {
+      return {
+        times: [],
+        standardDurationMins: cached.standardDurationMins,
+        serviceWindow: spanOf(cached.serviceWindows),
+        serviceWindows: cached.serviceWindows,
+        bookable: false,
+        notice:
+          'This restaurant is not currently accepting online reservations. Please check back later.',
+      };
+    }
+    return {
+      times: cached.times,
+      standardDurationMins: cached.standardDurationMins,
+      serviceWindow: spanOf(cached.serviceWindows),
+      serviceWindows: cached.serviceWindows,
+      bookable: true,
+    };
+  }
 
   const schedule = await loadRestaurantSchedule(restaurant.id, restaurant);
   const windows = serviceWindowsForLocalDate(date, restaurant.timezone, schedule);
@@ -442,13 +517,6 @@ export async function getAvailability(
     open: w.start.toISOString(),
     close: w.end.toISOString(),
   }));
-  const serviceWindow =
-    serviceWindows.length > 0
-      ? {
-          open: serviceWindows[0]!.open,
-          close: serviceWindows[serviceWindows.length - 1]!.close,
-        }
-      : null;
 
   const standardDurationMins = await resolveDurationMins(
     restaurant.id,
@@ -457,14 +525,15 @@ export async function getAvailability(
   );
 
   // A restaurant whose owner cannot currently operate (expired trial / lapsed
-  // plan) is not taking online reservations. Return no slots and a clear reason
-  // so the diner app can explain instead of failing at booking time.
-  const billing = await resolveOwnerBillingState(restaurant.ownerId);
-  if (!billing.canOperate) {
+  // plan) is not taking online reservations. Return no slots and a clear
+  // reason so the diner app can explain instead of failing at booking time.
+  // Deliberately NOT cached: operability is time- and billing-dependent, and
+  // must recover the instant the owner subscribes.
+  if (!canOperate) {
     return {
       times: [],
       standardDurationMins,
-      serviceWindow,
+      serviceWindow: spanOf(serviceWindows),
       serviceWindows,
       bookable: false,
       notice:
@@ -472,43 +541,26 @@ export async function getAvailability(
     };
   }
 
-  const cacheKey = availabilityCacheKey(restaurantId, date, partySize);
-  let times: Awaited<ReturnType<typeof computeAvailabilityTimes>> | null = null;
+  const times = await computeAvailabilityTimes(
+    restaurant,
+    date,
+    partySize,
+    schedule,
+  );
   try {
-    const redis = getRedisClient();
-    const cached = await redis.get(cacheKey);
-    if (cached) {
-      const parsed = JSON.parse(cached) as { times: typeof times };
-      times = parsed.times;
-    }
+    await writeAvailabilityEntry(restaurantId, date, partySize, {
+      times,
+      serviceWindows,
+      standardDurationMins,
+    });
   } catch {
-    /* non-fatal */
-  }
-
-  if (!times) {
-    times = await computeAvailabilityTimes(
-      restaurant,
-      date,
-      partySize,
-      schedule,
-    );
-    try {
-      await writeAvailabilityCache(
-        restaurantId,
-        date,
-        partySize,
-        JSON.stringify({ times }),
-        AVAILABILITY_CACHE_TTL,
-      );
-    } catch {
-      /* non-fatal */
-    }
+    /* cache write is best-effort */
   }
 
   return {
     times,
     standardDurationMins,
-    serviceWindow,
+    serviceWindow: spanOf(serviceWindows),
     serviceWindows,
     bookable: true,
   };
@@ -678,6 +730,8 @@ export async function updateReservationConfig(
     return row;
   });
 
+  await bumpAvailabilityVersion(restaurantId);
+
   return {
     ...updated,
     customFee: updated.customFee != null ? String(updated.customFee) : null,
@@ -737,7 +791,7 @@ export async function createTable(
     throw new UnprocessableError('maxPartySize must be >= minPartySize');
   }
 
-  return prisma.diningTable.create({
+  const table = await prisma.diningTable.create({
     data: {
       restaurantId,
       name: input.name,
@@ -745,6 +799,9 @@ export async function createTable(
       maxPartySize: input.maxPartySize,
     },
   });
+
+  await bumpAvailabilityVersion(restaurantId);
+  return table;
 }
 
 export async function updateTable(
@@ -761,7 +818,7 @@ export async function updateTable(
   });
   if (!existing) throw new NotFoundError('Table not found');
 
-  return prisma.diningTable.update({
+  const table = await prisma.diningTable.update({
     where: { id: tableId },
     data: {
       ...(input.name !== undefined && { name: input.name }),
@@ -770,6 +827,9 @@ export async function updateTable(
       ...(input.isActive !== undefined && { isActive: input.isActive }),
     },
   });
+
+  await bumpAvailabilityVersion(restaurantId);
+  return table;
 }
 
 export async function deleteTable(
@@ -789,6 +849,8 @@ export async function deleteTable(
     where: { id: tableId },
     data: { isActive: false },
   });
+
+  await bumpAvailabilityVersion(restaurantId);
 }
 
 // ── Table combinations ────────────────────────────────────────────────────────
@@ -841,7 +903,7 @@ export async function createCombination(
     throw new NotFoundError('One or more tables not found');
   }
 
-  return prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
     const combo = await tx.tableCombination.create({
       data: {
         restaurantId,
@@ -860,6 +922,9 @@ export async function createCombination(
       tableIds: combo.members.map((m) => m.tableId),
     };
   });
+
+  await bumpAvailabilityVersion(restaurantId);
+  return result;
 }
 
 export async function updateCombination(
@@ -903,6 +968,8 @@ export async function updateCombination(
     include: { members: { select: { tableId: true } } },
   });
 
+  await bumpAvailabilityVersion(restaurantId);
+
   return {
     ...updated,
     tableIds: updated.members.map((m) => m.tableId),
@@ -926,6 +993,8 @@ export async function deleteCombination(
     where: { id: combinationId },
     data: { isActive: false },
   });
+
+  await bumpAvailabilityVersion(restaurantId);
 }
 
 // ── Turn-time rules ─────────────────────────────────────────────────────────
@@ -953,7 +1022,7 @@ export async function createTurnTimeRule(
     throw new UnprocessableError('maxPartySize must be >= minPartySize');
   }
 
-  return prisma.turnTimeRule.create({
+  const rule = await prisma.turnTimeRule.create({
     data: {
       restaurantId,
       minPartySize: input.minPartySize,
@@ -961,6 +1030,9 @@ export async function createTurnTimeRule(
       durationMins: input.durationMins,
     },
   });
+
+  await bumpAvailabilityVersion(restaurantId);
+  return rule;
 }
 
 export async function deleteTurnTimeRule(
@@ -977,6 +1049,8 @@ export async function deleteTurnTimeRule(
   if (!existing) throw new NotFoundError('Turn-time rule not found');
 
   await prisma.turnTimeRule.delete({ where: { id: ruleId } });
+
+  await bumpAvailabilityVersion(restaurantId);
 }
 
 export async function setRestaurantLogo(
@@ -1089,6 +1163,8 @@ export async function replaceRestaurantSchedule(
     }
   });
 
+  await bumpAvailabilityVersion(restaurantId);
+
   return getRestaurantSchedule(restaurantId, callerId);
 }
 
@@ -1108,6 +1184,8 @@ export async function addRestaurantClosure(
     },
     select: { id: true, date: true, reason: true },
   });
+
+  await bumpAvailabilityVersion(restaurantId);
 
   return {
     id: closure.id,
@@ -1131,4 +1209,6 @@ export async function deleteRestaurantClosure(
   if (!existing) throw new NotFoundError('Closure not found');
 
   await prisma.restaurantClosure.delete({ where: { id: closureId } });
+
+  await bumpAvailabilityVersion(restaurantId);
 }
