@@ -139,8 +139,18 @@ const DAY_LABELS = [
 
 export const ReplaceScheduleSchema = z
   .object({
-    // At most a handful of windows per day across the week; cap defensively.
-    periods: z.array(ServicePeriodSchema).max(70),
+    // At least one window: an EMPTY schedule is indistinguishable from
+    // pre-migration data, which the engine backstops with the legacy single
+    // window — so "no windows at all" would silently mean "open every day".
+    // Closing indefinitely is what closures / deactivating the listing are
+    // for. Cap defensively at the top end.
+    periods: z
+      .array(ServicePeriodSchema)
+      .min(
+        1,
+        'Keep at least one weekly service window. To stop taking bookings, add closures or deactivate the restaurant.',
+      )
+      .max(70),
   })
   .superRefine((data, ctx) => {
     // Same-day windows must not overlap — overlapping windows would emit
