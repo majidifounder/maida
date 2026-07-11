@@ -16,10 +16,36 @@ jobs:
   deploy-staging:
     name: Build & Deploy to Staging
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     environment:
       name: staging
       url: ${{ vars.STAGING_URL }}
+
+    # Ephemeral stores so the integration suite gates the deploy for real
+    # (previously `pnpm test` ran with no DATABASE_URL and failed every push).
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: maida_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
     steps:
       - name: Checkout
@@ -39,6 +65,29 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Generate ephemeral RS256 key pair for tests
+        run: |
+          node -e "
+            const { generateKeyPairSync } = require('crypto');
+            const { appendFileSync } = require('fs');
+            const { privateKey, publicKey } = generateKeyPairSync('rsa', {
+              modulusLength: 2048,
+              publicKeyEncoding: { type: 'spki', format: 'pem' },
+              privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+            });
+            appendFileSync(process.env.GITHUB_ENV,
+              'JWT_PRIVATE_KEY<<EOF_KEY\n' + privateKey + 'EOF_KEY\n' +
+              'JWT_PUBLIC_KEY<<EOF_KEY\n' + publicKey + 'EOF_KEY\n');
+          "
+
+      - name: Prepare ephemeral test database
+        run: |
+          pnpm --filter @restaurant/db exec prisma migrate deploy
+          pnpm --filter @restaurant/db exec prisma generate
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/maida_test
+          DIRECT_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/maida_test
+
       - name: Run CI checks
         run: |
           pnpm lint
@@ -46,6 +95,10 @@ jobs:
           pnpm test
         env:
           NODE_ENV: test
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/maida_test
+          DIRECT_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/maida_test
+          REDIS_URL: redis://localhost:6379
+          BCRYPT_ROUNDS: "10"
 
       - name: Build all apps
         run: pnpm build
@@ -53,6 +106,14 @@ jobs:
           NODE_ENV: production
 
       # ─────────────────────────────────────────
+
+      - name: Run STAGING database migrations
+        # The API image never migrates at boot — schema must lead code.
+        run: pnpm --filter @restaurant/db exec prisma migrate deploy
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          DIRECT_DATABASE_URL: ${{ secrets.STAGING_DIRECT_DATABASE_URL }}
+
       - name: Install Railway CLI
         run: npm install -g @railway/cli
 

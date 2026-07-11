@@ -1,5 +1,5 @@
 import { Worker, type Job } from 'bullmq';
-import { prisma } from '@restaurant/db';
+import { prisma, Prisma } from '@restaurant/db';
 import { env } from '../env.js';
 import { logger } from '../lib/logger.js';
 import {
@@ -60,7 +60,26 @@ async function processNotificationJob(
   job: Job<ReservationEventPayload>,
 ): Promise<void> {
   const { eventType, reservationId, cancelledBy } = job.data;
-  const data = await fetchEmailData(reservationId);
+
+  let data: ReservationEmailData;
+  try {
+    data = await fetchEmailData(reservationId);
+  } catch (err) {
+    // Reservation gone (hard-deleted: GDPR erasure, admin cleanup, test data).
+    // There is nothing left to notify anyone about — complete the job quietly
+    // instead of burning retries and paging the operator.
+    if (
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === 'P2025'
+    ) {
+      logger.warn(
+        { jobId: job.id, eventType, reservationId },
+        '[NotificationWorker] reservation no longer exists — skipping notification',
+      );
+      return;
+    }
+    throw err;
+  }
 
   switch (eventType) {
     case 'reservation.created':

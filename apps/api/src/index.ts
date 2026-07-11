@@ -191,7 +191,12 @@ async function buildServer() {
   });
 
   // --- Security headers + correlation ID ---
-  fastify.addHook('onSend', (request, reply) => {
+  // MUST be async and return the payload: Fastify's onSend contract is
+  // (request, reply, payload, done) OR a promise resolving to the payload.
+  // The previous sync 2-arg version returned undefined, so Fastify waited for
+  // a `done` that never came — EVERY response hung forever after routing.
+  // Tests never caught it because buildTestServer skips index.ts middleware.
+  fastify.addHook('onSend', async (request, reply, payload) => {
     void reply.header(
       'Permissions-Policy',
       'accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()',
@@ -199,6 +204,7 @@ async function buildServer() {
     void reply.removeHeader('X-Powered-By');
     void reply.header('X-DNS-Prefetch-Control', 'off');
     void reply.header('X-Request-Id', request.id);
+    return payload;
   });
 
   // --- Block HTTP method override headers ---
