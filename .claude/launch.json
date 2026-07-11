@@ -6,6 +6,12 @@
       "runtimeExecutable": "pnpm",
       "runtimeArgs": ["--filter", "@restaurant/dashboard", "dev"],
       "port": 5174
+    },
+    {
+      "name": "api",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@restaurant/api", "dev"],
+      "port": 3001
     }
   ]
 }

@@ -43,10 +43,25 @@ vi.mock('resend', () => ({
   Resend: MockResend,
 }));
 
+// Minimal stand-in for Prisma's known-request error so the worker's
+// missing-reservation (P2025) detection can run against the mock. Hoisted —
+// vi.mock factories execute before top-level module code.
+const { MockPrismaKnownError } = vi.hoisted(() => {
+  class MockPrismaKnownError extends Error {
+    code: string;
+    constructor(code: string) {
+      super(`mock prisma error ${code}`);
+      this.code = code;
+    }
+  }
+  return { MockPrismaKnownError };
+});
+
 vi.mock('@restaurant/db', () => ({
   prisma: {
     reservation: { findUniqueOrThrow: mockFindUniqueOrThrow },
   },
+  Prisma: { PrismaClientKnownRequestError: MockPrismaKnownError },
 }));
 
 vi.mock('../lib/notify-once.js', () => ({
@@ -306,6 +321,20 @@ describe('processNotificationJob', () => {
     });
 
     await expect(processNotificationJob(job)).resolves.toBeUndefined();
+    expect(mockEmailSend).not.toHaveBeenCalled();
+  });
+
+  it('deleted reservation (P2025) → skips quietly, never retries or alerts', async () => {
+    mockFindUniqueOrThrow.mockRejectedValue(new MockPrismaKnownError('P2025'));
+
+    await expect(
+      processNotificationJob(
+        makeJob({
+          eventType: 'reservation.created',
+          reservationId: MOCK_RESERVATION_ID,
+        }),
+      ),
+    ).resolves.toBeUndefined();
     expect(mockEmailSend).not.toHaveBeenCalled();
   });
 

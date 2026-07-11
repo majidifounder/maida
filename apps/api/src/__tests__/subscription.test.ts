@@ -22,15 +22,24 @@ const { mockRedisSet, mockRedisDel, mockRedisGet } = vi.hoisted(() => ({
   mockRedisGet: vi.fn().mockResolvedValue(null),
 }));
 
-vi.mock('../lib/redis.js', () => ({
-  getRedisClient: () => ({
+vi.mock('../lib/redis.js', () => {
+  const client = () => ({
     set: mockRedisSet,
     del: mockRedisDel,
     get: mockRedisGet,
+    incr: vi.fn().mockResolvedValue(1),
+    mget: vi.fn().mockResolvedValue([]),
     ping: vi.fn().mockResolvedValue('PONG'),
-  }),
-  createSubscriberClient: vi.fn(),
-}));
+  });
+  return {
+    getRedisClient: client,
+    // authenticate() calls this on every request — the mock MUST provide it,
+    // or vitest's strict-mock error trips the plugin's infra-failure catch and
+    // every authenticated call in this file returns 503.
+    ensureRedisConnected: () => Promise.resolve(client()),
+    createSubscriberClient: vi.fn(),
+  };
+});
 
 const { mockUpsert } = vi.hoisted(() => ({
   mockUpsert: vi.fn().mockResolvedValue(undefined),

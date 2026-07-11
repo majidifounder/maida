@@ -8,6 +8,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 loadDotenv({ path: resolve(__dirname, '../../.env') });
 
 process.env.RESEND_API_KEY ??= 're_test_placeholder';
+// Tests publish real BullMQ jobs — isolate them on their own queue so they can
+// never pollute the queue a dev/staging worker drains on the same Redis.
+process.env.QUEUE_NAME = 'booking_events_test';
 process.env.EMAIL_FROM ??= 'reservations@restaurant-booking.app';
 process.env.LEMON_SQUEEZY_WEBHOOK_SECRET = 'test_secret';
 process.env.LEMON_SQUEEZY_API_KEY = 'test_key';
