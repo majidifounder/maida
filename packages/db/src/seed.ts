@@ -12,12 +12,22 @@ const DEV_PASSWORD_HASH = bcrypt.hashSync(DEV_PASSWORD, 12);
 async function main(): Promise<void> {
   console.log('🌱 Seeding database...');
 
+  // Seeded accounts are pre-verified so demo diners/owners can book and create
+  // restaurants immediately (the R7b verification gate would otherwise block
+  // them — seed data is meant to be usable out of the box).
+  const now = new Date();
+
   const owners = await Promise.all(
     ['alice@example.com', 'bob@example.com'].map((email) =>
       prisma.user.upsert({
         where: { email },
-        update: {},
-        create: { email, password: DEV_PASSWORD_HASH, role: Role.OWNER },
+        update: { emailVerifiedAt: now },
+        create: {
+          email,
+          password: DEV_PASSWORD_HASH,
+          role: Role.OWNER,
+          emailVerifiedAt: now,
+        },
       }),
     ),
   );
@@ -27,8 +37,13 @@ async function main(): Promise<void> {
       (email) =>
         prisma.user.upsert({
           where: { email },
-          update: {},
-          create: { email, password: DEV_PASSWORD_HASH, role: Role.DINER },
+          update: { emailVerifiedAt: now },
+          create: {
+            email,
+            password: DEV_PASSWORD_HASH,
+            role: Role.DINER,
+            emailVerifiedAt: now,
+          },
         }),
     ),
   );

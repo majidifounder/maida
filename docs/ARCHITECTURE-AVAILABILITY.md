@@ -157,7 +157,14 @@ platform-wide; bookings ~10/s peak.
   owner still has a warm cache entry.
 - Cache read/write/invalidate semantics are covered by
   `availability-cache.test.ts`.
-- **Outstanding (needs a live stack):** a booking-burst load test against the
-  PgBouncer transaction pooler (`scripts/load-test.ts`), and a cold-search
-  storm benchmark. Run both before the first marketing push; check-env already
-  blocks prod deploys missing `pgbouncer=true`.
+- **Load/correctness gate (`scripts/load-test.ts`, `pnpm load-test`):** N
+  diners race for a single table at one instant; asserts exactly one `201`,
+  the rest `409`, no `5xx`/pool-exhaustion/prepared-statement errors, and
+  exactly one unreleased hold in the database, reporting p50/p95/max latency.
+  Point `DATABASE_URL` at the `:6543?pgbouncer=true` pooler before running to
+  make this the PgBouncer stress test. (Rewritten 2026-07-12 — it previously
+  targeted the retired slot-counter model and could not run.)
+- **Outstanding (needs staging traffic):** run `load-test` against a staging
+  deploy on the production pooler at higher `LOAD_TEST_CONCURRENT`, plus a
+  cold-search storm benchmark, before the first marketing push; check-env
+  already blocks prod deploys missing `pgbouncer=true`.
