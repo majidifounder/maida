@@ -1,5 +1,14 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import fp from 'fastify-plugin';
 import { env } from '../env.js';
+
+/** Constant-time secret comparison — hashed first so unequal lengths are safe. */
+function secretMatches(incoming: unknown, expected: string): boolean {
+  if (typeof incoming !== 'string') return false;
+  const a = createHash('sha256').update(incoming).digest();
+  const b = createHash('sha256').update(expected).digest();
+  return timingSafeEqual(a, b);
+}
 
 /**
  * Blocks requests that bypass Cloudflare by checking a shared secret
@@ -26,8 +35,7 @@ export const cloudflareOnlyPlugin = fp(
         return;
       }
 
-      const incoming = request.headers['x-cf-origin-secret'];
-      if (incoming !== secret) {
+      if (!secretMatches(request.headers['x-cf-origin-secret'], secret)) {
         return reply.status(403).send({ error: 'Forbidden' });
       }
     });

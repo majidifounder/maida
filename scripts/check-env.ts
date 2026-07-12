@@ -122,11 +122,17 @@ async function checkRedisEvictionPolicy(): Promise<void> {
   }
 }
 
-await checkRedisEvictionPolicy();
-
-if (hasError) {
-  console.error('\nDeploy blocked — fix the above issues first.\n');
-  process.exit(1);
-} else {
-  console.log('\nAll required environment variables are present.\n');
-}
+// No top-level await: tsx compiles standalone scripts as CJS, where it is a
+// syntax error — the previous version crashed before checking anything.
+checkRedisEvictionPolicy()
+  .catch(() => {
+    console.warn('⚠️  Redis eviction policy check errored — verify manually');
+  })
+  .finally(() => {
+    if (hasError) {
+      console.error('\nDeploy blocked — fix the above issues first.\n');
+      process.exit(1);
+    } else {
+      console.log('\nAll required environment variables are present.\n');
+    }
+  });

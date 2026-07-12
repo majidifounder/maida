@@ -48,6 +48,7 @@ Set up accounts and tokens first. For `CORS_ORIGIN` and `EMAIL_FROM`, use your *
 - [ ] `STAGING_LS_VARIANT_STARTER` — variant ID for STARTER plan
 - [ ] `STAGING_LS_VARIANT_PRO` — variant ID for PRO plan
 - [ ] `STAGING_LS_VARIANT_PREMIUM` — variant ID for PREMIUM plan
+- [ ] `STAGING_CF_ORIGIN_SECRET` — long random string; same value in the staging Cloudflare Transform Rule (x-cf-origin-secret header)
 - [ ] `STAGING_WEB_URL` — temporary: Vercel staging URL for diner app (password reset + checkout return context)
 - [ ] `STAGING_DASHBOARD_URL` — temporary: Vercel staging URL for owner dashboard
 
@@ -68,6 +69,8 @@ Set up accounts and tokens first. For `CORS_ORIGIN` and `EMAIL_FROM`, use your *
 - [ ] `PROD_LS_VARIANT_STARTER` — variant ID for STARTER plan
 - [ ] `PROD_LS_VARIANT_PRO` — variant ID for PRO plan
 - [ ] `PROD_LS_VARIANT_PREMIUM` — variant ID for PREMIUM plan
+- [ ] `PROD_CF_ORIGIN_SECRET` — REQUIRED (check-env blocks prod without it, min 32 chars); same value in the prod Cloudflare Transform Rule
+- [ ] `PROD_ALERT_WEBHOOK_URL` — optional Slack-compatible webhook for critical alerts (worker failures, uncaught exceptions)
 - [ ] `PROD_WEB_URL` — update in Phase B: `https://yourdomain.com`
 - [ ] `PROD_DASHBOARD_URL` — update in Phase B: `https://dashboard.yourdomain.com`
 

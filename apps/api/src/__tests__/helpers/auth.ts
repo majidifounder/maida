@@ -67,6 +67,7 @@ export async function loginUser(
       | 'PREMIUM'
       | 'TRIAL'
       | 'TRIAL_EXPIRED'
+      | 'EXPIRED'
       | 'none';
   } = {},
 ): Promise<TestCredentials> {
@@ -77,6 +78,14 @@ export async function loginUser(
 
     if (plan === 'none') {
       await prisma.subscription.deleteMany({ where: { userId } });
+    } else if (plan === 'EXPIRED') {
+      // A paid subscription that lapsed: the webhook forces plan → STARTER and
+      // status → EXPIRED. Operability then falls back to the free Starter tier.
+      await prisma.subscription.upsert({
+        where: { userId },
+        create: { userId, plan: 'STARTER', status: 'EXPIRED' },
+        update: { plan: 'STARTER', status: 'EXPIRED', trialStartedAt: null },
+      });
     } else if (plan === 'TRIAL' || plan === 'TRIAL_EXPIRED') {
       const trialStartedAt =
         plan === 'TRIAL_EXPIRED'

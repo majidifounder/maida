@@ -49,6 +49,19 @@ function isHealthRoute(url: string): boolean {
   return path === '/health' || path === '/health/ready';
 }
 
+/**
+ * Payment-provider webhooks arrive from the PROVIDER's egress IPs, so the
+ * global per-IP rate limit would throttle a whole store's billing traffic onto
+ * one bucket — a burst of Lemon Squeezy events (or its retry storms) could be
+ * 429'd and, since we only 200 on success, silently dropped → subscription
+ * state drift. These endpoints are already gated by HMAC signature
+ * verification and Redis idempotency, so the IP limit adds no protection here.
+ */
+function isWebhookRoute(url: string): boolean {
+  const path = url.split('?')[0] ?? url;
+  return path.startsWith('/webhooks/');
+}
+
 function sendLiveness(res: ServerResponse): void {
   const body = JSON.stringify({
     status: 'ok',
@@ -144,7 +157,10 @@ async function buildServer() {
     max: 100,
     timeWindow: '1 minute',
     keyGenerator: (req) => getRealIp(req),
-    allowList: (req) => isLoadTestRequest(req) || isHealthRoute(req.url),
+    allowList: (req) =>
+      isLoadTestRequest(req) ||
+      isHealthRoute(req.url) ||
+      isWebhookRoute(req.url),
     errorResponseBuilder: (_req, context) => ({
       statusCode: 429,
       error: 'Too Many Requests',

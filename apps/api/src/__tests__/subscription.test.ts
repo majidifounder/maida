@@ -680,6 +680,57 @@ describe('Owner trial lifecycle', () => {
     expect(body.error).toContain('trial has ended');
   });
 
+  it('lapsed paid subscription falls back to a usable free Starter tier', async () => {
+    const owner = await loginUser(app, {
+      role: 'owner',
+      subscriptionPlan: 'EXPIRED',
+    });
+    trackedUserIds.push(owner.userId);
+
+    // /subscriptions/me reports the Starter fallback and that the owner can
+    // still operate — not locked out like an expired trial.
+    const me = await app.inject({
+      method: 'GET',
+      url: '/subscriptions/me',
+      headers: { Authorization: `Bearer ${owner.accessToken}` },
+    });
+    expect(me.statusCode).toBe(200);
+    expect(me.json().subscription.billingTier).toBe('STARTER');
+    expect(me.json().subscription.canOperate).toBe(true);
+
+    // Starter-allowed operation still works: the first restaurant is created.
+    const first = await app.inject({
+      method: 'POST',
+      url: '/restaurants',
+      headers: { Authorization: `Bearer ${owner.accessToken}` },
+      payload: {
+        name: 'Lapsed But Open',
+        cuisine: 'ITALIAN',
+        description: 'Still serving on Starter',
+        address: '1 Fallback St',
+        city: 'Paris',
+      },
+    });
+    expect(first.statusCode).toBe(201);
+
+    // Exceeding the Starter limit is blocked with the upgrade path — the
+    // premium capability is disabled, not the whole account.
+    const second = await app.inject({
+      method: 'POST',
+      url: '/restaurants',
+      headers: { Authorization: `Bearer ${owner.accessToken}` },
+      payload: {
+        name: 'One Too Many',
+        cuisine: 'ITALIAN',
+        description: 'Over the Starter limit',
+        address: '2 Fallback St',
+        city: 'Paris',
+      },
+    });
+    expect(second.statusCode).toBe(403);
+    expect(second.json().upgrade).toBe('/subscriptions/checkout');
+  });
+
   it('applies stricter trial limits than STARTER', async () => {
     const owner = await loginUser(app, {
       role: 'owner',

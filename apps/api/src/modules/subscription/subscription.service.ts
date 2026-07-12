@@ -71,6 +71,42 @@ function isPaidSubscriptionActive(status: SubscriptionStatus): boolean {
   );
 }
 
+/**
+ * Single source of truth for whether an owner may operate (accept reservations,
+ * mutate their restaurant) given their subscription status. Both the
+ * DB-touching `resolveOwnerBillingState` (owner dashboard / plan-limit path) and
+ * the pure `canOwnerOperateFromSubscription` (diner-search batch path) derive
+ * `canOperate` from here, so the two paths can never drift — ARCHITECTURE-
+ * AVAILABILITY.md requires them to encode the same rules.
+ *
+ * The switch is exhaustive: adding a `SubscriptionStatus` fails to compile at the
+ * `never` assignment, forcing a new state to be classified consciously instead
+ * of silently inheriting "operable" on one path and "locked" on the other.
+ */
+function isOwnerOperableByStatus(
+  status: SubscriptionStatus,
+  trialStart: Date,
+): boolean {
+  switch (status) {
+    case SubscriptionStatus.TRIALING:
+      // Operable only while the 14-day trial window is still open.
+      return !isTrialPeriodExpired(trialStart);
+    case SubscriptionStatus.ACTIVE:
+    case SubscriptionStatus.PAST_DUE:
+    case SubscriptionStatus.PAUSED:
+    case SubscriptionStatus.CANCELLED:
+      // Paid states (CANCELLED = cancel-at-period-end, still inside the paid window).
+      return true;
+    case SubscriptionStatus.EXPIRED:
+      // Lapsed paid subscription falls back to a usable free Starter tier.
+      return true;
+    default: {
+      const _exhaustive: never = status;
+      return _exhaustive;
+    }
+  }
+}
+
 export async function ensureOwnerSubscription(userId: string) {
   const existing = await prisma.subscription.findUnique({ where: { userId } });
   if (existing) return existing;
@@ -105,7 +141,7 @@ export async function resolveOwnerBillingState(
     return {
       billingTier: 'TRIAL',
       limits: TRIAL_LIMITS,
-      canOperate: !expired,
+      canOperate: isOwnerOperableByStatus(sub.status, trialStart),
       isTrialActive: !expired,
       isTrialExpired: expired,
       trialStartedAt: trialStart,
@@ -120,7 +156,7 @@ export async function resolveOwnerBillingState(
     return {
       billingTier: sub.plan as BillingTier,
       limits: getPlanLimits(sub.plan as TypesPlan),
-      canOperate: true,
+      canOperate: isOwnerOperableByStatus(sub.status, trialStart),
       isTrialActive: false,
       isTrialExpired: false,
       trialStartedAt: sub.trialStartedAt,
@@ -133,16 +169,18 @@ export async function resolveOwnerBillingState(
     };
   }
 
-  // EXPIRED paid subscription — LOCKED, same as an expired trial. The previous
-  // behavior (free Starter service forever) made a churned customer strictly
-  // better off than a paying Starter one: subscribe once, let it lapse, keep
-  // operating free. Lapsed owners keep read/manage access to existing
-  // reservations (assertOwnerAccess is deliberately ungated); only NEW
-  // inventory is blocked, and diner availability shows bookable:false.
+  // EXPIRED paid subscription — graceful fallback to the FREE STARTER plan.
+  // A lapsed owner keeps running at Starter limits: existing restaurants,
+  // tables, and reservation history stay accessible, diner availability stays
+  // bookable, and Starter-allowed operations continue to work. Premium
+  // features (extra restaurants, flexible seating, custom reservations, higher
+  // caps) are disabled because `limits` is Starter — attempting to exceed them
+  // surfaces the standard plan-limit 403 with an upgrade path. Only an expired
+  // TRIAL (never paid) stays fully locked.
   return {
     billingTier: 'STARTER',
     limits: getPlanLimits('STARTER'),
-    canOperate: false,
+    canOperate: isOwnerOperableByStatus(sub.status, trialStart),
     isTrialActive: false,
     isTrialExpired: false,
     trialStartedAt: sub.trialStartedAt,
@@ -166,8 +204,10 @@ export async function getEffectiveLimitsForOwner(
  * PURE operability check for batch read paths (search). Applies exactly the
  * rules of resolveOwnerBillingState without touching the database:
  * TRIALING → trial window still open; ACTIVE/PAST_DUE/PAUSED/CANCELLED → yes;
- * EXPIRED → no. A missing subscription row is what the lazy initializer would
- * create — a trial running from the owner's account creation.
+ * EXPIRED → yes, via the free-Starter fallback (a lapsed paid owner keeps
+ * operating at Starter limits). Only an expired trial (never paid) is locked.
+ * A missing subscription row is what the lazy initializer would create — a
+ * trial running from the owner's account creation.
  */
 export function canOwnerOperateFromSubscription(
   sub: {
@@ -177,11 +217,11 @@ export function canOwnerOperateFromSubscription(
   } | null,
   ownerCreatedAt: Date,
 ): boolean {
+  // A missing row is the trial the lazy initializer would create, running from
+  // the owner's account creation.
   if (!sub) return !isTrialPeriodExpired(ownerCreatedAt);
-  if (sub.status === SubscriptionStatus.TRIALING) {
-    return !isTrialPeriodExpired(resolveTrialStart(sub));
-  }
-  return isPaidSubscriptionActive(sub.status);
+  // Same classifier as the DB path, so the two never disagree on operability.
+  return isOwnerOperableByStatus(sub.status, resolveTrialStart(sub));
 }
 
 export async function assertOwnerCanOperate(userId: string): Promise<void> {

@@ -18,3 +18,6 @@ backups/*.json.bak
 
 # Dev logo uploads (local fallback when R2 is not configured)
 apps/api/uploads/
+
+# graphify knowledge-graph output (generated locally, regenerable via /graphify)
+graphify-out/
