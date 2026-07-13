@@ -282,9 +282,12 @@ describe('GET /restaurants (public search)', () => {
   });
 
   it('200 — partySize larger than any table capacity returns 0 for that city', async () => {
+    // 50 is the maximum party size search accepts (AvailabilityPartySizeSchema);
+    // it still exceeds every table here (max 8), so the availability filter
+    // returns 0 rather than a validation error.
     const res = await server.inject({
       method: 'GET',
-      url: `/restaurants?date=${futureDate(5)}&partySize=999&city=${encodeURIComponent(searchCity)}`,
+      url: `/restaurants?date=${futureDate(5)}&partySize=50&city=${encodeURIComponent(searchCity)}`,
     });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body) as { total: number };
