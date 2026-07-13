@@ -42,10 +42,22 @@ export function signRefreshToken(payload: { sub: string }): {
   return { token, jti, expiresAt: exp };
 }
 
+const VALID_ROLES: ReadonlySet<Role> = new Set<Role>(['diner', 'owner', 'admin']);
+
 export function verifyAccessToken(token: string): JWTPayload {
   const decoded = jwt.verify(token, env.JWT_PUBLIC_KEY, {
     algorithms: ['RS256'],
-  }) as JWTPayload;
+  }) as JWTPayload & { type?: string };
+
+  // Access and refresh tokens are signed with the SAME RS256 key, so a refresh
+  // token presents a valid signature here. Reject it explicitly (token-type
+  // confusion): a refresh token carries `type: 'refresh'` and no `role`, and
+  // must never be accepted as a bearer access token on authenticated routes.
+  // verifyRefreshToken enforces the symmetric guard for the other direction.
+  if (decoded.type === 'refresh' || !VALID_ROLES.has(decoded.role)) {
+    throw new Error('Not an access token');
+  }
+
   return decoded;
 }
 

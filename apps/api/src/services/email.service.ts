@@ -53,6 +53,22 @@ function icsEscape(text: string): string {
   return text.replace(/\\/g, '\\\\').replace(/[;,]/g, (c) => `\\${c}`).replace(/\n/g, '\\n');
 }
 
+/**
+ * Escapes text before interpolation into an HTML email body. Restaurant name,
+ * address, and city are owner-controlled and land in emails sent to DINERS, so
+ * an unescaped value is a stored HTML/content-injection vector (phishing links,
+ * spoofed content). Email clients strip <script>, but injected markup and
+ * attributes are still dangerous — escape at the boundary.
+ */
+function htmlEscape(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function icsUtcStamp(iso: string): string {
   return new Date(iso).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
 }
@@ -111,7 +127,7 @@ export async function sendReservationCreated(
         subject: `Reservation confirmed — ${data.restaurantName}`,
         html: `
         <h2>Your reservation is confirmed!</h2>
-        <p><strong>Restaurant:</strong> ${data.restaurantName}</p>
+        <p><strong>Restaurant:</strong> ${htmlEscape(data.restaurantName)}</p>
         <p><strong>Date &amp; time:</strong> ${time}</p>
         <p><strong>Party size:</strong> ${data.partySize}</p>
         <p style="color:#6b7280;font-size:13px">Reference: ${ref}</p>
@@ -162,7 +178,7 @@ export async function sendReservationSeated(
       subject: `You're seated — ${data.restaurantName}`,
       html: `
         <h2>Welcome!</h2>
-        <p>Your party has been seated at ${data.restaurantName}.</p>
+        <p>Your party has been seated at ${htmlEscape(data.restaurantName)}.</p>
         <p><strong>Reservation time:</strong> ${time}</p>
         <p><strong>Party size:</strong> ${data.partySize}</p>
       `,
@@ -186,7 +202,7 @@ export async function sendReservationCancelledByDiner(
         html: `
         <h2>Reservation cancelled</h2>
         <p>Your cancellation has been processed.</p>
-        <p><strong>Restaurant:</strong> ${data.restaurantName}</p>
+        <p><strong>Restaurant:</strong> ${htmlEscape(data.restaurantName)}</p>
         <p><strong>Original time:</strong> ${time}</p>
         <p style="color:#6b7280;font-size:13px">Reference: ${ref}</p>
       `,
@@ -225,7 +241,7 @@ export async function sendReservationCancelledByOwner(
       html: `
         <h2>Reservation cancelled by restaurant</h2>
         <p>We're sorry — the restaurant has had to cancel your reservation.</p>
-        <p><strong>Restaurant:</strong> ${data.restaurantName}</p>
+        <p><strong>Restaurant:</strong> ${htmlEscape(data.restaurantName)}</p>
         <p><strong>Original time:</strong> ${time}</p>
       `,
     }),
@@ -255,8 +271,8 @@ export async function sendReservationReminder(
       html: `
         <h2>See you soon!</h2>
         <p>A reminder of your upcoming reservation.</p>
-        <p><strong>Restaurant:</strong> ${data.restaurantName}</p>
-        ${location ? `<p><strong>Address:</strong> ${location}</p>` : ''}
+        <p><strong>Restaurant:</strong> ${htmlEscape(data.restaurantName)}</p>
+        ${location ? `<p><strong>Address:</strong> ${htmlEscape(location)}</p>` : ''}
         <p><strong>Date &amp; time:</strong> ${time}</p>
         <p><strong>Party size:</strong> ${data.partySize}</p>
         <p style="color:#6b7280;font-size:13px">Reference: ${ref}</p>
