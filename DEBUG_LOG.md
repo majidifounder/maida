@@ -107,6 +107,53 @@ Verification: api typecheck ✅; `reservation.test.ts` ✅ 20 passed; full **`pn
 
 Files changed (Iteration 2): `apps/api/src/lib/redis.ts`, `apps/api/src/plugins/authenticate.ts`.
 
+---
+
+## Iteration 3 — new deterministic `pnpm test` failure (2026-07-13)
+
+User's `pnpm test` failed on a *different*, deterministic test (the Iteration-2 Redis flake is resolved — the concurrency test passed). Suite has grown to 164 tests / 11 files.
+
+```
+FAIL restaurant.test.ts:289  "200 — partySize larger than any table capacity returns 0 for that city"
+expected 422 to be 200   (GET /restaurants?...&partySize=999 → 422)
+```
+
+### Root cause — stale test vs. an intentional hardening
+- `git log -L` shows the test line (`partySize=999`) was added long ago in `e0b6daf` (Phase 3 tests), when search had no party-size cap → it returned 200/total:0.
+- The cap `AvailabilityPartySizeSchema = z.coerce.number().int().min(1).max(50)` was added **later** in `e214ff3` ("harden … party size …"), a deliberate anti-abuse limit (bounds cache keys / rejects sizes no table could seat). That commit didn't update the older test, so `partySize=999` now fails validation → 422.
+
+### Fix
+- `restaurant.test.ts` — changed the oversized value `999 → 50`. The test's search restaurant has only 8-seat tables (lines 213-214), so 50 (the max search accepts) still exceeds every table and the availability filter returns 0 — preserving the test's intent while respecting the documented input cap. Schema left intentionally unchanged.
+
+Verification: `restaurant.test.ts` ✅ 41 passed; full **`pnpm test` → 187 passed, 0 failed** (api 164, web 9, api-client 14; 7/7 packages).
+
+File changed (Iteration 3): `apps/api/src/__tests__/restaurant.test.ts` (test-only).
+
+---
+
+## Iteration 4 — web suite timeouts under parallel load (2026-07-13)
+
+User's `pnpm test` failed in `@restaurant/web` (the api/api-client suites passed). Two tests **timed out at 5000ms** (not assertion failures):
+```
+× booking-availability.test.ts:40  "computes next available and in-30-min picks"  (timed out)
+× restaurant-time.test.ts:14        "formats service window in restaurant timezone" (timed out)
+```
+
+### Root cause — cold ICU timezone load starved by parallel suites (no code bug)
+- Both failing tests are the **first** call to `Intl.DateTimeFormat` with a named timezone in their file; every later timezone test passed in 2–12ms. That's the signature of a one-time ICU timezone-data load.
+- `formatServiceWindowLabel` / `computeQuickPicks` are trivial — every loop is bounded over finite arrays; no hang is possible (verified by reading the source).
+- `turbo run test` runs all package suites **in parallel**. The API suite forks many workers hammering live Upstash/Supabase, saturating CPU. On the user's machine that starved the web worker's first ICU load past Vitest's 5s default → timeout. (Did not reproduce locally, where web finishes in ~1.5s — it's load-dependent.)
+
+### Fix
+- `apps/web/vite.config.ts` — switched `defineConfig` import to `vitest/config` (vite ignores the `test` key, so `vite build`/`dev` are unaffected — verified build still passes) and added `test: { testTimeout: 20_000, hookTimeout: 20_000 }`. No test logic touched; just realistic headroom for a cold environment under contention.
+
+Verification (all green):
+- web test ✅ 9 passed; web build (`tsc --noEmit && vite build`) ✅
+- full **`pnpm test` → 187 passed, 0 failed** (api 164, web 9, api-client 14; 7/7 packages)
+- **`pnpm e2e` → 25 passed, 0 failed** (no regression from the test/config changes)
+
+Files changed (Iteration 4): `apps/web/vite.config.ts` (config-only). Committed together with Iteration 3.
+
 ### Known non-blocking risks before publishing
 - **`bullmq` mock gap (test noise):** `notification.test.ts` mocks `bullmq` without a `Queue` export, so `getQueue()` throws and the reminder-scheduling branch is swallowed (`[Queue] failed to schedule reminder`). Tests pass but that branch isn't actually exercised — worth fixing for real coverage. Not a runtime bug.
 - **Redis retry latency trade-off:** during a *sustained* Upstash outage, the auth check now takes up to ~2×(1.5s connect + 2s command) before its 503. Acceptable per the fail-closed design; bounded at 2 attempts.
