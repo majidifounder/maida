@@ -1,625 +1,614 @@
-# Launch Checklist
+# Maida — Production Deployment Guide
 
-Work through this top to bottom. The list is split into two phases:
+A complete, start-to-finish guide to deploying the Maida restaurant‑reservation
+platform to production. **No prior knowledge of the stack is assumed.** Follow
+the parts in order; each step says exactly what to click, what to run, and where
+to find every value.
 
-| Phase | When | What |
-|-------|------|------|
-| **A · Before you buy a domain** | Now | Infra, secrets, local checks, staging on default host URLs (`*.vercel.app`, `*.up.railway.app`) |
-| **B · After you buy a domain** | Once you own `yourdomain.com` | DNS, Cloudflare, Resend verification, production URLs, go-live |
-
----
-
-# Phase A · Before you buy a domain
-
-Everything here can be completed while developing locally or using platform default URLs. No custom domain required.
+> **Golden rule:** never commit a real secret. Everything sensitive lives in
+> GitHub Actions Secrets and in each host's environment settings — never in the
+> repo. `.env` is git‑ignored; only `*.env.example` files are committed.
 
 ---
 
-## A1 · GitHub repository settings
+## 0 · What you are deploying
 
-- [ ] **Branch protection on `main`:** Settings → Branches → Add rule
-  - Require pull request before merging ✓
-  - Require status checks to pass: `lint`, `typecheck`, `test`, `build` ✓
-  - Require branches to be up to date before merging ✓
-  - Do not allow bypassing the above settings ✓
-- [ ] **Environments created:** `staging` and `production` (Settings → Environments)
-- [ ] **Required reviewers on `production` environment:** at least 1 person
+Maida is a pnpm + Turborepo monorepo with **one backend and three frontends**:
 
----
+| App | Path | What it is | Runtime |
+|-----|------|------------|---------|
+| **API** | `apps/api` | Fastify server: REST, auth (RS256 JWT), booking engine, **WebSocket** live feed (`/ws`), and an in‑process **background worker** (emails, maintenance) | Long‑running Node process |
+| **Web** | `apps/web` | Diner site — browse, book, manage reservations | Static SPA (Vite/React) |
+| **Dashboard** | `apps/dashboard` | Restaurant‑owner dashboard — service board, tables, billing | Static SPA |
+| **Admin** | `apps/admin` | Internal admin panel (TOTP‑protected) | Static SPA |
 
-## A2 · GitHub Secrets (Settings → Secrets and variables → Actions)
+Shared packages: `packages/db` (Prisma schema + client), `packages/api-client`,
+`packages/types`, `packages/ui`.
 
-Set up accounts and tokens first. For `CORS_ORIGIN` and `EMAIL_FROM`, use your **Vercel/Railway default URLs** until you have a real domain (e.g. `https://my-app.vercel.app`).
+**Backing services the API needs:** PostgreSQL (Supabase), Redis (Upstash),
+transactional email (Resend), billing (Lemon Squeezy). Cloudflare sits in front
+of everything for DNS, TLS, CDN, WAF, bot protection and Turnstile.
 
-### Staging environment secrets
+```
+                         ┌──────────────── Cloudflare (DNS · TLS · CDN · WAF · Turnstile) ────────────────┐
+   diner   ─▶ yourdomain.com            ─▶ Web SPA        (Cloudflare Pages / Vercel)                      │
+   owner   ─▶ dashboard.yourdomain.com  ─▶ Dashboard SPA  (Cloudflare Pages / Vercel)                      │
+   admin   ─▶ admin.yourdomain.com      ─▶ Admin SPA      (Cloudflare Pages / Vercel)                      │
+   all     ─▶ api.yourdomain.com        ─▶ API + /ws + worker (Railway / Fly.io) ─┬─ Postgres  (Supabase)  │
+                                                                                  ├─ Redis     (Upstash)   │
+                                                                                  ├─ Email     (Resend)    │
+                                                                                  └─ Billing   (Lemon Sqzy)│
+                         └───────────────────────────────────────────────────────────────────────────────┘
+```
 
-- [ ] `STAGING_RAILWAY_TOKEN` — Railway API token for staging service
-- [ ] `STAGING_DATABASE_URL` — Supabase pooled URL for staging project
-- [ ] `STAGING_DIRECT_DATABASE_URL` — Supabase direct URL (port 5432) for staging
-- [ ] `STAGING_REDIS_URL` — Upstash Redis URL for staging
-- [ ] `STAGING_JWT_PRIVATE_KEY` — RS256 private key for staging (PKCS#8 PEM)
-- [ ] `STAGING_JWT_PUBLIC_KEY` — RS256 public key for staging
-- [ ] `STAGING_RESEND_API_KEY` — Resend API key
-- [ ] `STAGING_EMAIL_FROM` — temporary: `onboarding@resend.dev` (Resend sandbox) until domain is verified
-- [ ] `STAGING_CORS_ORIGIN` — temporary: comma-separated Vercel/Railway staging URLs (no trailing slashes)
-- [ ] `STAGING_LEMON_SQUEEZY_WEBHOOK_SECRET` — Lemon Squeezy webhook signing secret (staging store or test mode)
-- [ ] `STAGING_LEMON_SQUEEZY_API_KEY` — Lemon Squeezy API key
-- [ ] `STAGING_LEMON_SQUEEZY_STORE_ID` — numeric store ID from LS dashboard
-- [ ] `STAGING_LS_VARIANT_STARTER` — variant ID for STARTER plan
-- [ ] `STAGING_LS_VARIANT_PRO` — variant ID for PRO plan
-- [ ] `STAGING_LS_VARIANT_PREMIUM` — variant ID for PREMIUM plan
-- [ ] `STAGING_CF_ORIGIN_SECRET` — long random string; same value in the staging Cloudflare Transform Rule (x-cf-origin-secret header)
-- [ ] `STAGING_WEB_URL` — temporary: Vercel staging URL for diner app (password reset + checkout return context)
-- [ ] `STAGING_DASHBOARD_URL` — temporary: Vercel staging URL for owner dashboard
-
-### Production environment secrets
-
-- [ ] `PROD_RAILWAY_TOKEN` — Railway API token for production service
-- [ ] `PROD_DATABASE_URL` — Supabase pooled URL (production project, port 6543)
-- [ ] `PROD_DIRECT_DATABASE_URL` — Supabase direct URL (port 5432)
-- [ ] `PROD_REDIS_URL` — Upstash Redis URL (production instance)
-- [ ] `PROD_JWT_PRIVATE_KEY` — fresh RS256 private key for production
-- [ ] `PROD_JWT_PUBLIC_KEY` — corresponding public key
-- [ ] `PROD_RESEND_API_KEY` — Resend API key (production)
-- [ ] `PROD_EMAIL_FROM` — temporary: `onboarding@resend.dev` until domain verified in Phase B
-- [ ] `PROD_CORS_ORIGIN` — temporary: Vercel/Railway production URLs; update in Phase B
-- [ ] `PROD_LEMON_SQUEEZY_WEBHOOK_SECRET` — Lemon Squeezy webhook signing secret (production store)
-- [ ] `PROD_LEMON_SQUEEZY_API_KEY` — Lemon Squeezy API key (production)
-- [ ] `PROD_LEMON_SQUEEZY_STORE_ID` — numeric store ID
-- [ ] `PROD_LS_VARIANT_STARTER` — variant ID for STARTER plan
-- [ ] `PROD_LS_VARIANT_PRO` — variant ID for PRO plan
-- [ ] `PROD_LS_VARIANT_PREMIUM` — variant ID for PREMIUM plan
-- [ ] `PROD_CF_ORIGIN_SECRET` — REQUIRED (check-env blocks prod without it, min 32 chars); same value in the prod Cloudflare Transform Rule
-- [ ] `PROD_ALERT_WEBHOOK_URL` — optional Slack-compatible webhook for critical alerts (worker failures, uncaught exceptions)
-- [ ] `PROD_WEB_URL` — update in Phase B: `https://yourdomain.com`
-- [ ] `PROD_DASHBOARD_URL` — update in Phase B: `https://dashboard.yourdomain.com`
-
-### Vercel secrets (repository-level)
-
-- [ ] `VERCEL_TOKEN` — Vercel personal access token
-- [ ] `VERCEL_ORG_ID` — from `vercel whoami --json`
-- [ ] `VERCEL_PROJECT_ID_WEB_STAGING` — from Vercel project settings (staging web)
-- [ ] `VERCEL_PROJECT_ID_WEB_PROD` — from Vercel project settings (prod web)
-- [ ] `VERCEL_PROJECT_ID_DASHBOARD_STAGING` — from Vercel project settings (staging dashboard)
-- [ ] `VERCEL_PROJECT_ID_DASHBOARD_PROD` — from Vercel project settings (prod dashboard)
+**Why the API cannot be “serverless / free”:** it holds long‑lived WebSocket
+connections and runs a persistent BullMQ worker + Redis pub/sub subscriber. That
+requires an always‑on process — serverless functions (Vercel/Netlify) and
+free tiers that sleep after inactivity (Render free) will drop WebSockets and
+stall the worker. This is the one place a small paid host is justified (see §1).
 
 ---
 
-## A3 · Supabase (production project)
+## 1 · Cost summary — read this first
 
-- [ ] New Supabase project created for production (separate from dev)
-- [ ] Migrations applied: `DATABASE_URL=$PROD_DIRECT_DATABASE_URL pnpm --filter @restaurant/db db:migrate:deploy`
-- [ ] Seed script reviewed — do NOT run the dev seed in production
-- [ ] Database backups enabled (Supabase dashboard → Settings → Backups)
-- [ ] Connection pooling confirmed (port 6543 in `DATABASE_URL`)
+Target: **the only unavoidable recurring cost is the domain.** Everything else
+fits a free tier at launch / low traffic.
+
+| Service | Purpose | Plan to use | Recurring cost |
+|---------|---------|-------------|----------------|
+| **Domain** | `yourdomain.com` | Cloudflare Registrar (at‑cost, no markup) | **~$10/yr — unavoidable** |
+| Cloudflare | DNS, TLS, CDN, WAF, Bot Fight, Turnstile | **Free** | $0 |
+| Supabase | PostgreSQL | **Free** (500 MB, 1 project) | $0 |
+| Upstash | Redis | **Free** (256 MB, 500 k cmd/mo) | $0 |
+| Resend | Transactional email | **Free** (3 000/mo, 100/day) | $0 |
+| Lemon Squeezy | Owner subscriptions | Pay‑as‑you‑sell (~5% + fees per charge) | $0 fixed |
+| Cloudflare Pages | Web + Dashboard + Admin hosting | **Free** (unlimited bandwidth, commercial OK) | $0 |
+| GitHub | Repo + Actions CI/CD | **Free** | $0 |
+| **API host** | Fastify + WebSocket + worker | Fly.io or Railway | **$0–5/mo — see below** |
+
+### The two things that can cost money
+
+1. **Domain — genuinely unavoidable (~$10–12/year).** No free domain is
+   production‑appropriate. Buy it at **Cloudflare Registrar**, which sells at
+   wholesale price with no renewal markup and no upsells.
+
+2. **API host — the one paid service you may need.** Pick one:
+   - **Fly.io (cheapest, recommended for lowest cost):** a single
+     `shared-cpu-1x` / 256 MB machine costs **≈ $1.94/mo**, and Fly **does not
+     invoice balances under $5**, so at launch traffic it is effectively **$0**.
+     Keep the machine *always on* (do not enable auto‑stop — it kills
+     WebSockets). Requires a card on file.
+   - **Railway (simplest, what the repo’s CI/CD targets):** Hobby plan is
+     **$5/mo** (includes $5 of usage), one‑click GitHub deploys, WebSockets work
+     out of the box. Best if you want the bundled `deploy-*.yml` workflows to
+     “just work”.
+   - **Free alternatives and why they fall short:** Render’s free web service
+     **sleeps after 15 min** (≈30 s cold start, WebSocket drops) — fine for a
+     demo, not for a live booking platform. Koyeb’s free tier is single‑instance
+     and capacity‑limited. Use these only for a throwaway preview.
+
+   Keep the worker **in‑process** (`RUN_WORKER_IN_PROCESS=true`) so you run **one**
+   API service, not two. Only split the worker into its own service once email
+   volume justifies the second host.
+
+> **Bottom line:** with Cloudflare Pages (frontends) + Fly.io (API, under the $5
+> invoice floor) + all free tiers, your **only bill is the ~$10/yr domain**. If
+> you prefer Railway’s turnkey pipeline, add **~$5/mo**.
+
+### About Vercel (if you use the bundled workflows)
+
+The committed GitHub Actions workflows deploy the frontends to **Vercel**.
+Vercel’s free **Hobby** tier is **non‑commercial per its Terms** — a paid SaaS
+should be on **Vercel Pro ($20/mo)**. To stay at $0, host the three SPAs on
+**Cloudflare Pages** instead (free, commercial use allowed, unlimited
+bandwidth). Both paths are documented in §B2. The rest of this guide is
+host‑agnostic for the frontends.
 
 ---
 
-## A4 · Upstash (production instance)
+## 2 · Create accounts (in this order)
 
-- [ ] New Upstash Redis database created for production (separate from dev)
-- [ ] Eviction policy: `noeviction` (not `allkeys-lru`) — rate limit keys must not be silently deleted
-- [ ] Max memory confirmed sufficient for expected concurrent sessions
+Sign up for each before you start. All are free to create.
+
+1. [ ] **GitHub** — you already have the repo here.
+2. [ ] **Supabase** — <https://supabase.com> (PostgreSQL)
+3. [ ] **Upstash** — <https://upstash.com> (Redis)
+4. [ ] **Resend** — <https://resend.com> (email)
+5. [ ] **Lemon Squeezy** — <https://lemonsqueezy.com> (billing; store activation
+       needs business/payout details)
+6. [ ] **Cloudflare** — <https://dash.cloudflare.com> (DNS/CDN/WAF/Turnstile/Pages/Registrar)
+7. [ ] **API host** — **Fly.io** <https://fly.io> *or* **Railway** <https://railway.app>
+
+You do **not** need the domain yet — Parts A and B run on default platform URLs.
 
 ---
 
-## A5 · RS256 keys (production)
+## 3 · Environment variable reference
 
-Generate fresh keys for production — never reuse dev keys:
+The API validates its environment on boot (`apps/api/src/env.ts`) and
+`pnpm check-env` (`scripts/check-env.ts`) enforces the production rules. This is
+the single source of truth — populate every **Required** var.
+
+### API (`apps/api`) — set in the API host + GitHub Secrets
+
+| Variable | Required | Where to obtain it |
+|----------|----------|--------------------|
+| `DATABASE_URL` | ✅ | Supabase → Project → **Connect** → **Transaction** pooler (port **6543**). Append `?pgbouncer=true&connection_limit=10`. |
+| `DIRECT_DATABASE_URL` | ✅ | Same page → **Session** pooler (port **5432**). Used only for migrations. |
+| `REDIS_URL` | ✅ | Upstash → your database → **`rediss://…`** connection URL. |
+| `JWT_PRIVATE_KEY` | ✅ | Generate locally (see §A5). RS256 PKCS#8 PEM. Secret. |
+| `JWT_PUBLIC_KEY` | ✅ | Generated alongside the private key. |
+| `CORS_ORIGIN` | ✅ | Comma‑separated frontend origins, no trailing slash. Dev default provided. Must **not** contain `localhost` in prod. |
+| `RESEND_API_KEY` | ✅ | Resend → **API Keys** → *Create API Key*. Secret (`re_…`). |
+| `EMAIL_FROM` | ✅ | Sandbox: `onboarding@resend.dev`. Prod: `noreply@yourdomain.com` (after §C6 domain verification). |
+| `LEMON_SQUEEZY_API_KEY` | ✅ | Lemon Squeezy → **Settings → API** → create key. Secret. |
+| `LEMON_SQUEEZY_STORE_ID` | ✅ | Lemon Squeezy → **Settings → Stores** → numeric Store ID. |
+| `LEMON_SQUEEZY_WEBHOOK_SECRET` | ✅ | Lemon Squeezy → **Settings → Webhooks** → your webhook’s signing secret (§A4.3). Secret. |
+| `LS_VARIANT_STARTER` | ✅ | Lemon Squeezy → Product → **Variant → copy Variant ID** (Starter). |
+| `LS_VARIANT_PRO` | ✅ | Same, Pro variant. |
+| `LS_VARIANT_PREMIUM` | ✅ | Same, Premium variant. |
+| `NODE_ENV` | ✅ | `production` in prod. |
+| `CF_ORIGIN_SECRET` | Prod ✅ | `openssl rand -hex 32`. Must be ≥32 chars and match the Cloudflare Transform Rule (§C4). Secret. |
+| `CLOUDFLARE_TURNSTILE_SECRET_KEY` | Optional | Cloudflare → **Turnstile** → widget → **Secret Key**. Unset = registration bot check skipped. |
+| `WEB_URL` | Default | Diner app URL (used in reset/verify emails). Dev default `http://localhost:5173`. |
+| `DASHBOARD_URL` | Default | Owner app URL. Dev default `http://localhost:5174`. |
+| `BCRYPT_ROUNDS` | Default 12 | Leave at 12 in prod. |
+| `PORT` | Default 3001 | The host usually sets this; leave default otherwise. |
+| `QUEUE_NAME` | Default | `booking_events`. Leave as‑is. |
+| `RUN_WORKER_IN_PROCESS` | Default `true` | Keep `true` to run one service (worker inside the API). |
+| `AUDIT_LOG_RETENTION_DAYS` | Default 365 | Min 30. |
+| `ALERT_WEBHOOK_URL` | Optional | Slack‑compatible incoming webhook for critical alerts. |
+| `R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET_NAME` / `R2_PUBLIC_URL` | Optional | Cloudflare R2 for logo uploads. Unset = logos save to local disk (fine for dev; on a stateless host, set R2 for prod). |
+
+### Frontends — set as build‑time vars in the frontend host
+
+| Variable | Apps | Where to obtain / set |
+|----------|------|-----------------------|
+| `VITE_API_URL` | web, dashboard, admin | The API’s public URL, e.g. `https://api.yourdomain.com`. Leave **blank in local dev** (the Vite proxy forwards `/api` → `localhost:3001`). |
+| `VITE_CLOUDFLARE_TURNSTILE_SITE_KEY` | web only | Cloudflare → **Turnstile** → widget → **Site Key** (public). Dev test key `1x00000000000000000000AA` always passes. |
+
+### Deploy credentials (GitHub Secrets only — for the bundled workflows)
+
+| Secret | Where to obtain |
+|--------|-----------------|
+| `PROD_RAILWAY_TOKEN` / `STAGING_RAILWAY_TOKEN` | Railway → **Account Settings → Tokens** (or a project token). |
+| `VERCEL_TOKEN` | Vercel → **Settings → Tokens** (only if using Vercel). |
+| `VERCEL_ORG_ID` | `vercel whoami --json`, or `.vercel/project.json` after first `vercel link`. |
+| `VERCEL_PROJECT_ID_WEB_PROD` / `_WEB_STAGING` / `_DASHBOARD_PROD` / `_DASHBOARD_STAGING` | Vercel → each Project → **Settings → General → Project ID**. |
+
+The full per‑environment secret list is in **§A6**.
+
+---
+
+# PART A · Provision backing services (no domain required)
+
+Everything here works on free platform URLs. Do it first.
+
+## A1 · Supabase — PostgreSQL
+
+1. [ ] **New project** (region close to your users). Save the database password.
+2. [ ] **Connect** (top bar) → copy two connection strings:
+   - **Transaction pooler** (port **6543**) → `DATABASE_URL`. **Append**
+     `?pgbouncer=true&connection_limit=10`.
+     Prisma’s prepared statements break on the transaction pooler without
+     `pgbouncer=true` — `check-env` blocks the deploy if you forget.
+   - **Session pooler** (port **5432**) → `DIRECT_DATABASE_URL` (migrations).
+3. [ ] URL‑encode the password if it contains `@ : / ? # [ ] ! $ * &` (e.g. `@`→`%40`).
+4. [ ] Apply the schema (run from the repo root with the two URLs exported):
+   ```bash
+   DATABASE_URL="<direct-url>" DIRECT_DATABASE_URL="<direct-url>" \
+     pnpm --filter @restaurant/db db:migrate:deploy
+   ```
+5. [ ] **Do NOT run the dev seed in production** (`pnpm db:seed` inserts demo data).
+6. [ ] Free tier has **no automated backups**. Either accept manual backups
+   (`pnpm db:export` uses `DIRECT_DATABASE_URL`) or budget for Supabase Pro
+   ($25/mo) once you have real customers. Point‑in‑time backups are a real
+   business‑continuity gap on free tier — note it, don’t ignore it.
+
+## A2 · Upstash — Redis
+
+1. [ ] **Create database** → type **Regional**, same region as the API host.
+2. [ ] Copy the **`rediss://…`** URL → `REDIS_URL`.
+3. [ ] **Eviction policy → `noeviction`** (Upstash console → your DB →
+   *Configuration*). The default `allkeys-lru` will silently evict rate‑limit
+   counters and the JWT deny‑list — `check-env` warns and fails prod if it is
+   not `noeviction`.
+
+## A3 · Resend — email (sandbox first, verify domain later)
+
+1. [ ] **API Keys → Create** → `RESEND_API_KEY` (starts `re_`).
+2. [ ] Until you own a domain, set `EMAIL_FROM=onboarding@resend.dev`. In sandbox
+   mode Resend only delivers to **your own account email** — expected. Real
+   sending to any address requires the domain verification in **§C6**.
+
+## A4 · Lemon Squeezy — owner billing
+
+The platform bills **restaurant owners** (plans STARTER / PRO / PREMIUM). Diners
+and admins are never charged. Lemon Squeezy is a Merchant of Record, so it
+handles sales tax/VAT for you.
+
+### A4.1 · Store & API key
+1. [ ] Activate a store (business/payout details as LS requires).
+2. [ ] **Settings → Stores** → copy **Store ID** → `LEMON_SQUEEZY_STORE_ID`.
+3. [ ] **Settings → API** → create a key → `LEMON_SQUEEZY_API_KEY`.
+
+### A4.2 · Three subscription variants
+Create one subscription product with three variants matching the code’s plan
+limits (`apps/api/src/lib/plan.ts`):
+
+| Plan | Restaurants | Bookings/mo | Env var |
+|------|-------------|-------------|---------|
+| STARTER | 1 | 200 | `LS_VARIANT_STARTER` |
+| PRO | 5 | 1 000 | `LS_VARIANT_PRO` |
+| PREMIUM | Unlimited | Unlimited | `LS_VARIANT_PREMIUM` |
+
+- [ ] For each variant: **open the variant → copy its numeric Variant ID** → set
+  the matching `LS_VARIANT_*`.
+
+### A4.3 · Webhook
+The API exposes **`POST /webhooks/lemon-squeezy`** (no JWT — verified by
+HMAC‑SHA256 signature). It is registered **before** the Cloudflare origin guard
+so Lemon Squeezy’s servers reach it without the origin secret.
+
+1. [ ] **Settings → Webhooks → Add** →
+   URL `https://<api-host>/webhooks/lemon-squeezy`
+   (local: use `ngrok http 3001`; staging/prod: your API URL).
+2. [ ] Copy the **signing secret** → `LEMON_SQUEEZY_WEBHOOK_SECRET`.
+3. [ ] Enable exactly these events (all consumed by `webhook.routes.ts`):
+   `subscription_created`, `subscription_updated`, `subscription_cancelled`,
+   `subscription_resumed`, `subscription_expired`, `subscription_payment_success`,
+   `subscription_payment_failed`, `subscription_payment_recovered`.
+
+## A5 · Generate RS256 JWT keys (fresh per environment)
+
+Never reuse dev keys in prod. From the repo root:
 
 ```bash
+# Option A — OpenSSL
 openssl genrsa -out prod-private.pem 4096
 openssl rsa -in prod-private.pem -pubout -out prod-public.pem
-# Copy contents into GitHub Secrets as PROD_JWT_PRIVATE_KEY / PROD_JWT_PUBLIC_KEY
-# Then delete the local .pem files
+# Paste each into the matching GitHub Secret / host env var, then delete:
 rm prod-private.pem prod-public.pem
+
+# Option B — Node (no OpenSSL), prints both keys:
+node -e "const{generateKeyPairSync}=require('crypto');const{privateKey,publicKey}=generateKeyPairSync('rsa',{modulusLength:4096,publicKeyEncoding:{type:'spki',format:'pem'},privateKeyEncoding:{type:'pkcs8',format:'pem'}});console.log(privateKey);console.log(publicKey);"
 ```
 
-- [ ] 4096-bit keys generated (more secure than dev 2048-bit)
-- [ ] Private key stored ONLY in GitHub Secret — never committed
-- [ ] Public key confirmed to match private key
+- [ ] `JWT_PRIVATE_KEY` and `JWT_PUBLIC_KEY` set (in host env + GitHub Secrets).
+- [ ] Private key stored **only** in secrets — never committed.
+- [ ] In CI/host env, multi‑line PEMs may be stored with literal `\n`; the app
+  normalises them on boot.
 
----
+## A6 · GitHub — repo settings, environments & secrets
 
-## A6 · Run all checks locally
+### A6.1 · Branch protection & environments
+- [ ] Settings → **Branches** → protect `main`: require PR, require status checks
+  `lint`, `typecheck`, `test`, `build`, require up‑to‑date, no bypass.
+- [ ] Settings → **Environments** → create `staging` and `production`.
+- [ ] On `production`, add **at least one required reviewer** (gates prod deploys).
+
+### A6.2 · Secrets (Settings → Secrets and variables → Actions)
+Only needed if you use the bundled workflows. Use platform default URLs for
+`*_CORS_ORIGIN` / `*_EMAIL_FROM` / `*_WEB_URL` / `*_DASHBOARD_URL` until you own a
+domain (Part C updates them).
+
+**Repository‑level (shared):** `VERCEL_TOKEN`, `VERCEL_ORG_ID`,
+`VERCEL_PROJECT_ID_WEB_STAGING`, `VERCEL_PROJECT_ID_WEB_PROD`,
+`VERCEL_PROJECT_ID_DASHBOARD_STAGING`, `VERCEL_PROJECT_ID_DASHBOARD_PROD`
+*(skip all Vercel secrets if hosting frontends on Cloudflare Pages).*
+
+**`staging` environment:** `STAGING_RAILWAY_TOKEN`, `STAGING_DATABASE_URL`,
+`STAGING_DIRECT_DATABASE_URL`, `STAGING_REDIS_URL`, `STAGING_JWT_PRIVATE_KEY`,
+`STAGING_JWT_PUBLIC_KEY`, `STAGING_RESEND_API_KEY`, `STAGING_EMAIL_FROM`,
+`STAGING_CORS_ORIGIN`, `STAGING_LEMON_SQUEEZY_WEBHOOK_SECRET`,
+`STAGING_LEMON_SQUEEZY_API_KEY`, `STAGING_LEMON_SQUEEZY_STORE_ID`,
+`STAGING_LS_VARIANT_STARTER`, `STAGING_LS_VARIANT_PRO`,
+`STAGING_LS_VARIANT_PREMIUM`, `STAGING_CF_ORIGIN_SECRET`, `STAGING_WEB_URL`,
+`STAGING_DASHBOARD_URL`.
+
+**`production` environment:** same set with `PROD_` prefix, plus optional
+`PROD_ALERT_WEBHOOK_URL`. (`PROD_CF_ORIGIN_SECRET` is **required** — prod
+`check-env` fails without a ≥32‑char value.)
+
+> The workflows also read a repo/environment **variable** (not secret)
+> `PRODUCTION_URL` / `STAGING_URL` for the deploy summary — set them under
+> Settings → Environments → *Variables*.
+
+## A7 · Local verification before any deploy
 
 ```bash
-# All 165 tests pass
-pnpm --filter @restaurant/api test
-
-# Load test passes (API must be running: pnpm --filter @restaurant/api dev)
-pnpm load-test
-
-# Typecheck clean
-pnpm typecheck
-
-# Build clean
-pnpm build
+pnpm install
+pnpm lint          # 0 errors
+pnpm typecheck     # 0 errors
+pnpm test          # full suite green (needs a local Postgres + Redis; see below)
+pnpm build         # all apps build
 ```
 
-- [ ] All 165 tests passed
-- [ ] Load test passed (5×201, 15×409, slot.available = 0)
-- [ ] Typecheck: 0 errors
-- [ ] Build: 0 errors
+`pnpm test` needs Postgres + Redis. Start Redis with `pnpm redis:up` (Docker) and
+point `DATABASE_URL`/`DIRECT_DATABASE_URL` at a scratch Postgres — or just rely
+on the CI gate, which spins up ephemeral Postgres + Redis automatically.
 
-> `pnpm check-env` requires all production env vars including `CORS_ORIGIN` — run it in Phase B once real URLs are set, or pass staging values manually for a dry run.
-
----
-
-## A7 · First staging deploy (default platform URLs)
-
-Deploy using Railway + Vercel default hostnames — no custom domain yet.
-
-- [ ] Push to `main` → staging workflow runs (or trigger manually)
-- [ ] API reachable at Railway URL (e.g. `https://xxx.up.railway.app`)
-- [ ] Web reachable at Vercel preview URL
-- [ ] Dashboard reachable at Vercel preview URL
-- [ ] Set `VITE_API_URL` in Vercel to the Railway API URL for both frontends
-- [ ] `GET <railway-url>/health` → `{ "status": "ok", "checks": { "database": "ok", "redis": "ok" } }`
-- [ ] Register → login → create restaurant → add slots → book → confirm in dashboard (emails may only reach your Resend account email in sandbox mode)
-- [ ] WebSocket: owner dashboard shows new booking without page refresh
-- [ ] Cancel booking → available count updates
+- [ ] lint / typecheck / build clean; test suite green (locally or in CI).
 
 ---
 
-## A8 · Code-level security (already in repo — verify after deploy)
+# PART B · First deploy on default URLs (no domain yet)
 
-These are implemented in code; confirm they work on staging:
+Deploy to platform hostnames (`*.up.railway.app`, `*.pages.dev` / `*.vercel.app`)
+and smoke‑test before touching DNS.
 
-- [ ] Global rate limit: 100 req/min per real client IP
-- [ ] Login rate limit: 5 attempts / IP / 15 min
-- [ ] Register rate limit: 3 attempts / IP / hour
-- [ ] `GET /` returns 404 (expected — API has no homepage; use `/health`)
+## B1 · API → Railway (or Fly.io)
 
----
+### Option 1 — Railway (matches the bundled workflow)
+1. [ ] New project → **Deploy from GitHub repo** → select this repo.
+2. [ ] Service **Root Directory** = `apps/api`. Build/start come from the app’s
+   `package.json` (`pnpm build` → `node dist/index.js`).
+3. [ ] Add **all API env vars** from §3 (Railway → service → *Variables*). Set
+   `NODE_ENV=production`, `RUN_WORKER_IN_PROCESS=true`.
+4. [ ] Name the service **`api-staging`** (and later **`api-prod`**) — the
+   workflows deploy by these exact names via `railway up --service <name>`.
+5. [ ] Create a Railway API token → GitHub Secret `STAGING_RAILWAY_TOKEN` /
+   `PROD_RAILWAY_TOKEN`.
 
-## A9 · Lemon Squeezy — payment configuration
-
-The platform bills restaurant **owners** via Lemon Squeezy (plans: STARTER / PRO / PREMIUM). Diners and admins are never charged through this flow.
-
-### A9.1 · Create Lemon Squeezy account & store
-
-1. Sign up at [lemonsqueezy.com](https://lemonsqueezy.com) and complete store activation (identity / payout details as required by LS).
-2. **Settings → Stores** → copy your **Store ID** (numeric).
-3. **Settings → API** → create an **API key** with permission to create checkouts.
-
-- [ ] Lemon Squeezy store activated
-- [ ] Store ID copied
-- [ ] API key created and stored securely (never commit to git)
-
-### A9.2 · Create subscription products (3 variants)
-
-In **Products → New product**, create one subscription product (or three separate products — either works) with **three variants** matching your plan limits:
-
-| Internal plan | Suggested name | Restaurant limit | Monthly booking limit (API) |
-|---------------|----------------|------------------|----------------------------|
-| STARTER | Starter | 1 | 200 |
-| PRO | Pro | 5 | 1,000 |
-| PREMIUM | Premium | Unlimited | Unlimited |
-
-For each variant, open **Variants → copy Variant ID** (numeric). Map them to env vars:
-
-| Env var | Value |
-|---------|-------|
-| `LS_VARIANT_STARTER` | Variant ID for Starter |
-| `LS_VARIANT_PRO` | Variant ID for Pro |
-| `LS_VARIANT_PREMIUM` | Variant ID for Premium |
-
-- [ ] Three subscription variants created in Lemon Squeezy
-- [ ] Variant IDs copied into `.env` (local) and GitHub Secrets (staging/prod)
-
-### A9.3 · API environment variables (Railway / local `.env`)
-
-Add all six to the API service (see `.env.example`):
-
-```dotenv
-LEMON_SQUEEZY_WEBHOOK_SECRET=your_webhook_signing_secret
-LEMON_SQUEEZY_API_KEY=your_api_key
-LEMON_SQUEEZY_STORE_ID=12345
-LS_VARIANT_STARTER=100
-LS_VARIANT_PRO=200
-LS_VARIANT_PREMIUM=300
-WEB_URL=http://localhost:5173
-DASHBOARD_URL=http://localhost:5174
+### Option 2 — Fly.io (lowest cost)
+```bash
+curl -L https://fly.io/install.sh | sh      # or: brew install flyctl
+fly auth login
+cd apps/api
+fly launch --no-deploy                       # creates fly.toml; pick a name + region
+fly secrets set NODE_ENV=production RUN_WORKER_IN_PROCESS=true \
+  DATABASE_URL="…" DIRECT_DATABASE_URL="…" REDIS_URL="…" \
+  JWT_PRIVATE_KEY="…" JWT_PUBLIC_KEY="…" CORS_ORIGIN="…" \
+  RESEND_API_KEY="…" EMAIL_FROM="onboarding@resend.dev" \
+  LEMON_SQUEEZY_API_KEY="…" LEMON_SQUEEZY_STORE_ID="…" \
+  LEMON_SQUEEZY_WEBHOOK_SECRET="…" LS_VARIANT_STARTER="…" \
+  LS_VARIANT_PRO="…" LS_VARIANT_PREMIUM="…"
+fly deploy
 ```
-
-- [ ] All 6 Lemon Squeezy vars set on API (server refuses to start if any are missing)
-- [ ] `WEB_URL` / `DASHBOARD_URL` set to match deployed frontend URLs in staging/prod
-
-> **Admin note:** Admin accounts have no checkout flow. To change an admin password, use Supabase SQL — not Lemon Squeezy.
-
-### A9.4 · Webhook endpoint
-
-The API exposes **`POST /webhooks/lemon-squeezy`** (no JWT — protected by HMAC-SHA256 signature only).
-
-**Important:** This route is registered **before** the Cloudflare origin guard so Lemon Squeezy servers can reach it without `X-CF-Origin-Secret`. Do not put the webhook URL behind a CF-only firewall rule that blocks non-CF clients on managed Railway unless LS traffic is proxied.
-
-1. **Settings → Webhooks → Add webhook**
-2. **URL:** `https://<api-host>/webhooks/lemon-squeezy`
-   - Local dev: use [ngrok](https://ngrok.com) — `ngrok http 3001` → `https://xxxx.ngrok-free.app/webhooks/lemon-squeezy`
-   - Staging: Railway URL — `https://xxx.up.railway.app/webhooks/lemon-squeezy`
-   - Production: `https://api.yourdomain.com/webhooks/lemon-squeezy`
-3. **Signing secret:** copy into `LEMON_SQUEEZY_WEBHOOK_SECRET`
-4. **Subscribe to events:**
-   - `subscription_created`
-   - `subscription_updated`
-   - `subscription_cancelled`
-   - `subscription_resumed`
-   - `subscription_expired`
-   - `subscription_payment_failed`
-   - `subscription_payment_success`
-   - `subscription_payment_recovered`
-
-- [ ] Webhook URL configured in Lemon Squeezy dashboard
-- [ ] Signing secret matches `LEMON_SQUEEZY_WEBHOOK_SECRET` in API env
-- [ ] All subscription events above are enabled
-
-### A9.5 · Local smoke test (before staging)
-
-```powershell
-# Terminal 1 — API
-pnpm --filter @restaurant/api dev
-
-# Terminal 2 — ngrok (if testing webhooks locally)
-ngrok http 3001
-
-# Register/login as OWNER (not admin), then:
-# GET subscription status
-Invoke-RestMethod -Uri "http://localhost:3001/subscriptions/me" `
-  -Headers @{ Authorization = "Bearer <owner-access-token>" }
-
-# Create checkout session
-Invoke-RestMethod -Uri "http://localhost:3001/subscriptions/checkout" `
-  -Method POST -ContentType "application/json" `
-  -Headers @{ Authorization = "Bearer <owner-access-token>" } `
-  -Body '{"plan":"PRO"}'
-# → { "checkoutUrl": "https://..." }
-
-# Complete checkout in browser → watch API logs for:
-# [Webhook/LS] ✓ subscription_created — user <uuid> — sub <ls-id>
-
-# Verify plan updated
-Invoke-RestMethod -Uri "http://localhost:3001/subscriptions/me" `
-  -Headers @{ Authorization = "Bearer <owner-access-token>" }
-# → plan: "PRO", status: "ACTIVE"
-```
-
-**If checkout can't be completed locally:** confirm the webhook URL in LS dashboard points at your ngrok/Railway URL, then check API logs and Upstash Data Browser for keys matching `ls-event:*` after LS sends a test webhook.
-
-**Plan limit check:**
-
-- [ ] STARTER owner with 1 restaurant gets **403** on second `POST /restaurants` with `{ "error": "Plan limit reached", "upgrade": "/subscriptions/checkout" }`
-- [ ] After upgrading to PRO via checkout, same owner can create more restaurants (up to plan cap)
-
-### A9.6 · Staging payment smoke test
-
-After A7 deploy and A9 webhook URL pointed at Railway staging:
-
-- [ ] Owner logs into dashboard staging URL
-- [ ] `GET /subscriptions/me` returns current plan + limits
-- [ ] `POST /subscriptions/checkout` `{ "plan": "PRO" }` returns a valid `checkoutUrl`
-- [ ] Test payment completed (LS test mode or real card in staging store)
-- [ ] API logs show `[Webhook/LS] ✓ subscription_created`
-- [ ] Supabase `subscriptions` row updated: `plan`, `status`, `lemonSqueezyId`, `renewsAt`
-- [ ] Re-send same webhook from LS dashboard → log shows **Duplicate event — skipping** (idempotency)
-- [ ] `subscription_expired` webhook (or manual test) downgrades plan to STARTER
-
----
-
-# Phase B · After you buy a domain
-
-Complete Phase A first. These steps require a registered domain (e.g. `yourdomain.com`) and cannot be fully done without it.
-
-Suggested DNS layout (adjust to your preference):
-
-| Subdomain | Points to |
-|-----------|-----------|
-| `yourdomain.com` or `www` | Vercel — diner web app |
-| `dashboard.yourdomain.com` | Vercel — owner dashboard |
-| `api.yourdomain.com` | Railway — API server |
-
----
-
-## B1 · Buy and register the domain
-
-- [ ] Domain purchased at registrar (Namecheap, Cloudflare Registrar, Google Domains, etc.)
-- [ ] Decide subdomains: `api.`, `dashboard.`, `www.` (or apex only)
-
----
-
-## B2 · Add domain to Cloudflare
-
-1. Log in at [dash.cloudflare.com](https://dash.cloudflare.com) → **Add a Site** → enter your domain → **Free plan** is sufficient.
-2. Cloudflare shows two nameservers — replace your registrar's nameservers with these.
-3. Wait for propagation (usually 5–30 minutes; up to 48 hours).
-4. Confirm status shows **Active** in Cloudflare.
-
-- [ ] Domain added to Cloudflare
-- [ ] Nameservers updated at registrar
-- [ ] Cloudflare dashboard shows domain as Active
-
----
-
-## B3 · DNS records (orange cloud = proxied)
-
-**DNS → Records → Add record** for each service:
-
-| Type | Name | Target | Proxy |
-|------|------|--------|-------|
-| CNAME | `www` | Vercel DNS target | **Proxied** (orange cloud) |
-| CNAME | `dashboard` | Vercel DNS target | **Proxied** |
-| CNAME | `api` | Railway DNS target | **Proxied** |
-
-Or use A records if your host provides an IP — always keep **Proxied** enabled for the API.
-
-- [ ] All records created with orange cloud (proxied) enabled
-- [ ] `dig yourdomain.com` returns Cloudflare IPs (104.x.x.x), **not** your origin server IP
-- [ ] `dig api.yourdomain.com` returns Cloudflare IPs
-
----
-
-## B4 · SSL / TLS
-
-1. **SSL/TLS → Overview** → mode: **Full (strict)**
-   - Requires a valid TLS cert on origin (Railway/Vercel provide this automatically).
-2. **SSL/TLS → Edge Certificates** → enable **Always Use HTTPS** and **Automatic HTTPS Rewrites**
-3. **SSL/TLS → Edge Certificates** → **Minimum TLS Version**: `TLS 1.2`
-
-- [ ] Full (strict) enabled
-- [ ] Always Use HTTPS enabled
-- [ ] Minimum TLS 1.2 set
-
----
-
-## B5 · Network — WebSockets
-
-1. **Network → WebSockets** → toggle **On**
-
-Required for the owner dashboard live booking feed (`/ws`).
-
-- [ ] WebSockets enabled in Cloudflare
-
----
-
-## B6 · WAF — edge rate limiting
-
-**Security → WAF → Rate limiting rules → Create rule**
-
-### Rule 1 — Block registration bots
-
-| Field | Value |
-|-------|-------|
-| Rule name | `Block registration bots` |
-| Expression | `http.request.uri.path eq "/auth/register" and http.request.method eq "POST"` |
-| Characteristic | IP |
-| Period | 1 hour |
-| Requests | 5 |
-| Action | Block (429) |
-
-### Rule 2 — Block login brute-force
-
-| Field | Value |
-|-------|-------|
-| Rule name | `Block login brute-force` |
-| Expression | `http.request.uri.path eq "/auth/login" and http.request.method eq "POST"` |
-| Characteristic | IP |
-| Period | 15 minutes |
-| Requests | 10 |
-| Action | Block (429) |
-
-- [ ] Registration WAF rule active (5/IP/hour at edge; server enforces 3/hour)
-- [ ] Login WAF rule active (10/IP/15min at edge; server enforces 5/15min)
-
----
-
-## B7 · WAF — Managed Rules
-
-1. **Security → WAF → Managed rules** → enable **Cloudflare Managed Ruleset**
-2. Enable **Cloudflare OWASP Core Ruleset** → Paranoia Level **PL2**
-
-- [ ] Managed Ruleset enabled
-- [ ] OWASP Core Ruleset enabled (PL2)
-
----
-
-## B8 · Bot Fight Mode
-
-1. **Security → Bots** → enable **Bot Fight Mode** (free) or **Super Bot Fight Mode** (Pro)
-
-- [ ] Bot Fight Mode enabled
-
----
-
-## B9 · Cloudflare Turnstile (bot check on registration)
-
-1. Go to **Turnstile** in the Cloudflare sidebar → **Add Widget**
-   - Name: `Restaurant Booking — Registration`
-   - Domains: `yourdomain.com`, `www.yourdomain.com`
-   - Widget Mode: **Managed**
-2. Copy **Site Key** → set as `VITE_CLOUDFLARE_TURNSTILE_SITE_KEY` in Vercel (web app env)
-3. Copy **Secret Key** → set as `CLOUDFLARE_TURNSTILE_SECRET_KEY` in Railway (API env)
-4. Redeploy web + API after setting env vars
-
-- [ ] Turnstile widget created with production domain(s)
-- [ ] `VITE_CLOUDFLARE_TURNSTILE_SITE_KEY` set in Vercel (web)
-- [ ] `CLOUDFLARE_TURNSTILE_SECRET_KEY` set in Railway (API)
-- [ ] Registration form shows Turnstile widget in browser
-- [ ] Registration without token returns `422 TURNSTILE_TOKEN_MISSING`:
-  ```bash
-  curl -s -X POST https://api.yourdomain.com/auth/register \
-    -H 'Content-Type: application/json' \
-    -d '{"email":"bot@test.com","password":"Test1234!","role":"diner"}'
-  ```
-
----
-
-## B10 · Transform Rule — origin secret header
-
-Blocks direct access to your server IP (defense in depth with OS firewall in B12).
-
-1. Generate a secret:
+- [ ] In `fly.toml` keep **`min_machines_running = 1`** / **no auto‑stop** — an
+  auto‑stopped machine kills the WebSocket feed and pauses the worker.
+
+## B2 · Frontends → Cloudflare Pages (recommended, free) or Vercel
+
+Each SPA is a static Vite build. Build settings per app:
+
+| Setting | web | dashboard | admin |
+|---------|-----|-----------|-------|
+| Root directory | `apps/web` | `apps/dashboard` | `apps/admin` |
+| Build command | `pnpm install && pnpm --filter @restaurant/web build` | `…dashboard build` | `…admin build` |
+| Output dir | `apps/web/dist` | `apps/dashboard/dist` | `apps/admin/dist` |
+
+### Option 1 — Cloudflare Pages (free, commercial OK)
+1. [ ] Cloudflare → **Workers & Pages → Create → Pages → Connect to Git** → this repo.
+2. [ ] Create **three** Pages projects (web, dashboard, admin) with the settings
+   above. Framework preset: **Vite** (SPA fallback to `index.html`).
+3. [ ] Add env var **`VITE_API_URL`** = your API URL (and, for **web** only,
+   `VITE_CLOUDFLARE_TURNSTILE_SITE_KEY`). Redeploy after changing env vars —
+   Vite bakes them in at build time.
+
+### Option 2 — Vercel (bundled workflows; Pro plan for commercial use)
+1. [ ] Create Vercel projects for **web** and **dashboard** (and a third for
+   **admin** — it is *not* in the workflows, deploy it manually or add a step).
+2. [ ] Each project: Root Directory = the app path, add `VITE_API_URL` (+ site key
+   for web). Capture `VERCEL_ORG_ID` and each Project ID into GitHub Secrets.
+3. [ ] Manual deploy command (per app), which is what CI runs:
    ```bash
-   openssl rand -hex 32
+   cd apps/web && vercel pull --yes --environment=preview --token=$VERCEL_TOKEN \
+     && vercel build --token=$VERCEL_TOKEN \
+     && vercel deploy --prebuilt --token=$VERCEL_TOKEN
    ```
-2. **Rules → Transform Rules → Modify Request Header → Create rule**
-   - Rule name: `Inject origin secret`
-   - When: **All incoming requests** (expression: `true`)
-   - Then: **Set** → Header: `X-CF-Origin-Secret` → Value: *(paste the hex string)*
-3. Set the same value as `CF_ORIGIN_SECRET` in Railway (API env)
-4. Redeploy API
 
-- [ ] Transform Rule created and active
-- [ ] `CF_ORIGIN_SECRET` set in Railway (matches Transform Rule exactly)
-- [ ] API redeployed with `NODE_ENV=production`
+> **Admin app:** neither workflow deploys `apps/admin`. Host it as a third
+> Cloudflare Pages project (free) or a third Vercel project, and add its URL to
+> `CORS_ORIGIN`.
 
----
+## B3 · Migrate the staging/prod database
 
-## B11 · Resend — verify sending domain
-
-1. **Resend dashboard → Domains → Add domain** → enter `yourdomain.com`
-2. Add the DNS records Resend provides (SPF, DKIM, DMARC) in **Cloudflare DNS**
-   - Set mail-related records to **DNS only** (grey cloud) if Resend instructs you to
-3. Wait for verification (usually minutes)
-
-- [ ] Domain verified in Resend
-- [ ] `PROD_EMAIL_FROM` updated to `noreply@yourdomain.com` (GitHub Secret + Railway)
-- [ ] `STAGING_EMAIL_FROM` updated if using a staging subdomain
-- [ ] Test email arrives on booking create/cancel (end-to-end)
-
----
-
-## B12 · Update production URLs in secrets
-
-Replace temporary Vercel/Railway URLs with real domains:
-
-- [ ] `PROD_CORS_ORIGIN` = `https://yourdomain.com,https://www.yourdomain.com,https://dashboard.yourdomain.com,https://admin.yourdomain.com` (no localhost, no trailing slashes)
-- [ ] `STAGING_CORS_ORIGIN` updated if using staging subdomains
-- [ ] `VITE_API_URL` = `https://api.yourdomain.com` in Vercel (web + dashboard + admin)
-- [ ] `WEB_URL` = `https://yourdomain.com` in Railway (API — reset emails + checkout context)
-- [ ] `DASHBOARD_URL` = `https://dashboard.yourdomain.com` in Railway (API)
-- [ ] Custom domains added in Vercel project settings for web and dashboard
-- [ ] Custom domain added in Railway for API
-- [ ] Lemon Squeezy webhook URL updated to `https://api.yourdomain.com/webhooks/lemon-squeezy`
-- [ ] Production variant IDs confirmed in `LS_VARIANT_*` (may differ from test store)
-
-Run pre-deploy check:
+Schema must lead code — the API image never migrates at boot. The workflows do
+this automatically; to run it by hand:
 
 ```bash
-NODE_ENV=production pnpm check-env
+DATABASE_URL="<direct-url>" DIRECT_DATABASE_URL="<direct-url>" \
+  pnpm --filter @restaurant/db db:migrate:deploy
 ```
 
-- [ ] `pnpm check-env` passes with production values
-- [ ] `CORS_ORIGIN` contains production domains only — NO `localhost`
+## B4 · Trigger the deploy
 
----
+- **Automated:** push to `main` → **`deploy-staging.yml`** runs the full CI gate
+  (lint, typecheck, test on ephemeral Postgres+Redis), builds, migrates staging,
+  then deploys API→Railway and web+dashboard→Vercel.
+- **Manual prod:** Actions → **`Deploy · Production`** → Run workflow → type
+  `DEPLOY` to confirm → passes the required‑reviewer gate → deploys.
 
-## B13 · OS firewall — block non-Cloudflare traffic (production server)
-
-Run on your **production Linux server** (Railway bare metal / VPS). This is the primary defence against direct origin access.
+## B5 · Verify the first deploy
 
 ```bash
-# 1. SSH first — do NOT enable ufw without this
-sudo apt install -y ufw
-sudo ufw allow 22/tcp comment 'SSH'
-
-# 2. Default policy
-sudo ufw default deny incoming
-sudo ufw default allow outgoing
-
-# 3. Allow Cloudflare IPv4 on HTTPS (verify list at https://www.cloudflare.com/ips-v4)
-for cidr in \
-  173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 \
-  141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 \
-  197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 \
-  104.24.0.0/14 172.64.0.0/13 131.0.72.0/22; do
-    sudo ufw allow from "$cidr" to any port 443 proto tcp comment 'Cloudflare'
-done
-
-# 4. Allow Cloudflare IPv6 (https://www.cloudflare.com/ips-v6)
-for cidr in \
-  2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 \
-  2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32; do
-    sudo ufw allow from "$cidr" to any port 443 proto tcp comment 'Cloudflare IPv6'
-done
-
-# 5. Enable
-sudo ufw enable
-sudo ufw status verbose
+curl https://<api-url>/health            # {"status":"ok","environment":"production"}
+curl https://<api-url>/health/ready      # {"status":"ok","checks":{"database":"ok","redis":"ok"}}
 ```
 
-> **Note:** If API is on Railway (managed), ufw may not apply — Railway handles network isolation. Use this for VPS/self-hosted origins. The `cloudflareOnly` plugin (B10) is your fallback on managed hosts.
-
-- [ ] ufw configured (self-hosted) OR Railway managed network confirmed
-- [ ] `curl -k --max-time 5 https://<server-ip>/health` → connection refused / timeout (direct IP blocked)
-- [ ] `curl https://api.yourdomain.com/health` → `{"status":"ok","checks":{"database":"ok","redis":"ok"}}`
-
----
-
-## B14 · Security Level & DDoS
-
-1. **Security → Settings** → **Security Level**: `High` at launch (lower to `Medium` once traffic is stable)
-2. **Security → DDoS** → confirm **HTTP DDoS Attack Protection** is enabled (default on all plans)
-
-- [ ] Security Level set to High for launch
-- [ ] DDoS protection confirmed enabled
+- [ ] `/health` → 200; `/health/ready` → `database: ok`, `redis: ok`.
+- [ ] Set `VITE_API_URL` on all three frontends to the API URL and redeploy them.
+- [ ] Register → verify email → login → create restaurant → add a table → book →
+  confirmation shows; owner dashboard **service board updates live** (WebSocket);
+  cancel → the row/table state updates.
+- [ ] `GET /` → 404 (expected: the API has no homepage).
 
 ---
 
-## B15 · Staging smoke test (custom domain)
+# PART C · Custom domain + Cloudflare hardening
 
-After DNS and Cloudflare are active on staging subdomains (optional) or production:
+Requires a registered domain. Suggested layout:
 
-- [ ] `GET https://api.yourdomain.com/health` → 200, database + redis ok
-- [ ] Register → Turnstile passes → account created
-- [ ] Booking confirmation email arrives (Resend, verified domain)
-- [ ] Owner dashboard WebSocket updates without refresh
-- [ ] Cancel booking → email + slot count correct
-- [ ] Owner subscription checkout → payment → plan upgrades in `/subscriptions/me`
-- [ ] STARTER owner blocked from creating 2nd restaurant until plan upgraded
+| Host | Points to |
+|------|-----------|
+| `yourdomain.com` / `www` | Web SPA host |
+| `dashboard.yourdomain.com` | Dashboard SPA host |
+| `admin.yourdomain.com` | Admin SPA host |
+| `api.yourdomain.com` | API host (Railway/Fly) |
+
+## C1 · Buy the domain
+- [ ] Register at **Cloudflare Registrar** (cheapest, no markup) — or any
+  registrar, then move DNS to Cloudflare in C2.
+
+## C2 · Add the site to Cloudflare + DNS
+1. [ ] `dash.cloudflare.com` → **Add a site** → **Free** plan → follow to swap
+   your registrar’s nameservers to Cloudflare’s. Wait for **Active**.
+2. [ ] **DNS → Records** — add a CNAME per host pointing at the host’s target
+   (Pages/Vercel/Railway/Fly give you a CNAME target or custom‑domain instructions):
+
+   | Type | Name | Target | Proxy |
+   |------|------|--------|-------|
+   | CNAME | `www` (or `@`) | web host target | **Proxied** 🟠 |
+   | CNAME | `dashboard` | dashboard host target | **Proxied** 🟠 |
+   | CNAME | `admin` | admin host target | **Proxied** 🟠 |
+   | CNAME | `api` | API host target | **Proxied** 🟠 |
+
+3. [ ] Also add each custom domain **inside the host** (Pages/Vercel custom
+   domains; Railway/Fly custom domain) so it issues the origin certificate.
+4. [ ] `dig api.yourdomain.com` returns Cloudflare IPs (104.x / 172.x), **not**
+   the origin IP.
+
+## C3 · TLS + WebSockets
+- [ ] **SSL/TLS → Overview → Full (strict)**.
+- [ ] **Edge Certificates →** Always Use HTTPS **on**, Min TLS **1.2**.
+- [ ] **Network → WebSockets → On** (required for the `/ws` live feed).
+
+## C4 · Origin secret (block direct‑to‑origin)
+1. [ ] `openssl rand -hex 32` → set as `CF_ORIGIN_SECRET` in the API host.
+2. [ ] **Rules → Transform Rules → Modify Request Header → Create**: when
+   `true` (all requests), **Set** header `X-CF-Origin-Secret` = *(same hex)*.
+3. [ ] Redeploy the API with `NODE_ENV=production`. The `cloudflareOnly` guard now
+   rejects any request that didn’t come through Cloudflare. (Webhook and health
+   routes are intentionally exempt.)
+
+## C5 · Turnstile, WAF, bots
+1. [ ] **Turnstile → Add widget** (domains: your web hosts, mode Managed). Site
+   Key → `VITE_CLOUDFLARE_TURNSTILE_SITE_KEY` (web host, then redeploy web);
+   Secret Key → `CLOUDFLARE_TURNSTILE_SECRET_KEY` (API host, then redeploy API).
+2. [ ] **Security → WAF → Rate limiting rules** (edge backup to server limits):
+   - `/auth/register` POST — 5 / IP / hour → Block.
+   - `/auth/login` POST — 10 / IP / 15 min → Block.
+3. [ ] **WAF → Managed rules →** enable Cloudflare Managed Ruleset + OWASP Core
+   (Paranoia **PL2**).
+4. [ ] **Security → Bots → Bot Fight Mode → On**.
+5. [ ] **Security → Settings → Security Level: High** for launch.
+
+## C6 · Resend — verify your domain
+1. [ ] Resend → **Domains → Add domain** → `yourdomain.com`.
+2. [ ] Add the SPF / DKIM / DMARC records Resend shows into **Cloudflare DNS**
+   (set these mail records to **DNS only / grey cloud**).
+3. [ ] After it verifies, set `EMAIL_FROM=noreply@yourdomain.com` (API host +
+   `*_EMAIL_FROM` secrets) and redeploy.
+
+## C7 · Point everything at the real domain
+- [ ] `CORS_ORIGIN` = `https://yourdomain.com,https://www.yourdomain.com,https://dashboard.yourdomain.com,https://admin.yourdomain.com` — **no localhost, no trailing slashes**.
+- [ ] `WEB_URL=https://yourdomain.com`, `DASHBOARD_URL=https://dashboard.yourdomain.com` (API host + secrets).
+- [ ] `VITE_API_URL=https://api.yourdomain.com` on all three frontends → redeploy.
+- [ ] Update the Lemon Squeezy webhook URL to `https://api.yourdomain.com/webhooks/lemon-squeezy`.
+- [ ] Run the pre‑deploy gate:
+   ```bash
+   NODE_ENV=production pnpm check-env
+   ```
+  It verifies every required var, blocks `localhost` in `CORS_ORIGIN`, enforces
+  `pgbouncer=true`, the `CF_ORIGIN_SECRET` length, and checks the Upstash
+  eviction policy.
 
 ---
 
-## B16 · Production go-live
+# PART D · Production go‑live
 
-- [ ] All Phase A items complete
-- [ ] All Phase B items complete (B1–B15)
-- [ ] Staging smoke test passed on real domain
-- [ ] Production deploy triggered (`deploy-prod.yml` with manual approval)
-- [ ] `GET https://api.yourdomain.com/health` returns 200
-- [ ] End-to-end flow repeated on production
-- [ ] Owner can subscribe via Lemon Squeezy checkout; webhook syncs plan to database
-- [ ] Announce 🎉
-
----
-
-## Quick reference — what needs a domain?
-
-| Task | Phase |
-|------|-------|
-| GitHub branch protection & secrets | A |
-| Supabase + Upstash production | A |
-| RS256 keys | A |
-| Local tests + load test | A |
-| Staging on `*.vercel.app` / `*.railway.app` | A |
-| Lemon Squeezy store, variants, webhook, checkout smoke test | A |
-| Cloudflare proxy + WAF + Turnstile | **B** |
-| Resend domain verification | **B** |
-| Lemon Squeezy production webhook + live payments | **B** |
-| `CORS_ORIGIN` / `EMAIL_FROM` / `WEB_URL` / `DASHBOARD_URL` with real URLs | **B** |
-| OS firewall + origin secret verification | **B** |
-| Production go-live | **B** |
+- [ ] All of Part A, B, C complete; `pnpm check-env` passes with prod values.
+- [ ] Run **`Deploy · Production`** (type `DEPLOY`, approve the reviewer gate).
+- [ ] `curl https://api.yourdomain.com/health/ready` → all `ok`.
+- [ ] Full end‑to‑end on the real domain (register with Turnstile → book → email
+  arrives → live dashboard update → cancel → owner subscribes via Lemon Squeezy →
+  webhook upgrades the plan in `/subscriptions/me`).
+- [ ] STARTER owner is blocked from a 2nd restaurant until upgraded (plan gate).
+- [ ] Announce. 🎉
 
 ---
 
-## Admin Panel (`apps/admin`)
+# PART E · Post‑deploy verification checklist
 
-- [ ] `pnpm --filter @restaurant/admin build` succeeds with 0 TypeScript errors
-- [ ] Admin account in DB: `UPDATE users SET role = 'ADMIN' WHERE email = 'admin@yourdomain.com';`
-- [ ] First login at http://localhost:5175 — QR code → scan authenticator → 6-digit code → dashboard
-- [ ] Subsequent login — email + password + TOTP code (no QR)
-- [ ] Dashboard stats load from `/admin/stats`
-- [ ] Users: ban/unban test user; plan change for owner (STARTER → PRO)
-- [ ] Restaurants, bookings, subscriptions, audit logs pages load with pagination
-- [ ] `CORS_ORIGIN` includes admin panel URL in production
-- [ ] `VITE_API_URL` set in Vercel for `apps/admin` (separate project from web/dashboard)
-- [ ] Admin panel deployed to Vercel (port 5175 in dev)
+| Check | How | Expected |
+|-------|-----|----------|
+| API live | `curl …/health` | `status: ok` |
+| DB + Redis | `curl …/health/ready` | `checks: {database: ok, redis: ok}` |
+| CORS | Load a frontend, open Network tab | No CORS errors; requests hit `api.yourdomain.com` |
+| Auth | Register → verify → login | Session persists; `/auth/me` returns the user |
+| Booking | Book a slot | 201; appears in *My Reservations* and the owner board |
+| Real‑time | Owner board open while a diner books | Row appears without refresh (WebSocket) |
+| Email | Book / cancel | Diner + owner receive mail (verified domain) |
+| Billing | Owner checkout → pay → webhook | `/subscriptions/me` shows the new plan; log shows `subscription_created`; re‑sending the webhook logs *duplicate — skipping* (idempotent) |
+| Plan gate | STARTER owner, 2nd restaurant | 403 `Plan limit reached` |
+| Origin lock | `curl https://<origin-ip>/health` | Blocked / times out (Cloudflare‑only) |
+| Admin | Login at `admin.yourdomain.com` | Email + password + TOTP → stats load |
+| Rate limits | 6 rapid `/auth/register` | 429 after the 5th (edge) / 3rd (server) |
+
+---
+
+# PART F · Troubleshooting & common mistakes
+
+| Symptom | Likely cause | Fix |
+|---------|--------------|-----|
+| API won’t boot, exits immediately | Missing required env var | Check the host logs — `env.ts` prints exactly which var failed. Run `pnpm check-env`. |
+| `prepared statement "s0" already exists` under load | `DATABASE_URL` uses port 6543 without `pgbouncer=true` | Append `?pgbouncer=true&connection_limit=10`. |
+| `P1001: can't reach database` during migrate | Migrating via the pooled URL or IPv6‑only direct host | Use `DIRECT_DATABASE_URL` (session pooler, 5432). |
+| Rate limits / logins behave randomly | Upstash eviction policy is `allkeys-lru` | Set **`noeviction`** in the Upstash console. |
+| `Not allowed by CORS` in the browser | Frontend origin missing from `CORS_ORIGIN`, or a trailing slash | List every origin exactly, no trailing slash, no `localhost` in prod. |
+| Login works but a page refresh logs you out | Refresh cookie (`__Host-refresh`) not stored — needs HTTPS + real domains, and all apps share one API host’s cookie | Fine in production over HTTPS; on `http://localhost` with different ports the cookie is shared across apps (one role at a time) — a test‑only artifact. |
+| WebSocket never connects in prod | Cloudflare WebSockets off, or the API machine auto‑stopped | Enable **Network → WebSockets**; keep the Fly machine always‑on. |
+| Turnstile widget missing / `TURNSTILE_TOKEN_MISSING` | Web missing `VITE_CLOUDFLARE_TURNSTILE_SITE_KEY`, or API missing the secret | Set both, redeploy both. Leave both unset to disable the check. |
+| Emails never arrive | Domain not verified in Resend (sandbox only mails your own address) | Complete §C6; set `EMAIL_FROM` to the verified domain. |
+| Owner’s plan doesn’t update after paying | Webhook URL/secret wrong, or events not subscribed | Verify the LS webhook URL + `LEMON_SQUEEZY_WEBHOOK_SECRET`; confirm all 8 events; check API logs for `subscription_*`. |
+| Direct origin IP still reachable | `CF_ORIGIN_SECRET` / Transform Rule mismatch | The header value and the env var must match exactly; redeploy API. |
+| Logos vanish after a redeploy | Local‑disk storage on a stateless host | Configure Cloudflare **R2** (`R2_*`) for prod. |
+| Prod deploy “does nothing” | It’s manual‑only | Actions → *Deploy · Production* → Run → type `DEPLOY`. |
+
+**Common mistakes to avoid**
+- Running `pnpm db:seed` against production (inserts demo data).
+- Reusing dev JWT keys or the dev `CF_ORIGIN_SECRET` in prod.
+- Forgetting to redeploy a **frontend** after changing a `VITE_*` var (Vite bakes
+  them in at build time).
+- Leaving Vercel on the free Hobby plan for a commercial product (ToS) — use
+  Cloudflare Pages or Vercel Pro.
+- Enabling Fly auto‑stop (breaks WebSockets + worker).
+
+---
+
+# PART G · Rollback procedures
+
+| What broke | Rollback |
+|------------|----------|
+| **Bad API release** (Railway) | Railway → service → **Deployments** → pick the last good one → **Redeploy/Rollback**. |
+| **Bad API release** (Fly) | `fly releases` → `fly deploy --image <previous-image>` (or `fly releases rollback`). |
+| **Bad frontend** (Pages/Vercel) | Pages/Vercel → Deployments → **promote** the previous good build to production. |
+| **Bad database migration** | Restore from a Supabase backup (Pro) or your latest `pnpm db:export` dump. Prisma has no auto down‑migration — ship a new forward migration that reverts the change, and re‑run `db:migrate:deploy`. |
+| **Leaked secret** | Rotate it at the source (Supabase/Upstash/Resend/LS/Cloudflare), update the host env + GitHub Secret, redeploy. For a JWT key, generate a new pair (this invalidates all sessions). |
+| **Total outage** | Verify `/health/ready` to isolate DB vs Redis; check the provider status pages; roll the API back to the last good release first. |
+
+> **Before any prod change:** take a fresh DB export (`pnpm db:export`) and note
+> the currently‑deployed release IDs on each host so you have a known‑good
+> rollback target.
+
+---
+
+## Appendix · Quick command reference
+
+```bash
+# Local dev (root)
+pnpm install
+pnpm redis:up                                   # local Redis via Docker
+pnpm dev                                         # all apps (turbo)
+pnpm lint && pnpm typecheck && pnpm test && pnpm build
+
+# Database
+pnpm --filter @restaurant/db db:migrate:deploy   # apply migrations (uses DIRECT_DATABASE_URL)
+pnpm db:export                                    # backup to ./backups
+pnpm check-env                                    # pre-deploy env validation (NODE_ENV=production for full checks)
+
+# Admin bootstrap (after first deploy)
+#   UPDATE users SET role='ADMIN', "emailVerifiedAt"=now() WHERE email='you@yourdomain.com';
+#   then log in at admin.yourdomain.com → scan the TOTP QR → enter the 6-digit code
+```
