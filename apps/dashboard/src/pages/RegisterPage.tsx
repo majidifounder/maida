@@ -9,8 +9,15 @@ import { Button } from '../components/ui/Button.js';
 
 const schema = z
   .object({
-    email: z.string().email(),
-    password: z.string().min(8),
+    email: z.string().email('Enter a valid email'),
+    // Mirror the API's RegisterSchema so invalid passwords fail inline instead
+    // of round-tripping to a 422 (apps/api/src/modules/auth/auth.schema.ts).
+    password: z
+      .string()
+      .min(8, 'Password must be at least 8 characters')
+      .max(72, 'Password must be at most 72 characters')
+      .regex(/[A-Z]/, 'Password must contain at least one uppercase letter')
+      .regex(/[0-9]/, 'Password must contain at least one number'),
     confirmPassword: z.string(),
   })
   .refine((d) => d.password === d.confirmPassword, {
@@ -28,11 +35,19 @@ export function RegisterPage() {
     register,
     handleSubmit,
     formState: { errors, isSubmitting },
+    setError,
   } = useForm<FormData>();
 
   const onSubmit = handleSubmit(async (data) => {
     const parsed = schema.safeParse(data);
-    if (!parsed.success) return;
+    if (!parsed.success) {
+      // Surface each issue inline; previously an invalid password made the
+      // submit button silently no-op with no feedback.
+      parsed.error.issues.forEach((issue) => {
+        setError(issue.path[0] as keyof FormData, { message: issue.message });
+      });
+      return;
+    }
     setApiError(null);
     try {
       await registerOwner(parsed.data.email, parsed.data.password);
@@ -47,8 +62,18 @@ export function RegisterPage() {
       <Card className="w-full max-w-md">
         <h1 className="mb-6 text-2xl font-bold">Register as owner</h1>
         <form onSubmit={(e) => void onSubmit(e)} className="space-y-4">
-          <Input label="Email" type="email" {...register('email')} />
-          <Input label="Password" type="password" {...register('password')} />
+          <Input
+            label="Email"
+            type="email"
+            error={errors.email?.message}
+            {...register('email')}
+          />
+          <Input
+            label="Password"
+            type="password"
+            error={errors.password?.message}
+            {...register('password')}
+          />
           <Input
             label="Confirm password"
             type="password"
