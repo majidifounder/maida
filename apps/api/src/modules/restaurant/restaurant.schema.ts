@@ -8,6 +8,22 @@ const IanaTimezoneSchema = z
   .max(64)
   .refine(isValidIanaTimezone, { message: 'Must be a valid IANA timezone' });
 
+// imageUrl is shown to diners on public pages. Restrict to http(s) so an owner
+// can never persist a javascript:/data: URL that a future render path (anchor,
+// meta tag, email) could turn into an injection vector.
+const HttpImageUrlSchema = z
+  .string()
+  .url()
+  .max(2048)
+  .refine((u) => /^https?:\/\//i.test(u), {
+    message: 'Image URL must start with http:// or https://',
+  });
+
+// Availability is queried by anonymous users; cap party size to the booking
+// maximum so a caller cannot mint unbounded distinct cache keys (one per size)
+// or query sizes no table could ever seat.
+const AvailabilityPartySizeSchema = z.coerce.number().int().min(1).max(50);
+
 export const CreateRestaurantSchema = z
   .object({
     name: z.string().min(2).max(120).trim(),
@@ -15,7 +31,7 @@ export const CreateRestaurantSchema = z
     cuisine: z.nativeEnum(CuisineType),
     address: z.string().min(5).max(300).trim(),
     city: z.string().min(2).max(100).trim(),
-    imageUrl: z.string().url().optional(),
+    imageUrl: HttpImageUrlSchema.optional(),
     timezone: IanaTimezoneSchema.optional(),
     seatingMode: z.nativeEnum(SeatingMode).optional(),
     defaultDurationMins: z.number().int().min(15).max(720).optional(),
@@ -39,7 +55,7 @@ export const UpdateRestaurantSchema = z.object({
   cuisine: z.nativeEnum(CuisineType).optional(),
   address: z.string().min(5).max(300).trim().optional(),
   city: z.string().min(2).max(100).trim().optional(),
-  imageUrl: z.string().url().nullable().optional(),
+  imageUrl: HttpImageUrlSchema.nullable().optional(),
   isActive: z.boolean().optional(),
   timezone: IanaTimezoneSchema.optional(),
 });
@@ -75,14 +91,14 @@ export const SearchRestaurantsSchema = z.object({
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD')
     .optional(),
-  partySize: z.coerce.number().int().min(1).optional(),
+  partySize: AvailabilityPartySizeSchema.optional(),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(50).default(20),
 });
 
 export const GetAvailabilityQuerySchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD'),
-  partySize: z.coerce.number().int().min(1).default(2),
+  partySize: AvailabilityPartySizeSchema.default(2),
 });
 
 export const CreateTableSchema = z.object({
