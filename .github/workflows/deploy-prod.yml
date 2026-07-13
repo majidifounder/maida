@@ -113,6 +113,8 @@ jobs:
           pnpm test
         env:
           NODE_ENV: test
+          # Safety gate the suites require — this ephemeral Postgres is disposable.
+          TEST_DATABASE: "true"
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/maida_test
           DIRECT_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/maida_test
           REDIS_URL: redis://localhost:6379

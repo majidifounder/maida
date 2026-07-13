@@ -1,11 +1,34 @@
 import { defineConfig } from 'vitest/config';
 import { config as loadDotenv } from 'dotenv';
+import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-loadDotenv({ path: resolve(__dirname, '../../.env') });
+// The suites load `.env.test` (throwaway TEST databases), NOT `.env`. That
+// separation is what keeps `pnpm test` from ever creating/deleting rows in
+// production. CI injects its env vars inline (no file), so a missing file is
+// fine there.
+const envTest = resolve(__dirname, '../../.env.test');
+const envDefault = resolve(__dirname, '../../.env');
+loadDotenv({ path: existsSync(envTest) ? envTest : envDefault });
+
+// Hard safety gate: refuse to run against anything not explicitly a test DB.
+// Production (Railway) never sets TEST_DATABASE, so the destructive suites
+// cannot touch it even if prod credentials were somehow loaded.
+if (process.env.TEST_DATABASE !== 'true') {
+  // eslint-disable-next-line no-console -- bootstrap guard before any test loads
+  console.error(
+    '\n❌ Refusing to run tests: TEST_DATABASE is not "true".\n' +
+      '   The suites CREATE and DELETE data, so they must point at a throwaway\n' +
+      '   test database — never production.\n\n' +
+      '   Fix: copy .env.test.example → .env.test and fill in your TEST Supabase\n' +
+      '   + Upstash credentials (it sets TEST_DATABASE=true).\n' +
+      '   See LAUNCH_CHECKLIST.md → "Test vs Production environments".\n',
+  );
+  process.exit(1);
+}
 
 process.env.RESEND_API_KEY ??= 're_test_placeholder';
 // Tests publish real BullMQ jobs — isolate them on their own queue so they can

@@ -5,6 +5,14 @@ dist
 .env.main
 .env.local
 .env.*.local
+# Every concrete env file is secret and stays local. Only *.env.example is
+# committed. .env.test holds throwaway TEST-database creds; .env.production must
+# never live in the repo (prod secrets belong in Railway / GitHub Secrets).
+.env.test
+.env.production
+.env.staging
+!.env.example
+!*.env.example
 *.log
 .DS_Store
 coverage
