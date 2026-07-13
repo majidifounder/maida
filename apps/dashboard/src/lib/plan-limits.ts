@@ -72,8 +72,12 @@ export function billingTierLabel(tier: BillingTier): string {
   return planLabel(tier);
 }
 
-export function formatLimit(value: number): string {
-  return value === Infinity ? 'Unlimited' : String(value);
+export function formatLimit(value: number | null): string {
+  // "Unlimited" is Infinity in-process, but JSON.stringify turns Infinity into
+  // null — so plan comparison data arriving from the API carries null, not
+  // Infinity. Treat any non-finite/null value as unlimited or the cell renders
+  // the literal string "null".
+  return value === null || !Number.isFinite(value) ? 'Unlimited' : String(value);
 }
 
 export function yesNo(value: boolean): string {

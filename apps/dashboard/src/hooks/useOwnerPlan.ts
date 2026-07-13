@@ -24,6 +24,23 @@ interface SubscriptionResponse {
   planComparison: PlanComparisonRow[];
 }
 
+// "Unlimited" limits are Infinity in-process, but JSON.stringify turns Infinity
+// into null — so the limits arriving from /subscriptions/me carry null for an
+// unlimited (Premium) plan. Restore Infinity, or the config panels' `!== Infinity`
+// checks treat unlimited as a 0-limit (null >= count) and wrongly block adds.
+function normalizeLimits(raw: PlanLimits): PlanLimits {
+  const fix = (v: number | null): number =>
+    v === null || !Number.isFinite(v) ? Infinity : v;
+  return {
+    ...raw,
+    restaurants: fix(raw.restaurants),
+    reservationsPerMonth: fix(raw.reservationsPerMonth),
+    tablesPerRestaurant: fix(raw.tablesPerRestaurant),
+    combinationsPerRestaurant: fix(raw.combinationsPerRestaurant),
+    turnTimeRulesPerRestaurant: fix(raw.turnTimeRulesPerRestaurant),
+  };
+}
+
 export function useOwnerPlan() {
   const query = useQuery({
     queryKey: ['subscription'],
@@ -35,7 +52,9 @@ export function useOwnerPlan() {
   const subscription = query.data?.subscription;
   const billingTier: BillingTier = subscription?.billingTier ?? 'TRIAL';
   const plan: Plan = subscription?.plan ?? 'STARTER';
-  const limits = query.data?.limits ?? TRIAL_LIMITS;
+  const limits = query.data?.limits
+    ? normalizeLimits(query.data.limits)
+    : TRIAL_LIMITS;
   const planComparison = query.data?.planComparison ?? DEFAULT_PLAN_COMPARISON;
 
   return {
