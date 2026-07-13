@@ -106,7 +106,55 @@ host‑agnostic for the frontends.
 
 ---
 
-## 2 · Create accounts (in this order)
+## 2 · Test vs Production environments — the golden separation
+
+You run **two of everything**: a **TEST** stack you can freely break, and a
+**PRODUCTION** stack you never touch by hand. This is what guarantees a test run
+can never create or delete rows in your real customers' data.
+
+### The two stacks
+
+| | TEST / dev stack | PRODUCTION stack |
+|--|--|--|
+| Supabase project | `maida-test` (free) | `maida-prod` (separate project) |
+| Upstash database | `maida-test` | `maida-prod` |
+| Used by | `pnpm dev`, `pnpm test`, `pnpm e2e`, all local work | Only the deployed Railway API + real users |
+| Credentials live in | local `.env` and `.env.test` (git-ignored) | **Railway Variables + GitHub Secrets ONLY** — never in any file on your machine |
+| Safe to wipe? | Yes — disposable | **Never** |
+
+### The one rule that makes this foolproof
+**Production credentials never live in a file on your computer.** They exist only
+in Railway's *Variables* tab (and GitHub Secrets for CI). Your local `.env` and
+`.env.test` point *only* at the TEST stack. If prod creds aren't on your machine,
+no local command can reach production — full stop.
+
+### The wall is enforced in code (you can't cross it by accident)
+- `pnpm test` and `pnpm e2e` load **`.env.test`**, not `.env`.
+- `.env.test` sets **`TEST_DATABASE=true`**. The runner **refuses to start**
+  without it (`apps/api/vitest.config.ts`, `scripts/e2e/preload-env.ts`).
+- Production (Railway) never sets `TEST_DATABASE`, so even if prod credentials
+  were somehow loaded, the destructive suites abort instead of running.
+- CI spins up a throwaway Postgres each run and sets the gate itself — it never
+  sees your real databases.
+
+### One-time setup
+1. Create **two** Supabase projects and **two** Upstash databases (§A1, §A2) —
+   name them `…-test` and `…-prod`.
+2. `cp .env.test.example .env.test`, fill in your **TEST** Supabase + Upstash
+   credentials, then apply the schema to the test DB:
+   `pnpm --filter @restaurant/db db:migrate:deploy`. `pnpm test` now runs against
+   the test stack only.
+3. Put the **PRODUCTION** credentials **only** in Railway → *Variables* and in
+   GitHub Secrets (§A6). **Never** create a `.env.production` file.
+
+### Never point these at production
+`pnpm test` · `pnpm e2e` · `pnpm db:seed` · `pnpm db:reset` · `pnpm db:dev-reset`
+— they assume a disposable database. The only DB commands you ever run against
+production are `db:migrate:deploy` (schema) and `db:export` (backup).
+
+---
+
+## 3 · Create accounts (in this order)
 
 Sign up for each before you start. All are free to create.
 
@@ -123,7 +171,7 @@ You do **not** need the domain yet — Parts A and B run on default platform URL
 
 ---
 
-## 3 · Environment variable reference
+## 4 · Environment variable reference
 
 The API validates its environment on boot (`apps/api/src/env.ts`) and
 `pnpm check-env` (`scripts/check-env.ts`) enforces the production rules. This is
@@ -186,6 +234,11 @@ Everything here works on free platform URLs. Do it first.
 
 ## A1 · Supabase — PostgreSQL
 
+> **Create TWO projects** (§2): one **`maida-test`** and one **`maida-prod`**.
+> Repeat the steps below for each. The `-test` URLs go in local `.env` / `.env.test`;
+> the `-prod` URLs go **only** in Railway Variables + GitHub Secrets — never in a
+> local file. Supabase's free tier allows 2 projects, so this costs nothing.
+
 1. [ ] **New project** (region close to your users). Save the database password.
 2. [ ] **Connect** (top bar) → copy two connection strings:
    - **Transaction pooler** (port **6543**) → `DATABASE_URL`. **Append**
@@ -206,6 +259,9 @@ Everything here works on free platform URLs. Do it first.
    business‑continuity gap on free tier — note it, don’t ignore it.
 
 ## A2 · Upstash — Redis
+
+> **Create TWO databases** (§2): `maida-test` and `maida-prod`. Test URL → local
+> `.env` / `.env.test`; prod URL → Railway + GitHub Secrets only.
 
 1. [ ] **Create database** → type **Regional**, same region as the API host.
 2. [ ] Copy the **`rediss://…`** URL → `REDIS_URL`.
@@ -324,11 +380,17 @@ pnpm test          # full suite green (needs a local Postgres + Redis; see below
 pnpm build         # all apps build
 ```
 
-`pnpm test` needs Postgres + Redis. Start Redis with `pnpm redis:up` (Docker) and
-point `DATABASE_URL`/`DIRECT_DATABASE_URL` at a scratch Postgres — or just rely
-on the CI gate, which spins up ephemeral Postgres + Redis automatically.
+`pnpm test` / `pnpm e2e` load **`.env.test`** and refuse to run unless it sets
+`TEST_DATABASE=true` (§2) — this is what stops a test run from ever touching
+production. First-time setup: `cp .env.test.example .env.test` and fill in your
+**TEST** Supabase + Upstash creds (or a local Postgres + `pnpm redis:up` Redis),
+then `pnpm --filter @restaurant/db db:migrate:deploy` against the test DB. CI
+needs none of this — it spins up an ephemeral Postgres + Redis and sets the gate
+itself.
 
-- [ ] lint / typecheck / build clean; test suite green (locally or in CI).
+- [ ] `.env.test` exists, points at TEST databases only, and `pnpm test` is green.
+- [ ] lint / typecheck / build clean (locally or in CI).
+- [ ] Confirmed no production URL appears in `.env`, `.env.test`, or any local file.
 
 ---
 
@@ -337,20 +399,35 @@ on the CI gate, which spins up ephemeral Postgres + Redis automatically.
 Deploy to platform hostnames (`*.up.railway.app`, `*.pages.dev` / `*.vercel.app`)
 and smoke‑test before touching DNS.
 
-## B1 · API → Railway (or Fly.io)
+## B1 · API → Railway  ✅ (your chosen host)
 
-### Option 1 — Railway (matches the bundled workflow)
+> **Railway is the host for this project.** It runs the always-on API + WebSocket
+> + worker, one-click GitHub deploys, and matches the bundled `deploy-*.yml`
+> workflows. Fly.io remains a lower-cost alternative (Option 2) if you ever want it.
+>
+> **This is where your PRODUCTION credentials live — and the only place.** The
+> `-prod` Supabase/Upstash URLs and prod secrets go in Railway *Variables* (and
+> GitHub Secrets for CI), never in a local file (§2).
+
+### Railway setup
 1. [ ] New project → **Deploy from GitHub repo** → select this repo.
 2. [ ] Service **Root Directory** = `apps/api`. Build/start come from the app’s
    `package.json` (`pnpm build` → `node dist/index.js`).
-3. [ ] Add **all API env vars** from §3 (Railway → service → *Variables*). Set
-   `NODE_ENV=production`, `RUN_WORKER_IN_PROCESS=true`.
+3. [ ] Add **all API env vars** from §4 (Railway → service → *Variables*), using
+   your **`maida-prod`** Supabase + Upstash URLs. Set `NODE_ENV=production`,
+   `RUN_WORKER_IN_PROCESS=true`. Do **not** set `TEST_DATABASE` here — production
+   must never carry the test gate.
 4. [ ] Name the service **`api-staging`** (and later **`api-prod`**) — the
    workflows deploy by these exact names via `railway up --service <name>`.
 5. [ ] Create a Railway API token → GitHub Secret `STAGING_RAILWAY_TOKEN` /
    `PROD_RAILWAY_TOKEN`.
 
-### Option 2 — Fly.io (lowest cost)
+> **Tip:** give staging its own Supabase/Upstash too, or reuse the `-test` stack
+> for staging. Never point staging *or* CI at `maida-prod`.
+
+### Alternative — Fly.io (lower cost; not your chosen host)
+Only if you later switch off Railway. Same rule applies: prod secrets live in
+`fly secrets`, never in a local file.
 ```bash
 curl -L https://fly.io/install.sh | sh      # or: brew install flyctl
 fly auth login
@@ -552,6 +629,7 @@ Requires a registered domain. Suggested layout:
 
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
+| `Refusing to run tests: TEST_DATABASE is not "true"` | No `.env.test`, or it doesn't set the gate | `cp .env.test.example .env.test`, fill in your **TEST** DB creds (it sets `TEST_DATABASE=true`). This is the guard working as designed — see §2. |
 | API won’t boot, exits immediately | Missing required env var | Check the host logs — `env.ts` prints exactly which var failed. Run `pnpm check-env`. |
 | `prepared statement "s0" already exists` under load | `DATABASE_URL` uses port 6543 without `pgbouncer=true` | Append `?pgbouncer=true&connection_limit=10`. |
 | `P1001: can't reach database` during migrate | Migrating via the pooled URL or IPv6‑only direct host | Use `DIRECT_DATABASE_URL` (session pooler, 5432). |
@@ -567,7 +645,12 @@ Requires a registered domain. Suggested layout:
 | Prod deploy “does nothing” | It’s manual‑only | Actions → *Deploy · Production* → Run → type `DEPLOY`. |
 
 **Common mistakes to avoid**
-- Running `pnpm db:seed` against production (inserts demo data).
+- **Putting a production URL in a local file** (`.env`, `.env.test`). Prod creds
+  live only in Railway + GitHub Secrets (§2). If it's not on your machine, no
+  local command can wipe it.
+- Running `pnpm test` / `pnpm e2e` / `pnpm db:seed` / `pnpm db:reset` against a
+  production database (they create and delete rows — the `TEST_DATABASE` gate and
+  a separate `maida-test` stack exist to prevent exactly this).
 - Reusing dev JWT keys or the dev `CF_ORIGIN_SECRET` in prod.
 - Forgetting to redeploy a **frontend** after changing a `VITE_*` var (Vite bakes
   them in at build time).
@@ -597,13 +680,17 @@ Requires a registered domain. Suggested layout:
 ## Appendix · Quick command reference
 
 ```bash
+# One-time test-env setup (§2) — points the suites at your TEST databases
+cp .env.test.example .env.test                   # then fill in TEST Supabase + Upstash creds
+pnpm --filter @restaurant/db db:migrate:deploy   # against the TEST db (DIRECT_DATABASE_URL from .env.test)
+
 # Local dev (root)
 pnpm install
 pnpm redis:up                                   # local Redis via Docker
-pnpm dev                                         # all apps (turbo)
-pnpm lint && pnpm typecheck && pnpm test && pnpm build
+pnpm dev                                         # all apps (turbo) — uses .env (TEST stack)
+pnpm lint && pnpm typecheck && pnpm test && pnpm build   # test/e2e load .env.test (never prod)
 
-# Database
+# Database (test stack locally; prod only via CI / with prod DIRECT_DATABASE_URL exported)
 pnpm --filter @restaurant/db db:migrate:deploy   # apply migrations (uses DIRECT_DATABASE_URL)
 pnpm db:export                                    # backup to ./backups
 pnpm check-env                                    # pre-deploy env validation (NODE_ENV=production for full checks)
