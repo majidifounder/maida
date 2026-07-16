@@ -29,3 +29,7 @@ apps/api/uploads/
 
 # graphify knowledge-graph output (generated locally, regenerable via /graphify)
 graphify-out/
+
+# Personal files (not part of the project)
+/encg concour cvc.pdf
+/medcine concour cvc.pdf
