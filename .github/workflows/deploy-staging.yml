@@ -120,11 +120,14 @@ jobs:
         run: npm install -g @railway/cli
 
       - name: Deploy API → Railway (staging)
+        # Upload from the repo root: `railway up` sends the CWD as the build
+        # context, and apps/api alone has no lockfile, no workspace root and no
+        # packages/*, so @restaurant/db and @restaurant/types cannot resolve.
+        # The project token is environment-scoped, so `api` targets the single
+        # service inside this token's `staging` environment.
         env:
           RAILWAY_TOKEN: ${{ secrets.STAGING_RAILWAY_TOKEN }}
-        run: |
-          cd apps/api
-          railway up --service api-staging --detach
+        run: railway up --service api --detach
 
       - name: Install Vercel CLI
         run: npm install -g vercel
@@ -138,7 +141,11 @@ jobs:
           cd apps/web
           vercel pull --yes --environment=preview --token=$VERCEL_TOKEN
           vercel build --token=$VERCEL_TOKEN
-          vercel deploy --prebuilt --token=$VERCEL_TOKEN
+          # `vercel deploy` prints progress on stderr and the deployment URL on
+          # stdout; take the last stdout line rather than guessing the URL.
+          DEPLOY_URL="$(vercel deploy --prebuilt --token=$VERCEL_TOKEN | tail -n 1)"
+          echo "web deployment: $DEPLOY_URL"
+          vercel alias set "$DEPLOY_URL" staging.get-maida.com --token=$VERCEL_TOKEN
 
       - name: Deploy dashboard → Vercel (staging)
         env:
@@ -149,7 +156,9 @@ jobs:
           cd apps/dashboard
           vercel pull --yes --environment=preview --token=$VERCEL_TOKEN
           vercel build --token=$VERCEL_TOKEN
-          vercel deploy --prebuilt --token=$VERCEL_TOKEN
+          DEPLOY_URL="$(vercel deploy --prebuilt --token=$VERCEL_TOKEN | tail -n 1)"
+          echo "dashboard deployment: $DEPLOY_URL"
+          vercel alias set "$DEPLOY_URL" dashboard-staging.get-maida.com --token=$VERCEL_TOKEN
 
       - name: Notify deployment success
         if: success()

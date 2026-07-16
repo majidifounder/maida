@@ -157,11 +157,14 @@ jobs:
         run: npm install -g @railway/cli
 
       - name: Deploy API → Railway (production)
+        # Upload from the repo root: `railway up` sends the CWD as the build
+        # context, and apps/api alone has no lockfile, no workspace root and no
+        # packages/*, so @restaurant/db and @restaurant/types cannot resolve.
+        # The project token is environment-scoped, so `api` targets the single
+        # service inside this token's `production` environment.
         env:
           RAILWAY_TOKEN: ${{ secrets.PROD_RAILWAY_TOKEN }}
-        run: |
-          cd apps/api
-          railway up --service api-prod --detach
+        run: railway up --service api --detach
 
       - name: Install Vercel CLI
         run: npm install -g vercel
@@ -184,6 +187,19 @@ jobs:
           VERCEL_PROJECT_ID_DASHBOARD: ${{ secrets.VERCEL_PROJECT_ID_DASHBOARD_PROD }}
         run: |
           cd apps/dashboard
+          vercel pull --yes --environment=production --token=$VERCEL_TOKEN
+          vercel build --prod --token=$VERCEL_TOKEN
+          vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN
+
+      - name: Deploy admin → Vercel (production)
+        # Admin is production-only and internal (TOTP-gated), so it has no
+        # staging counterpart.
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID_ADMIN: ${{ secrets.VERCEL_PROJECT_ID_ADMIN_PROD }}
+        run: |
+          cd apps/admin
           vercel pull --yes --environment=production --token=$VERCEL_TOKEN
           vercel build --prod --token=$VERCEL_TOKEN
           vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN
