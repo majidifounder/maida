@@ -1,0 +1,55 @@
+name: Branch policy
+
+# `main` is production. It may only ever be advanced by promoting `staging`,
+# which is the branch that has actually been deployed and smoke-tested.
+# Neither branch protection nor rulesets can express "PRs into main must come
+# from staging" — there is no head-branch condition in either — so this guard
+# encodes it and is wired up as a required status check on `main`.
+
+on:
+  pull_request:
+    branches: [main]
+    # `edited` fires when a PR's base is retargeted after opening — without it,
+    # a PR opened into `staging` could be switched to `main` unchecked.
+    types: [opened, reopened, edited, synchronize]
+
+concurrency:
+  group: branch-policy-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: Branch policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Only staging may be promoted into main
+        # Read the ref from the environment, never interpolate it into the
+        # script — a branch name is attacker-controlled on fork PRs.
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [ "$HEAD_REF" = "staging" ]; then
+            echo "OK — promoting 'staging' into 'main' follows the release flow."
+            exit 0
+          fi
+
+          echo "::error title=Wrong base branch::A PR into 'main' must come from 'staging', but this one comes from '$HEAD_REF'."
+          cat <<'EOF'
+
+          The release flow is:
+
+              feature/xyz ──PR──▶ staging ──(auto-deploy, smoke-test)──▶ PR ──▶ main
+
+          Merging this branch straight into 'main' would ship code to production
+          that was never deployed to staging or smoke-tested there.
+
+          Retarget this PR at 'staging':
+
+              gh pr edit <number> --base staging
+
+          EOF
+          exit 1
