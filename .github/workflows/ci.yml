@@ -115,6 +115,10 @@ jobs:
         run: pnpm test
         env:
           NODE_ENV: test
+          # Safety gate the suites require (apps/api/vitest.config.ts) — this
+          # ephemeral Postgres is disposable, so it is safe to enable here, just
+          # as the deploy workflows do. Without it the destructive suites abort.
+          TEST_DATABASE: "true"
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/maida_test
           DIRECT_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/maida_test
           REDIS_URL: redis://localhost:6379
