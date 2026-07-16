@@ -1,13 +1,48 @@
 # Maida — Production Deployment Guide
 
 A complete, start-to-finish guide to deploying the Maida restaurant‑reservation
-platform to production. **No prior knowledge of the stack is assumed.** Follow
-the parts in order; each step says exactly what to click, what to run, and where
-to find every value.
+platform. **No prior knowledge of the stack is assumed.** Follow the parts in
+order; each step says exactly what to click, what to run, and where to find
+every value.
 
 > **Golden rule:** never commit a real secret. Everything sensitive lives in
 > GitHub Actions Secrets and in each host's environment settings — never in the
 > repo. `.env` is git‑ignored; only `*.env.example` files are committed.
+
+> **Domain note:** the live domain is **`get-maida.com`** (owned). The brand
+> guidelines still list `getmaida.app` as the intended domain — that is a
+> documentation lag to reconcile in the brand kit. This guide uses the domain
+> you actually control: **`get-maida.com`**.
+
+---
+
+## Where you are right now (status)
+
+Already done — you do **not** need to redo these:
+
+- [x] **GitHub repo hardened** (§A6): `main` branch protection (PR + green CI +
+  linear history + admin enforcement), `staging` + `production` environments,
+  required reviewer on `production`, secret scanning + push protection +
+  Dependabot all on. Repo renamed to **`maida`**, description/topics/homepage set.
+- [x] **Branch model** `main` (production) + `staging` (pre‑prod) wired into CI
+  and the deploy workflows.
+- [x] **CI is green** — the workflows had non‑existent action SHAs, a broken
+  `pnpm audit` gate, and a Turbo strict‑mode env‑passthrough gap; all fixed.
+- [x] **Supabase** provisioned — a **test** project and a **prod** project.
+- [x] **Upstash Redis** provisioned — a **test** database and a **prod** database.
+- [x] **Resend** API key created (test + prod).
+- [x] **RS256 JWT keys** generated (a test pair and a prod pair).
+
+Still to do (this guide walks each one):
+
+- [ ] Put the credentials you generated into **GitHub Secrets** + **Railway
+  Variables** (§A6.2, §B1) — they must never live in a local file.
+- [ ] **Lemon Squeezy** billing store, variants, webhook (§A4).
+- [ ] Deploy the **API → Railway** (staging + prod services) (§B1).
+- [ ] Deploy the **frontends → Vercel** (staging + prod) (§B2).
+- [ ] Point **`get-maida.com`** at everything via Cloudflare (§C).
+- [ ] Verify domain in Resend, flip `EMAIL_FROM` to `@get-maida.com` (§C6).
+- [ ] Production go‑live (§D).
 
 ---
 
@@ -30,267 +65,230 @@ transactional email (Resend), billing (Lemon Squeezy). Cloudflare sits in front
 of everything for DNS, TLS, CDN, WAF, bot protection and Turnstile.
 
 ```
-                         ┌──────────────── Cloudflare (DNS · TLS · CDN · WAF · Turnstile) ────────────────┐
-   diner   ─▶ yourdomain.com            ─▶ Web SPA        (Cloudflare Pages / Vercel)                      │
-   owner   ─▶ dashboard.yourdomain.com  ─▶ Dashboard SPA  (Cloudflare Pages / Vercel)                      │
-   admin   ─▶ admin.yourdomain.com      ─▶ Admin SPA      (Cloudflare Pages / Vercel)                      │
-   all     ─▶ api.yourdomain.com        ─▶ API + /ws + worker (Railway / Fly.io) ─┬─ Postgres  (Supabase)  │
-                                                                                  ├─ Redis     (Upstash)   │
-                                                                                  ├─ Email     (Resend)    │
-                                                                                  └─ Billing   (Lemon Sqzy)│
-                         └───────────────────────────────────────────────────────────────────────────────┘
+                     ┌──────────── Cloudflare (DNS · TLS · CDN · WAF · Turnstile) ────────────┐
+ diner  ─▶ get-maida.com            ─▶ Web SPA        (Vercel)                                 │
+ owner  ─▶ dashboard.get-maida.com  ─▶ Dashboard SPA  (Vercel)                                 │
+ admin  ─▶ admin.get-maida.com      ─▶ Admin SPA      (Vercel)                                 │
+ all    ─▶ api.get-maida.com        ─▶ API + /ws + worker (Railway) ─┬─ Postgres  (Supabase)   │
+                                                                     ├─ Redis     (Upstash)    │
+                                                                     ├─ Email     (Resend)     │
+                                                                     └─ Billing   (Lemon Sqzy) │
+                     └────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Why the API cannot be “serverless / free”:** it holds long‑lived WebSocket
 connections and runs a persistent BullMQ worker + Redis pub/sub subscriber. That
-requires an always‑on process — serverless functions (Vercel/Netlify) and
-free tiers that sleep after inactivity (Render free) will drop WebSockets and
-stall the worker. This is the one place a small paid host is justified (see §1).
+requires an always‑on process — serverless functions and free tiers that sleep
+after inactivity will drop WebSockets and stall the worker. This is the one place
+a small paid host is justified (Railway, §B1).
 
 ---
 
 ## 1 · Cost summary — read this first
 
-Target: **the only unavoidable recurring cost is the domain.** Everything else
-fits a free tier at launch / low traffic.
-
-| Service | Purpose | Plan to use | Recurring cost |
-|---------|---------|-------------|----------------|
-| **Domain** | `yourdomain.com` | Cloudflare Registrar (at‑cost, no markup) | **~$10/yr — unavoidable** |
+| Service | Purpose | Plan | Recurring cost |
+|---------|---------|------|----------------|
+| **Domain** `get-maida.com` | already owned | your registrar | ~$10–12/yr |
 | Cloudflare | DNS, TLS, CDN, WAF, Bot Fight, Turnstile | **Free** | $0 |
-| Supabase | PostgreSQL | **Free** (500 MB, 1 project) | $0 |
-| Upstash | Redis | **Free** (256 MB, 500 k cmd/mo) | $0 |
-| Resend | Transactional email | **Free** (3 000/mo, 100/day) | $0 |
-| Lemon Squeezy | Owner subscriptions | Pay‑as‑you‑sell (~5% + fees per charge) | $0 fixed |
-| Cloudflare Pages | Web + Dashboard + Admin hosting | **Free** (unlimited bandwidth, commercial OK) | $0 |
+| Supabase | PostgreSQL (test + prod) | **Free** (2 projects) | $0 |
+| Upstash | Redis (test + prod) | **Free** | $0 |
+| Resend | Transactional email | **Free** (3 000/mo) | $0 |
+| Lemon Squeezy | Owner subscriptions | Pay‑as‑you‑sell (~5% + fees) | $0 fixed |
+| **Vercel** | Web + Dashboard + Admin hosting | see note ↓ | $0–20/mo |
+| **Railway** | API + WebSocket + worker | Hobby **$5/mo** ($5 usage incl.) | ~$5/mo |
 | GitHub | Repo + Actions CI/CD | **Free** | $0 |
-| **API host** | Fastify + WebSocket + worker | Fly.io or Railway | **$0–5/mo — see below** |
 
-### The two things that can cost money
+**Vercel + commercial use.** You chose Vercel for the frontends. Vercel's free
+**Hobby** tier is **non‑commercial per its Terms** — a paid SaaS should be on
+**Vercel Pro ($20/mo)**. You can launch on Hobby to validate, but budget Pro
+before you take real paying customers. (If you ever want $0 frontends,
+Cloudflare Pages is free and commercial‑OK — but this guide follows your Vercel
+choice.)
 
-1. **Domain — genuinely unavoidable (~$10–12/year).** No free domain is
-   production‑appropriate. Buy it at **Cloudflare Registrar**, which sells at
-   wholesale price with no renewal markup and no upsells.
-
-2. **API host — the one paid service you may need.** Pick one:
-   - **Fly.io (cheapest, recommended for lowest cost):** a single
-     `shared-cpu-1x` / 256 MB machine costs **≈ $1.94/mo**, and Fly **does not
-     invoice balances under $5**, so at launch traffic it is effectively **$0**.
-     Keep the machine *always on* (do not enable auto‑stop — it kills
-     WebSockets). Requires a card on file.
-   - **Railway (simplest, what the repo’s CI/CD targets):** Hobby plan is
-     **$5/mo** (includes $5 of usage), one‑click GitHub deploys, WebSockets work
-     out of the box. Best if you want the bundled `deploy-*.yml` workflows to
-     “just work”.
-   - **Free alternatives and why they fall short:** Render’s free web service
-     **sleeps after 15 min** (≈30 s cold start, WebSocket drops) — fine for a
-     demo, not for a live booking platform. Koyeb’s free tier is single‑instance
-     and capacity‑limited. Use these only for a throwaway preview.
-
-   Keep the worker **in‑process** (`RUN_WORKER_IN_PROCESS=true`) so you run **one**
-   API service, not two. Only split the worker into its own service once email
-   volume justifies the second host.
-
-> **Bottom line:** with Cloudflare Pages (frontends) + Fly.io (API, under the $5
-> invoice floor) + all free tiers, your **only bill is the ~$10/yr domain**. If
-> you prefer Railway’s turnkey pipeline, add **~$5/mo**.
-
-### About Vercel (if you use the bundled workflows)
-
-The committed GitHub Actions workflows deploy the frontends to **Vercel**.
-Vercel’s free **Hobby** tier is **non‑commercial per its Terms** — a paid SaaS
-should be on **Vercel Pro ($20/mo)**. To stay at $0, host the three SPAs on
-**Cloudflare Pages** instead (free, commercial use allowed, unlimited
-bandwidth). Both paths are documented in §B2. The rest of this guide is
-host‑agnostic for the frontends.
+**Bottom line at launch:** domain (~$1/mo amortised) + Railway (~$5/mo) +
+Vercel (Hobby $0 now / Pro $20 later). Everything else is free tier.
 
 ---
 
-## 2 · Test vs Production environments — the golden separation
+## 2 · Test vs Production — the golden separation
 
 You run **two of everything**: a **TEST** stack you can freely break, and a
 **PRODUCTION** stack you never touch by hand. This is what guarantees a test run
-can never create or delete rows in your real customers' data.
+can never create or delete rows in real customer data.
 
-### The two stacks
-
-| | TEST / dev stack | PRODUCTION stack |
+| | TEST / staging stack | PRODUCTION stack |
 |--|--|--|
-| Supabase project | `maida-test` (free) | `maida-prod` (separate project) |
+| Supabase project | `maida-test` | `maida-prod` |
 | Upstash database | `maida-test` | `maida-prod` |
-| Used by | `pnpm dev`, `pnpm test`, `pnpm e2e`, all local work | Only the deployed Railway API + real users |
-| Credentials live in | local `.env` and `.env.test` (git-ignored) | **Railway Variables + GitHub Secrets ONLY** — never in any file on your machine |
+| Used by | `pnpm dev`, `pnpm test`, `pnpm e2e`, the **staging** deploy | Only the deployed **prod** Railway API + real users |
+| Credentials live in | local `.env` / `.env.test` **and** the `staging` GitHub environment | **Railway (api‑prod) Variables + the `production` GitHub environment ONLY** — never in a file on your machine |
 | Safe to wipe? | Yes — disposable | **Never** |
 
 ### The one rule that makes this foolproof
 **Production credentials never live in a file on your computer.** They exist only
-in Railway's *Variables* tab (and GitHub Secrets for CI). Your local `.env` and
-`.env.test` point *only* at the TEST stack. If prod creds aren't on your machine,
-no local command can reach production — full stop.
+in Railway's `api-prod` *Variables* and in the GitHub `production` environment.
+Your local `.env` / `.env.test` point *only* at the TEST stack. If prod creds
+aren't on your machine, no local command can reach production — full stop.
 
-### The wall is enforced in code (you can't cross it by accident)
-- `pnpm test` and `pnpm e2e` load **`.env.test`**, not `.env`.
-- `.env.test` sets **`TEST_DATABASE=true`**. The runner **refuses to start**
-  without it (`apps/api/vitest.config.ts`, `scripts/e2e/preload-env.ts`).
-- Production (Railway) never sets `TEST_DATABASE`, so even if prod credentials
-  were somehow loaded, the destructive suites abort instead of running.
-- CI spins up a throwaway Postgres each run and sets the gate itself — it never
-  sees your real databases.
+Since you kept your six test + six prod values in a **note**, transcribe them:
+- **TEST** values → local `.env.test` (for `pnpm test`) **and** the GitHub
+  `staging` environment secrets (§A6.2).
+- **PROD** values → the GitHub `production` environment secrets **and** Railway
+  `api-prod` Variables (§B1). **Do not** put prod values in any local file, then
+  you can delete that note once they're in both places.
 
-### One-time setup
-1. Create **two** Supabase projects and **two** Upstash databases (§A1, §A2) —
-   name them `…-test` and `…-prod`.
-2. `cp .env.test.example .env.test`, fill in your **TEST** Supabase + Upstash
-   credentials, then apply the schema to the test DB:
-   `pnpm --filter @restaurant/db db:migrate:deploy`. `pnpm test` now runs against
-   the test stack only.
-3. Put the **PRODUCTION** credentials **only** in Railway → *Variables* and in
-   GitHub Secrets (§A6). **Never** create a `.env.production` file.
+### The wall is enforced in code
+- `pnpm test` / `pnpm e2e` load **`.env.test`** and refuse to start unless it
+  sets **`TEST_DATABASE=true`** (`apps/api/vitest.config.ts`,
+  `scripts/e2e/preload-env.ts`).
+- Production (Railway `api-prod`) never sets `TEST_DATABASE`, so even if prod
+  credentials were somehow loaded, the destructive suites abort.
+- CI spins up a throwaway Postgres + Redis each run and sets the gate itself — it
+  never sees your real databases. (CI passes these vars through Turbo's strict
+  env mode via `turbo.json`'s `passThroughEnv`.)
 
 ### Never point these at production
-`pnpm test` · `pnpm e2e` · `pnpm db:seed` · `pnpm db:reset` · `pnpm db:dev-reset`
-— they assume a disposable database. The only DB commands you ever run against
-production are `db:migrate:deploy` (schema) and `db:export` (backup).
+`pnpm test` · `pnpm e2e` · `pnpm db:seed` · `pnpm db:reset` · `pnpm db:dev-reset`.
+The only DB commands you ever run against production are `db:migrate:deploy`
+(schema) and `db:export` (backup).
 
 ---
 
-## 3 · Create accounts (in this order)
+## 3 · Git branch & deploy model
 
-Sign up for each before you start. All are free to create.
+Two long‑lived branches, each bound to one environment:
 
-1. [ ] **GitHub** — you already have the repo here.
-2. [ ] **Supabase** — <https://supabase.com> (PostgreSQL)
-3. [ ] **Upstash** — <https://upstash.com> (Redis)
-4. [ ] **Resend** — <https://resend.com> (email)
-5. [ ] **Lemon Squeezy** — <https://lemonsqueezy.com> (billing; store activation
-       needs business/payout details)
-6. [ ] **Cloudflare** — <https://dash.cloudflare.com> (DNS/CDN/WAF/Turnstile/Pages/Registrar)
-7. [ ] **API host** — **Fly.io** <https://fly.io> *or* **Railway** <https://railway.app>
+| Branch | Environment | How it deploys | Backing stack |
+|--------|-------------|----------------|---------------|
+| **`staging`** | `staging` | **Auto** — every push runs CI then deploys (`deploy-staging.yml`) | `maida-test` Supabase + Upstash |
+| **`main`** | `production` | **Manual** — Actions → *Deploy · Production* → type `DEPLOY` → reviewer approves (`deploy-prod.yml`) | `maida-prod` Supabase + Upstash |
 
-You do **not** need the domain yet — Parts A and B run on default platform URLs.
+**Day‑to‑day flow (professional GitFlow‑lite):**
+
+```
+feature/xyz  ──PR──▶  staging  ──(auto‑deploys to staging, you smoke‑test)──▶  PR ──▶  main  ──(manual prod deploy)──▶ 🚀
+```
+
+1. Branch off `staging`: `git switch staging && git switch -c feature/xyz`.
+2. Open a PR into `staging`. CI (`Lint · Typecheck · Test · Build`) must pass.
+3. Merge → `staging` auto‑deploys; verify on the staging URLs.
+4. When happy, open a PR `staging → main`. CI must pass; merge (squash or rebase —
+   merge commits are disabled for a linear history).
+5. Trigger **Deploy · Production** manually and approve the reviewer gate.
+
+`main` is protected: no direct pushes, PR required, CI required, admin‑enforced.
+Do all work on `staging` or feature branches.
 
 ---
 
 ## 4 · Environment variable reference
 
 The API validates its environment on boot (`apps/api/src/env.ts`) and
-`pnpm check-env` (`scripts/check-env.ts`) enforces the production rules. This is
-the single source of truth — populate every **Required** var.
+`pnpm check-env` (`scripts/check-env.ts`) enforces the production rules. Populate
+every **Required** var.
 
-### API (`apps/api`) — set in the API host + GitHub Secrets
+### API (`apps/api`) — set in Railway + the GitHub environment secrets
 
 | Variable | Required | Where to obtain it |
 |----------|----------|--------------------|
-| `DATABASE_URL` | ✅ | Supabase → Project → **Connect** → **Transaction** pooler (port **6543**). Append `?pgbouncer=true&connection_limit=10`. |
-| `DIRECT_DATABASE_URL` | ✅ | Same page → **Session** pooler (port **5432**). Used only for migrations. |
-| `REDIS_URL` | ✅ | Upstash → your database → **`rediss://…`** connection URL. |
-| `JWT_PRIVATE_KEY` | ✅ | Generate locally (see §A5). RS256 PKCS#8 PEM. Secret. |
-| `JWT_PUBLIC_KEY` | ✅ | Generated alongside the private key. |
-| `CORS_ORIGIN` | ✅ | Comma‑separated frontend origins, no trailing slash. Dev default provided. Must **not** contain `localhost` in prod. |
-| `RESEND_API_KEY` | ✅ | Resend → **API Keys** → *Create API Key*. Secret (`re_…`). |
-| `EMAIL_FROM` | ✅ | Sandbox: `onboarding@resend.dev`. Prod: `noreply@yourdomain.com` (after §C6 domain verification). |
-| `LEMON_SQUEEZY_API_KEY` | ✅ | Lemon Squeezy → **Settings → API** → create key. Secret. |
+| `DATABASE_URL` | ✅ | Supabase → Project → **Connect** → **Transaction** pooler (port **6543**). Append `?pgbouncer=true&connection_limit=10`. *(You have this for test + prod.)* |
+| `DIRECT_DATABASE_URL` | ✅ | Same page → **Session** pooler (port **5432**). Migrations only. *(You have this for test + prod.)* |
+| `REDIS_URL` | ✅ | Upstash → your database → **`rediss://…`** URL. *(You have this for test + prod.)* |
+| `JWT_PRIVATE_KEY` | ✅ | Generated locally (§A5). RS256 PKCS#8 PEM. Secret. *(Generated.)* |
+| `JWT_PUBLIC_KEY` | ✅ | Generated alongside the private key. *(Generated.)* |
+| `CORS_ORIGIN` | ✅ | Comma‑separated frontend origins, no trailing slash. Must **not** contain `localhost` in prod. Prod value in §C7. |
+| `RESEND_API_KEY` | ✅ | Resend → **API Keys**. Secret (`re_…`). *(You have this.)* |
+| `EMAIL_FROM` | ✅ | Until the domain is verified: `onboarding@resend.dev`. Prod: `noreply@get-maida.com` (after §C6). |
+| `LEMON_SQUEEZY_API_KEY` | ✅ | Lemon Squeezy → **Settings → API**. Secret. |
 | `LEMON_SQUEEZY_STORE_ID` | ✅ | Lemon Squeezy → **Settings → Stores** → numeric Store ID. |
-| `LEMON_SQUEEZY_WEBHOOK_SECRET` | ✅ | Lemon Squeezy → **Settings → Webhooks** → your webhook’s signing secret (§A4.3). Secret. |
-| `LS_VARIANT_STARTER` | ✅ | Lemon Squeezy → Product → **Variant → copy Variant ID** (Starter). |
-| `LS_VARIANT_PRO` | ✅ | Same, Pro variant. |
-| `LS_VARIANT_PREMIUM` | ✅ | Same, Premium variant. |
-| `NODE_ENV` | ✅ | `production` in prod. |
-| `CF_ORIGIN_SECRET` | Prod ✅ | `openssl rand -hex 32`. Must be ≥32 chars and match the Cloudflare Transform Rule (§C4). Secret. |
+| `LEMON_SQUEEZY_WEBHOOK_SECRET` | ✅ | Lemon Squeezy → **Settings → Webhooks** → signing secret (§A4.3). Secret. |
+| `LS_VARIANT_STARTER` / `_PRO` / `_PREMIUM` | ✅ | Each variant's numeric Variant ID (§A4.2). |
+| `NODE_ENV` | ✅ | `production` on Railway. |
+| `CF_ORIGIN_SECRET` | Prod ✅ | `openssl rand -hex 32`. **≥32 chars**, must match the Cloudflare Transform Rule (§C4). Secret. |
 | `CLOUDFLARE_TURNSTILE_SECRET_KEY` | Optional | Cloudflare → **Turnstile** → widget → **Secret Key**. Unset = registration bot check skipped. |
-| `WEB_URL` | Default | Diner app URL (used in reset/verify emails). Dev default `http://localhost:5173`. |
-| `DASHBOARD_URL` | Default | Owner app URL. Dev default `http://localhost:5174`. |
+| `WEB_URL` | Default | Diner app URL (reset/verify emails). Prod: `https://get-maida.com`. |
+| `DASHBOARD_URL` | Default | Owner app URL. Prod: `https://dashboard.get-maida.com`. |
 | `BCRYPT_ROUNDS` | Default 12 | Leave at 12 in prod. |
-| `PORT` | Default 3001 | The host usually sets this; leave default otherwise. |
+| `PORT` | Default 3001 | Railway sets this; leave default otherwise. |
 | `QUEUE_NAME` | Default | `booking_events`. Leave as‑is. |
-| `RUN_WORKER_IN_PROCESS` | Default `true` | Keep `true` to run one service (worker inside the API). |
+| `RUN_WORKER_IN_PROCESS` | Default `true` | Keep `true` — one service (worker inside the API). |
 | `AUDIT_LOG_RETENTION_DAYS` | Default 365 | Min 30. |
 | `ALERT_WEBHOOK_URL` | Optional | Slack‑compatible incoming webhook for critical alerts. |
-| `R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET_NAME` / `R2_PUBLIC_URL` | Optional | Cloudflare R2 for logo uploads. Unset = logos save to local disk (fine for dev; on a stateless host, set R2 for prod). |
+| `R2_*` (account/key/secret/bucket/public‑url) | Optional | Cloudflare R2 for logo uploads. Unset = local disk (fine for dev; set R2 for prod since Railway is stateless). |
 
-### Frontends — set as build‑time vars in the frontend host
+### Frontends — build‑time vars in Vercel
 
-| Variable | Apps | Where to obtain / set |
-|----------|------|-----------------------|
-| `VITE_API_URL` | web, dashboard, admin | The API’s public URL, e.g. `https://api.yourdomain.com`. Leave **blank in local dev** (the Vite proxy forwards `/api` → `localhost:3001`). |
+| Variable | Apps | Where to set |
+|----------|------|--------------|
+| `VITE_API_URL` | web, dashboard, admin | The API's public URL, e.g. `https://api.get-maida.com` (prod) / your staging Railway URL. Leave **blank in local dev** (the Vite proxy forwards `/api` → `localhost:3001`). |
 | `VITE_CLOUDFLARE_TURNSTILE_SITE_KEY` | web only | Cloudflare → **Turnstile** → widget → **Site Key** (public). Dev test key `1x00000000000000000000AA` always passes. |
 
-### Deploy credentials (GitHub Secrets only — for the bundled workflows)
+### Deploy credentials (GitHub Secrets — for the workflows)
 
 | Secret | Where to obtain |
 |--------|-----------------|
 | `PROD_RAILWAY_TOKEN` / `STAGING_RAILWAY_TOKEN` | Railway → **Account Settings → Tokens** (or a project token). |
-| `VERCEL_TOKEN` | Vercel → **Settings → Tokens** (only if using Vercel). |
+| `VERCEL_TOKEN` | Vercel → **Settings → Tokens**. |
 | `VERCEL_ORG_ID` | `vercel whoami --json`, or `.vercel/project.json` after first `vercel link`. |
 | `VERCEL_PROJECT_ID_WEB_PROD` / `_WEB_STAGING` / `_DASHBOARD_PROD` / `_DASHBOARD_STAGING` | Vercel → each Project → **Settings → General → Project ID**. |
 
-The full per‑environment secret list is in **§A6**.
+The full per‑environment secret list is in **§A6.2**.
 
 ---
 
-# PART A · Provision backing services (no domain required)
+# PART A · Provision backing services
 
-Everything here works on free platform URLs. Do it first.
+Everything here works on free platform URLs. Most of Part A is **already done**
+(status box at top) — the remaining work is Lemon Squeezy (§A4) and loading your
+credentials into GitHub/Railway (§A6.2, §B1).
 
-## A1 · Supabase — PostgreSQL
+## A1 · Supabase — PostgreSQL  ✅ (done: test + prod projects exist)
 
-> **Create TWO projects** (§2): one **`maida-test`** and one **`maida-prod`**.
-> Repeat the steps below for each. The `-test` URLs go in local `.env` / `.env.test`;
-> the `-prod` URLs go **only** in Railway Variables + GitHub Secrets — never in a
-> local file. Supabase's free tier allows 2 projects, so this costs nothing.
-
-1. [ ] **New project** (region close to your users). Save the database password.
-2. [ ] **Connect** (top bar) → copy two connection strings:
+For reference / if you re‑provision:
+1. **New project** (region close to your users). Save the DB password.
+2. **Connect** → copy two connection strings per project:
    - **Transaction pooler** (port **6543**) → `DATABASE_URL`. **Append**
-     `?pgbouncer=true&connection_limit=10`.
-     Prisma’s prepared statements break on the transaction pooler without
-     `pgbouncer=true` — `check-env` blocks the deploy if you forget.
+     `?pgbouncer=true&connection_limit=10` (Prisma prepared statements break on
+     the transaction pooler without it — `check-env` blocks the deploy if you
+     forget).
    - **Session pooler** (port **5432**) → `DIRECT_DATABASE_URL` (migrations).
-3. [ ] URL‑encode the password if it contains `@ : / ? # [ ] ! $ * &` (e.g. `@`→`%40`).
-4. [ ] Apply the schema (run from the repo root with the two URLs exported):
+3. URL‑encode the password if it contains `@ : / ? # [ ] ! $ * &` (`@`→`%40`).
+4. Apply the schema to **each** DB (run once per project, before its first deploy):
    ```bash
    DATABASE_URL="<direct-url>" DIRECT_DATABASE_URL="<direct-url>" \
      pnpm --filter @restaurant/db db:migrate:deploy
    ```
-5. [ ] **Do NOT run the dev seed in production** (`pnpm db:seed` inserts demo data).
-6. [ ] Free tier has **no automated backups**. Either accept manual backups
-   (`pnpm db:export` uses `DIRECT_DATABASE_URL`) or budget for Supabase Pro
-   ($25/mo) once you have real customers. Point‑in‑time backups are a real
-   business‑continuity gap on free tier — note it, don’t ignore it.
+5. **Never** run `pnpm db:seed` against prod (it inserts demo data).
+6. Free tier has **no automated backups** — use `pnpm db:export` (uses
+   `DIRECT_DATABASE_URL`) or budget Supabase Pro ($25/mo) once you have customers.
 
-## A2 · Upstash — Redis
+## A2 · Upstash — Redis  ✅ (done: test + prod databases exist)
 
-> **Create TWO databases** (§2): `maida-test` and `maida-prod`. Test URL → local
-> `.env` / `.env.test`; prod URL → Railway + GitHub Secrets only.
+1. Type **Regional**, same region as Railway.
+2. Copy the **`rediss://…`** URL → `REDIS_URL`.
+3. **Eviction policy → `noeviction`** (console → your DB → *Configuration*). The
+   default `allkeys-lru` silently evicts rate‑limit counters and the JWT
+   deny‑list — `check-env` fails prod if it is not `noeviction`. **Verify this on
+   your prod database now.**
 
-1. [ ] **Create database** → type **Regional**, same region as the API host.
-2. [ ] Copy the **`rediss://…`** URL → `REDIS_URL`.
-3. [ ] **Eviction policy → `noeviction`** (Upstash console → your DB →
-   *Configuration*). The default `allkeys-lru` will silently evict rate‑limit
-   counters and the JWT deny‑list — `check-env` warns and fails prod if it is
-   not `noeviction`.
+## A3 · Resend — email  ✅ (done: API key exists; domain verify later in §C6)
 
-## A3 · Resend — email (sandbox first, verify domain later)
+Until `get-maida.com` is verified in Resend, keep `EMAIL_FROM=onboarding@resend.dev`
+(sandbox mode only delivers to your own account email — expected). Real sending
+to any address requires §C6.
 
-1. [ ] **API Keys → Create** → `RESEND_API_KEY` (starts `re_`).
-2. [ ] Until you own a domain, set `EMAIL_FROM=onboarding@resend.dev`. In sandbox
-   mode Resend only delivers to **your own account email** — expected. Real
-   sending to any address requires the domain verification in **§C6**.
+## A4 · Lemon Squeezy — owner billing  ⬅ still to do
 
-## A4 · Lemon Squeezy — owner billing
-
-The platform bills **restaurant owners** (plans STARTER / PRO / PREMIUM). Diners
-and admins are never charged. Lemon Squeezy is a Merchant of Record, so it
-handles sales tax/VAT for you.
+The platform bills **restaurant owners** (STARTER / PRO / PREMIUM). Diners and
+admins are never charged. Lemon Squeezy is a Merchant of Record (handles VAT).
 
 ### A4.1 · Store & API key
 1. [ ] Activate a store (business/payout details as LS requires).
-2. [ ] **Settings → Stores** → copy **Store ID** → `LEMON_SQUEEZY_STORE_ID`.
+2. [ ] **Settings → Stores** → **Store ID** → `LEMON_SQUEEZY_STORE_ID`.
 3. [ ] **Settings → API** → create a key → `LEMON_SQUEEZY_API_KEY`.
 
 ### A4.2 · Three subscription variants
-Create one subscription product with three variants matching the code’s plan
-limits (`apps/api/src/lib/plan.ts`):
+One subscription product, three variants matching `apps/api/src/lib/plan.ts`:
 
 | Plan | Restaurants | Bookings/mo | Env var |
 |------|-------------|-------------|---------|
@@ -298,77 +296,96 @@ limits (`apps/api/src/lib/plan.ts`):
 | PRO | 5 | 1 000 | `LS_VARIANT_PRO` |
 | PREMIUM | Unlimited | Unlimited | `LS_VARIANT_PREMIUM` |
 
-- [ ] For each variant: **open the variant → copy its numeric Variant ID** → set
-  the matching `LS_VARIANT_*`.
+- [ ] For each: **open the variant → copy its numeric Variant ID** → set the var.
 
 ### A4.3 · Webhook
-The API exposes **`POST /webhooks/lemon-squeezy`** (no JWT — verified by
-HMAC‑SHA256 signature). It is registered **before** the Cloudflare origin guard
-so Lemon Squeezy’s servers reach it without the origin secret.
+The API exposes **`POST /webhooks/lemon-squeezy`** (no JWT — HMAC‑SHA256 verified,
+registered before the Cloudflare origin guard so LS reaches it).
 
-1. [ ] **Settings → Webhooks → Add** →
-   URL `https://<api-host>/webhooks/lemon-squeezy`
-   (local: use `ngrok http 3001`; staging/prod: your API URL).
+1. [ ] **Settings → Webhooks → Add** → URL
+   `https://api.get-maida.com/webhooks/lemon-squeezy`
+   (local testing: `ngrok http 3001`; staging: your staging API URL).
 2. [ ] Copy the **signing secret** → `LEMON_SQUEEZY_WEBHOOK_SECRET`.
 3. [ ] Enable exactly these events (all consumed by `webhook.routes.ts`):
    `subscription_created`, `subscription_updated`, `subscription_cancelled`,
    `subscription_resumed`, `subscription_expired`, `subscription_payment_success`,
    `subscription_payment_failed`, `subscription_payment_recovered`.
 
-## A5 · Generate RS256 JWT keys (fresh per environment)
+## A5 · RS256 JWT keys  ✅ (done: test + prod pairs generated)
 
-Never reuse dev keys in prod. From the repo root:
-
+Never reuse dev keys in prod (you generated separate pairs — good). To regenerate:
 ```bash
-# Option A — OpenSSL
-openssl genrsa -out prod-private.pem 4096
-openssl rsa -in prod-private.pem -pubout -out prod-public.pem
-# Paste each into the matching GitHub Secret / host env var, then delete:
-rm prod-private.pem prod-public.pem
-
-# Option B — Node (no OpenSSL), prints both keys:
 node -e "const{generateKeyPairSync}=require('crypto');const{privateKey,publicKey}=generateKeyPairSync('rsa',{modulusLength:4096,publicKeyEncoding:{type:'spki',format:'pem'},privateKeyEncoding:{type:'pkcs8',format:'pem'}});console.log(privateKey);console.log(publicKey);"
 ```
-
-- [ ] `JWT_PRIVATE_KEY` and `JWT_PUBLIC_KEY` set (in host env + GitHub Secrets).
-- [ ] Private key stored **only** in secrets — never committed.
-- [ ] In CI/host env, multi‑line PEMs may be stored with literal `\n`; the app
-  normalises them on boot.
+Multi‑line PEMs stored in GitHub Secrets / Railway keep their real newlines; the
+app also normalises literal `\n` on boot. **Store from a file** to preserve
+newlines: `gh secret set PROD_JWT_PRIVATE_KEY --env production < prod-private.pem`.
 
 ## A6 · GitHub — repo settings, environments & secrets
 
-### A6.1 · Branch protection & environments
-- [ ] Settings → **Branches** → protect `main`: require PR, require status checks
-  `lint`, `typecheck`, `test`, `build`, require up‑to‑date, no bypass.
-- [ ] Settings → **Environments** → create `staging` and `production`.
-- [ ] On `production`, add **at least one required reviewer** (gates prod deploys).
+### A6.1 · Branch protection & environments  ✅ (done)
+Already configured:
+- [x] `main` protected — PR required, required check **`Lint · Typecheck · Test ·
+  Build`** (the CI job's real name — there are **no** separate `lint`/`test`
+  checks), strict/up‑to‑date, linear history, conversation resolution,
+  force‑push & deletion blocked, **admin enforcement on**.
+- [x] Environments **`staging`** and **`production`** exist.
+- [x] **`production`** requires **one reviewer** (you) and only **protected
+  branches** (i.e. `main`) may deploy to it. `prevent_self_review` is off so you
+  can approve your own prod deploys.
 
-### A6.2 · Secrets (Settings → Secrets and variables → Actions)
-Only needed if you use the bundled workflows. Use platform default URLs for
-`*_CORS_ORIGIN` / `*_EMAIL_FROM` / `*_WEB_URL` / `*_DASHBOARD_URL` until you own a
-domain (Part C updates them).
+> Emergency bypass (only if CI is broken and you must ship): temporarily remove
+> protection with `gh api -X DELETE repos/majidifounder/maida/branches/main/protection`,
+> push, then re‑apply it. Prefer fixing CI.
 
-**Repository‑level (shared):** `VERCEL_TOKEN`, `VERCEL_ORG_ID`,
-`VERCEL_PROJECT_ID_WEB_STAGING`, `VERCEL_PROJECT_ID_WEB_PROD`,
-`VERCEL_PROJECT_ID_DASHBOARD_STAGING`, `VERCEL_PROJECT_ID_DASHBOARD_PROD`
-*(skip all Vercel secrets if hosting frontends on Cloudflare Pages).*
+### A6.2 · Secrets & variables (Settings → Secrets and variables → Actions)
+These names are exactly what the deploy workflows read. Set them with the `gh`
+CLI (values never touch your shell history in the prompt form). **Now is when you
+move your note's values into GitHub.**
 
-**`staging` environment:** `STAGING_RAILWAY_TOKEN`, `STAGING_DATABASE_URL`,
-`STAGING_DIRECT_DATABASE_URL`, `STAGING_REDIS_URL`, `STAGING_JWT_PRIVATE_KEY`,
-`STAGING_JWT_PUBLIC_KEY`, `STAGING_RESEND_API_KEY`, `STAGING_EMAIL_FROM`,
-`STAGING_CORS_ORIGIN`, `STAGING_LEMON_SQUEEZY_WEBHOOK_SECRET`,
-`STAGING_LEMON_SQUEEZY_API_KEY`, `STAGING_LEMON_SQUEEZY_STORE_ID`,
-`STAGING_LS_VARIANT_STARTER`, `STAGING_LS_VARIANT_PRO`,
-`STAGING_LS_VARIANT_PREMIUM`, `STAGING_CF_ORIGIN_SECRET`, `STAGING_WEB_URL`,
-`STAGING_DASHBOARD_URL`.
+**Repository‑level (shared by both environments):**
+```bash
+for s in VERCEL_TOKEN VERCEL_ORG_ID \
+         VERCEL_PROJECT_ID_WEB_STAGING VERCEL_PROJECT_ID_DASHBOARD_STAGING \
+         VERCEL_PROJECT_ID_WEB_PROD    VERCEL_PROJECT_ID_DASHBOARD_PROD; do
+  gh secret set "$s" --repo majidifounder/maida
+done
+```
 
-**`production` environment:** same set with `PROD_` prefix, plus optional
-`PROD_ALERT_WEBHOOK_URL`. (`PROD_CF_ORIGIN_SECRET` is **required** — prod
-`check-env` fails without a ≥32‑char value.)
+**`staging` environment (uses your TEST Supabase/Upstash):**
+```bash
+for s in STAGING_RAILWAY_TOKEN STAGING_DATABASE_URL STAGING_DIRECT_DATABASE_URL; do
+  gh secret set "$s" --env staging --repo majidifounder/maida
+done
+gh variable set STAGING_URL --env staging --repo majidifounder/maida \
+  --body "https://api-staging-XXXX.up.railway.app"   # fill after B1
+```
 
-> The workflows also read a repo/environment **variable** (not secret)
-> `PRODUCTION_URL` / `STAGING_URL` for the deploy summary — set them under
-> Settings → Environments → *Variables*.
+**`production` environment (uses your PROD Supabase/Upstash):**
+```bash
+for s in PROD_RAILWAY_TOKEN PROD_DATABASE_URL PROD_DIRECT_DATABASE_URL PROD_REDIS_URL \
+         PROD_CORS_ORIGIN PROD_EMAIL_FROM PROD_RESEND_API_KEY \
+         PROD_LEMON_SQUEEZY_API_KEY PROD_LEMON_SQUEEZY_STORE_ID PROD_LEMON_SQUEEZY_WEBHOOK_SECRET \
+         PROD_LS_VARIANT_STARTER PROD_LS_VARIANT_PRO PROD_LS_VARIANT_PREMIUM PROD_CF_ORIGIN_SECRET; do
+  gh secret set "$s" --env production --repo majidifounder/maida
+done
+# JWT PEMs must come from a file to keep their newlines:
+gh secret set PROD_JWT_PRIVATE_KEY --env production --repo majidifounder/maida < prod-private.pem
+gh secret set PROD_JWT_PUBLIC_KEY  --env production --repo majidifounder/maida < prod-public.pem
+gh variable set PRODUCTION_URL --env production --repo majidifounder/maida \
+  --body "https://api.get-maida.com"
+```
+
+Notes:
+- `PROD_CF_ORIGIN_SECRET` must be **≥32 chars** or prod `check-env` fails
+  (`openssl rand -hex 32`).
+- The staging deploy only *reads* `STAGING_RAILWAY_TOKEN` + the two staging DB
+  URLs + Vercel repo secrets. The API's own runtime env (JWT, Redis, Resend,
+  Lemon Squeezy…) for **staging** lives in **Railway `api-staging` Variables**,
+  not GitHub. For **prod**, the same runtime env lives in Railway `api-prod`
+  Variables **and** the `production` secrets above (the prod workflow's
+  `check-env` gate reads them).
+- Verify at any time: `gh secret list --env production --repo majidifounder/maida`.
 
 ## A7 · Local verification before any deploy
 
@@ -376,78 +393,66 @@ domain (Part C updates them).
 pnpm install
 pnpm lint          # 0 errors
 pnpm typecheck     # 0 errors
-pnpm test          # full suite green (needs a local Postgres + Redis; see below)
+pnpm test          # full suite green (needs .env.test → TEST stack)
 pnpm build         # all apps build
 ```
 
-`pnpm test` / `pnpm e2e` load **`.env.test`** and refuse to run unless it sets
-`TEST_DATABASE=true` (§2) — this is what stops a test run from ever touching
-production. First-time setup: `cp .env.test.example .env.test` and fill in your
-**TEST** Supabase + Upstash creds (or a local Postgres + `pnpm redis:up` Redis),
+`pnpm test` / `pnpm e2e` load **`.env.test`** and refuse to run without
+`TEST_DATABASE=true` (§2). First‑time: `cp .env.test.example .env.test`, fill in
+your **TEST** Supabase + Upstash creds (or a local Postgres + `pnpm redis:up`),
 then `pnpm --filter @restaurant/db db:migrate:deploy` against the test DB. CI
-needs none of this — it spins up an ephemeral Postgres + Redis and sets the gate
-itself.
+needs none of this — it spins up its own ephemeral Postgres + Redis.
 
-- [ ] `.env.test` exists, points at TEST databases only, and `pnpm test` is green.
-- [ ] lint / typecheck / build clean (locally or in CI).
-- [ ] Confirmed no production URL appears in `.env`, `.env.test`, or any local file.
+- [ ] `.env.test` exists, points at TEST databases only, `pnpm test` green.
+- [ ] No production URL appears in `.env`, `.env.test`, or any local file.
 
 ---
 
-# PART B · First deploy on default URLs (no domain yet)
+# PART B · Deploy (staging first, then production)
 
-Deploy to platform hostnames (`*.up.railway.app`, `*.pages.dev` / `*.vercel.app`)
-and smoke‑test before touching DNS.
+## B1 · API → Railway
 
-## B1 · API → Railway  ✅ (your chosen host)
+Railway runs the always‑on API + WebSocket + worker and matches the bundled
+`deploy-*.yml` workflows. Create **one project** with **two services**:
+`api-staging` and `api-prod` — the workflows deploy by these exact names via
+`railway up --service <name>`.
 
-> **Railway is the host for this project.** It runs the always-on API + WebSocket
-> + worker, one-click GitHub deploys, and matches the bundled `deploy-*.yml`
-> workflows. Fly.io remains a lower-cost alternative (Option 2) if you ever want it.
->
-> **This is where your PRODUCTION credentials live — and the only place.** The
-> `-prod` Supabase/Upstash URLs and prod secrets go in Railway *Variables* (and
-> GitHub Secrets for CI), never in a local file (§2).
+### B1.1 · Create the project & services
+1. [ ] Railway → **New Project → Deploy from GitHub repo** → select `maida`.
+2. [ ] For the service, set **Root Directory = `apps/api`**. Build/start come from
+   the app's `package.json` (`pnpm build` → `node dist/index.js`).
+3. [ ] Rename this service **`api-staging`**. Then **+ New → Empty/GitHub service**
+   in the same project, same root dir, and name it **`api-prod`**.
 
-### Railway setup
-1. [ ] New project → **Deploy from GitHub repo** → select this repo.
-2. [ ] Service **Root Directory** = `apps/api`. Build/start come from the app’s
-   `package.json` (`pnpm build` → `node dist/index.js`).
-3. [ ] Add **all API env vars** from §4 (Railway → service → *Variables*), using
-   your **`maida-prod`** Supabase + Upstash URLs. Set `NODE_ENV=production`,
-   `RUN_WORKER_IN_PROCESS=true`. Do **not** set `TEST_DATABASE` here — production
-   must never carry the test gate.
-4. [ ] Name the service **`api-staging`** (and later **`api-prod`**) — the
-   workflows deploy by these exact names via `railway up --service <name>`.
-5. [ ] Create a Railway API token → GitHub Secret `STAGING_RAILWAY_TOKEN` /
-   `PROD_RAILWAY_TOKEN`.
+### B1.2 · Set each service's Variables (this is where creds live)
+Railway → service → **Variables**. Add every API var from §4.
 
-> **Tip:** give staging its own Supabase/Upstash too, or reuse the `-test` stack
-> for staging. Never point staging *or* CI at `maida-prod`.
+- **`api-staging`** → your **TEST** Supabase/Upstash values (from your note),
+  `NODE_ENV=production`, `RUN_WORKER_IN_PROCESS=true`. **Do not** set
+  `TEST_DATABASE` here.
+- **`api-prod`** → your **PROD** Supabase/Upstash values, prod JWT pair, prod
+  Resend/Lemon Squeezy/CF_ORIGIN_SECRET, `NODE_ENV=production`,
+  `RUN_WORKER_IN_PROCESS=true`.
 
-### Alternative — Fly.io (lower cost; not your chosen host)
-Only if you later switch off Railway. Same rule applies: prod secrets live in
-`fly secrets`, never in a local file.
-```bash
-curl -L https://fly.io/install.sh | sh      # or: brew install flyctl
-fly auth login
-cd apps/api
-fly launch --no-deploy                       # creates fly.toml; pick a name + region
-fly secrets set NODE_ENV=production RUN_WORKER_IN_PROCESS=true \
-  DATABASE_URL="…" DIRECT_DATABASE_URL="…" REDIS_URL="…" \
-  JWT_PRIVATE_KEY="…" JWT_PUBLIC_KEY="…" CORS_ORIGIN="…" \
-  RESEND_API_KEY="…" EMAIL_FROM="onboarding@resend.dev" \
-  LEMON_SQUEEZY_API_KEY="…" LEMON_SQUEEZY_STORE_ID="…" \
-  LEMON_SQUEEZY_WEBHOOK_SECRET="…" LS_VARIANT_STARTER="…" \
-  LS_VARIANT_PRO="…" LS_VARIANT_PREMIUM="…"
-fly deploy
-```
-- [ ] In `fly.toml` keep **`min_machines_running = 1`** / **no auto‑stop** — an
-  auto‑stopped machine kills the WebSocket feed and pauses the worker.
+> Keep the worker in‑process (`RUN_WORKER_IN_PROCESS=true`) so you run **one**
+> service, not two. Split it out only when email volume demands it.
 
-## B2 · Frontends → Cloudflare Pages (recommended, free) or Vercel
+### B1.3 · Tokens & first deploy
+4. [ ] Railway → **Account Settings → Tokens** → create a token → GitHub Secret
+   `STAGING_RAILWAY_TOKEN` (and a second for `PROD_RAILWAY_TOKEN`).
+5. [ ] Grab each service's public URL (Railway → service → **Settings → Networking
+   → Generate Domain**). Put the staging one in `STAGING_URL`, and `api.get-maida.com`
+   goes to `api-prod` later (§C).
+6. [ ] Migrate each DB once before its first real deploy (§A1 step 4) — the API
+   image never migrates at boot; the workflows run `db:migrate:deploy` for you on
+   each deploy, but the very first schema apply is safest done by hand.
 
-Each SPA is a static Vite build. Build settings per app:
+## B2 · Frontends → Vercel
+
+The workflows deploy **web** and **dashboard** to Vercel. **admin** is not in the
+workflows — deploy it as a fourth (manual) project or add a step.
+
+Build settings per app:
 
 | Setting | web | dashboard | admin |
 |---------|-----|-----------|-------|
@@ -455,96 +460,90 @@ Each SPA is a static Vite build. Build settings per app:
 | Build command | `pnpm install && pnpm --filter @restaurant/web build` | `…dashboard build` | `…admin build` |
 | Output dir | `apps/web/dist` | `apps/dashboard/dist` | `apps/admin/dist` |
 
-### Option 1 — Cloudflare Pages (free, commercial OK)
-1. [ ] Cloudflare → **Workers & Pages → Create → Pages → Connect to Git** → this repo.
-2. [ ] Create **three** Pages projects (web, dashboard, admin) with the settings
-   above. Framework preset: **Vite** (SPA fallback to `index.html`).
-3. [ ] Add env var **`VITE_API_URL`** = your API URL (and, for **web** only,
-   `VITE_CLOUDFLARE_TURNSTILE_SITE_KEY`). Redeploy after changing env vars —
-   Vite bakes them in at build time.
+### B2.1 · Create the projects
+The workflows use **separate Project IDs for staging vs prod**. You have two
+options:
 
-### Option 2 — Vercel (bundled workflows; Pro plan for commercial use)
-1. [ ] Create Vercel projects for **web** and **dashboard** (and a third for
-   **admin** — it is *not* in the workflows, deploy it manually or add a step).
-2. [ ] Each project: Root Directory = the app path, add `VITE_API_URL` (+ site key
-   for web). Capture `VERCEL_ORG_ID` and each Project ID into GitHub Secrets.
-3. [ ] Manual deploy command (per app), which is what CI runs:
+- **Simple (recommended): one Vercel project per app**, and set *both* the
+  `_STAGING` and `_PROD` secrets to the **same** Project ID. Staging deploys as a
+  Vercel **Preview**, prod as **Production** — the workflow already passes
+  `--environment=preview` for staging and `--prod` for production. → 2 projects
+  (web, dashboard) + admin.
+- **Isolated: four projects** (`web-staging`, `web-prod`, `dashboard-staging`,
+  `dashboard-prod`) if you want fully separate staging/prod frontends.
+
+1. [ ] Create the project(s) → **Import Git Repository** → `maida`.
+2. [ ] Each: set Root Directory + Build command + Output dir from the table.
+3. [ ] Add env var **`VITE_API_URL`** (and `VITE_CLOUDFLARE_TURNSTILE_SITE_KEY`
+   for **web** only). Vite bakes these in at **build time** → redeploy after any
+   change.
+4. [ ] Capture the deploy secrets into GitHub (§A6.2):
    ```bash
-   cd apps/web && vercel pull --yes --environment=preview --token=$VERCEL_TOKEN \
-     && vercel build --token=$VERCEL_TOKEN \
-     && vercel deploy --prebuilt --token=$VERCEL_TOKEN
+   vercel login
+   vercel whoami --json            # → VERCEL_ORG_ID
+   # In each project: Settings → General → Project ID → the matching secret
    ```
 
-> **Admin app:** neither workflow deploys `apps/admin`. Host it as a third
-> Cloudflare Pages project (free) or a third Vercel project, and add its URL to
-> `CORS_ORIGIN`.
+> **Admin app** is not automated: host it as a fourth Vercel project (or a
+> Cloudflare Pages project) and add its URL to `CORS_ORIGIN`.
 
-## B3 · Migrate the staging/prod database
+## B3 · Deploy
 
-Schema must lead code — the API image never migrates at boot. The workflows do
-this automatically; to run it by hand:
+- **Staging (automatic):** push to **`staging`** → `deploy-staging.yml` runs the
+  full CI gate (lint, typecheck, test on ephemeral Postgres+Redis), builds,
+  migrates the staging DB, then deploys API→Railway (`api-staging`) and
+  web+dashboard→Vercel (preview).
+- **Production (manual):** Actions → **`Deploy · Production`** → **Run workflow** →
+  type `DEPLOY` → approve the required‑reviewer gate → it runs the gate +
+  `check-env`, migrates the prod DB, deploys `api-prod` + prod frontends.
 
-```bash
-DATABASE_URL="<direct-url>" DIRECT_DATABASE_URL="<direct-url>" \
-  pnpm --filter @restaurant/db db:migrate:deploy
-```
+> A push to `staging` before the secrets exist will pass the CI/build portion and
+> **fail at the Railway/Vercel deploy steps** (no token) — that is expected. Set
+> the secrets (§A6.2), then push again.
 
-## B4 · Trigger the deploy
-
-- **Automated:** push to `main` → **`deploy-staging.yml`** runs the full CI gate
-  (lint, typecheck, test on ephemeral Postgres+Redis), builds, migrates staging,
-  then deploys API→Railway and web+dashboard→Vercel.
-- **Manual prod:** Actions → **`Deploy · Production`** → Run workflow → type
-  `DEPLOY` to confirm → passes the required‑reviewer gate → deploys.
-
-## B5 · Verify the first deploy
+## B4 · Verify a deploy
 
 ```bash
-curl https://<api-url>/health            # {"status":"ok","environment":"production"}
-curl https://<api-url>/health/ready      # {"status":"ok","checks":{"database":"ok","redis":"ok"}}
+curl https://<api-url>/health          # {"status":"ok","environment":"production"}
+curl https://<api-url>/health/ready    # {"status":"ok","checks":{"database":"ok","redis":"ok"}}
 ```
 
 - [ ] `/health` → 200; `/health/ready` → `database: ok`, `redis: ok`.
-- [ ] Set `VITE_API_URL` on all three frontends to the API URL and redeploy them.
-- [ ] Register → verify email → login → create restaurant → add a table → book →
-  confirmation shows; owner dashboard **service board updates live** (WebSocket);
-  cancel → the row/table state updates.
+- [ ] Set `VITE_API_URL` on the frontends to the API URL and redeploy them.
+- [ ] Register → verify email → login → create restaurant → add table → book →
+  confirmation shows; owner dashboard **updates live** (WebSocket); cancel → the
+  row/table state updates.
 - [ ] `GET /` → 404 (expected: the API has no homepage).
 
 ---
 
-# PART C · Custom domain + Cloudflare hardening
-
-Requires a registered domain. Suggested layout:
+# PART C · Custom domain (get-maida.com) + Cloudflare hardening
 
 | Host | Points to |
 |------|-----------|
-| `yourdomain.com` / `www` | Web SPA host |
-| `dashboard.yourdomain.com` | Dashboard SPA host |
-| `admin.yourdomain.com` | Admin SPA host |
-| `api.yourdomain.com` | API host (Railway/Fly) |
+| `get-maida.com` / `www` | Web SPA (Vercel) |
+| `dashboard.get-maida.com` | Dashboard SPA (Vercel) |
+| `admin.get-maida.com` | Admin SPA (Vercel) |
+| `api.get-maida.com` | API (`api-prod` on Railway) |
 
-## C1 · Buy the domain
-- [ ] Register at **Cloudflare Registrar** (cheapest, no markup) — or any
-  registrar, then move DNS to Cloudflare in C2.
+## C1 · Add get-maida.com to Cloudflare
+1. [ ] `dash.cloudflare.com` → **Add a site** → `get-maida.com` → **Free** plan →
+   switch your registrar's nameservers to Cloudflare's. Wait for **Active**.
 
-## C2 · Add the site to Cloudflare + DNS
-1. [ ] `dash.cloudflare.com` → **Add a site** → **Free** plan → follow to swap
-   your registrar’s nameservers to Cloudflare’s. Wait for **Active**.
-2. [ ] **DNS → Records** — add a CNAME per host pointing at the host’s target
-   (Pages/Vercel/Railway/Fly give you a CNAME target or custom‑domain instructions):
+## C2 · DNS records
+Add a CNAME per host pointing at each host's target (Vercel/Railway give you a
+custom‑domain target):
 
-   | Type | Name | Target | Proxy |
-   |------|------|--------|-------|
-   | CNAME | `www` (or `@`) | web host target | **Proxied** 🟠 |
-   | CNAME | `dashboard` | dashboard host target | **Proxied** 🟠 |
-   | CNAME | `admin` | admin host target | **Proxied** 🟠 |
-   | CNAME | `api` | API host target | **Proxied** 🟠 |
+| Type | Name | Target | Proxy |
+|------|------|--------|-------|
+| CNAME | `@` / `www` | Vercel web target | **Proxied** 🟠 |
+| CNAME | `dashboard` | Vercel dashboard target | **Proxied** 🟠 |
+| CNAME | `admin` | Vercel admin target | **Proxied** 🟠 |
+| CNAME | `api` | Railway `api-prod` target | **Proxied** 🟠 |
 
-3. [ ] Also add each custom domain **inside the host** (Pages/Vercel custom
-   domains; Railway/Fly custom domain) so it issues the origin certificate.
-4. [ ] `dig api.yourdomain.com` returns Cloudflare IPs (104.x / 172.x), **not**
-   the origin IP.
+- [ ] Also add each custom domain **inside the host** (Vercel → project → Domains;
+  Railway → service → Settings → Domains) so it issues the certificate.
+- [ ] `dig api.get-maida.com` returns Cloudflare IPs (104.x / 172.x), not origin.
 
 ## C3 · TLS + WebSockets
 - [ ] **SSL/TLS → Overview → Full (strict)**.
@@ -552,44 +551,41 @@ Requires a registered domain. Suggested layout:
 - [ ] **Network → WebSockets → On** (required for the `/ws` live feed).
 
 ## C4 · Origin secret (block direct‑to‑origin)
-1. [ ] `openssl rand -hex 32` → set as `CF_ORIGIN_SECRET` in the API host.
-2. [ ] **Rules → Transform Rules → Modify Request Header → Create**: when
-   `true` (all requests), **Set** header `X-CF-Origin-Secret` = *(same hex)*.
-3. [ ] Redeploy the API with `NODE_ENV=production`. The `cloudflareOnly` guard now
-   rejects any request that didn’t come through Cloudflare. (Webhook and health
-   routes are intentionally exempt.)
+1. [ ] `openssl rand -hex 32` → `CF_ORIGIN_SECRET` in Railway `api-prod` **and**
+   the `production` secret `PROD_CF_ORIGIN_SECRET`.
+2. [ ] **Rules → Transform Rules → Modify Request Header → Create**: when `true`,
+   **Set** header `X-CF-Origin-Secret` = *(same hex)*.
+3. [ ] Redeploy `api-prod`. The `cloudflareOnly` guard now rejects any request
+   that didn't come through Cloudflare (webhook + health routes are exempt).
 
 ## C5 · Turnstile, WAF, bots
 1. [ ] **Turnstile → Add widget** (domains: your web hosts, mode Managed). Site
-   Key → `VITE_CLOUDFLARE_TURNSTILE_SITE_KEY` (web host, then redeploy web);
-   Secret Key → `CLOUDFLARE_TURNSTILE_SECRET_KEY` (API host, then redeploy API).
-2. [ ] **Security → WAF → Rate limiting rules** (edge backup to server limits):
-   - `/auth/register` POST — 5 / IP / hour → Block.
-   - `/auth/login` POST — 10 / IP / 15 min → Block.
-3. [ ] **WAF → Managed rules →** enable Cloudflare Managed Ruleset + OWASP Core
-   (Paranoia **PL2**).
+   Key → `VITE_CLOUDFLARE_TURNSTILE_SITE_KEY` (web → redeploy); Secret Key →
+   `CLOUDFLARE_TURNSTILE_SECRET_KEY` (API → redeploy).
+2. [ ] **Security → WAF → Rate limiting rules:** `/auth/register` POST 5/IP/hr →
+   Block; `/auth/login` POST 10/IP/15min → Block.
+3. [ ] **WAF → Managed rules →** Cloudflare Managed Ruleset + OWASP Core (PL2).
 4. [ ] **Security → Bots → Bot Fight Mode → On**.
 5. [ ] **Security → Settings → Security Level: High** for launch.
 
-## C6 · Resend — verify your domain
-1. [ ] Resend → **Domains → Add domain** → `yourdomain.com`.
-2. [ ] Add the SPF / DKIM / DMARC records Resend shows into **Cloudflare DNS**
-   (set these mail records to **DNS only / grey cloud**).
-3. [ ] After it verifies, set `EMAIL_FROM=noreply@yourdomain.com` (API host +
-   `*_EMAIL_FROM` secrets) and redeploy.
+## C6 · Resend — verify get-maida.com
+1. [ ] Resend → **Domains → Add domain** → `get-maida.com`.
+2. [ ] Add the SPF / DKIM / DMARC records into **Cloudflare DNS** (mail records =
+   **DNS only / grey cloud**).
+3. [ ] After it verifies: `EMAIL_FROM=noreply@get-maida.com` in Railway `api-prod`
+   + the `PROD_EMAIL_FROM` secret → redeploy.
 
-## C7 · Point everything at the real domain
-- [ ] `CORS_ORIGIN` = `https://yourdomain.com,https://www.yourdomain.com,https://dashboard.yourdomain.com,https://admin.yourdomain.com` — **no localhost, no trailing slashes**.
-- [ ] `WEB_URL=https://yourdomain.com`, `DASHBOARD_URL=https://dashboard.yourdomain.com` (API host + secrets).
-- [ ] `VITE_API_URL=https://api.yourdomain.com` on all three frontends → redeploy.
-- [ ] Update the Lemon Squeezy webhook URL to `https://api.yourdomain.com/webhooks/lemon-squeezy`.
+## C7 · Point everything at get-maida.com
+- [ ] `CORS_ORIGIN` = `https://get-maida.com,https://www.get-maida.com,https://dashboard.get-maida.com,https://admin.get-maida.com` — no localhost, no trailing slashes. (Railway `api-prod` + `PROD_CORS_ORIGIN`.)
+- [ ] `WEB_URL=https://get-maida.com`, `DASHBOARD_URL=https://dashboard.get-maida.com`.
+- [ ] `VITE_API_URL=https://api.get-maida.com` on all three frontends → redeploy.
+- [ ] Update the Lemon Squeezy webhook URL to `https://api.get-maida.com/webhooks/lemon-squeezy`.
 - [ ] Run the pre‑deploy gate:
    ```bash
    NODE_ENV=production pnpm check-env
    ```
   It verifies every required var, blocks `localhost` in `CORS_ORIGIN`, enforces
-  `pgbouncer=true`, the `CF_ORIGIN_SECRET` length, and checks the Upstash
-  eviction policy.
+  `pgbouncer=true`, the `CF_ORIGIN_SECRET` length, and the Upstash eviction policy.
 
 ---
 
@@ -597,7 +593,7 @@ Requires a registered domain. Suggested layout:
 
 - [ ] All of Part A, B, C complete; `pnpm check-env` passes with prod values.
 - [ ] Run **`Deploy · Production`** (type `DEPLOY`, approve the reviewer gate).
-- [ ] `curl https://api.yourdomain.com/health/ready` → all `ok`.
+- [ ] `curl https://api.get-maida.com/health/ready` → all `ok`.
 - [ ] Full end‑to‑end on the real domain (register with Turnstile → book → email
   arrives → live dashboard update → cancel → owner subscribes via Lemon Squeezy →
   webhook upgrades the plan in `/subscriptions/me`).
@@ -606,21 +602,21 @@ Requires a registered domain. Suggested layout:
 
 ---
 
-# PART E · Post‑deploy verification checklist
+# PART E · Post‑deploy verification
 
 | Check | How | Expected |
 |-------|-----|----------|
 | API live | `curl …/health` | `status: ok` |
 | DB + Redis | `curl …/health/ready` | `checks: {database: ok, redis: ok}` |
-| CORS | Load a frontend, open Network tab | No CORS errors; requests hit `api.yourdomain.com` |
+| CORS | Load a frontend, open Network tab | No CORS errors; requests hit `api.get-maida.com` |
 | Auth | Register → verify → login | Session persists; `/auth/me` returns the user |
 | Booking | Book a slot | 201; appears in *My Reservations* and the owner board |
 | Real‑time | Owner board open while a diner books | Row appears without refresh (WebSocket) |
 | Email | Book / cancel | Diner + owner receive mail (verified domain) |
-| Billing | Owner checkout → pay → webhook | `/subscriptions/me` shows the new plan; log shows `subscription_created`; re‑sending the webhook logs *duplicate — skipping* (idempotent) |
+| Billing | Owner checkout → pay → webhook | `/subscriptions/me` shows the new plan; log shows `subscription_created`; re‑send → *duplicate — skipping* (idempotent) |
 | Plan gate | STARTER owner, 2nd restaurant | 403 `Plan limit reached` |
-| Origin lock | `curl https://<origin-ip>/health` | Blocked / times out (Cloudflare‑only) |
-| Admin | Login at `admin.yourdomain.com` | Email + password + TOTP → stats load |
+| Origin lock | `curl https://<railway-origin>/health` | Blocked / times out (Cloudflare‑only) |
+| Admin | Login at `admin.get-maida.com` | Email + password + TOTP → stats load |
 | Rate limits | 6 rapid `/auth/register` | 429 after the 5th (edge) / 3rd (server) |
 
 ---
@@ -629,34 +625,31 @@ Requires a registered domain. Suggested layout:
 
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
-| `Refusing to run tests: TEST_DATABASE is not "true"` | No `.env.test`, or it doesn't set the gate | `cp .env.test.example .env.test`, fill in your **TEST** DB creds (it sets `TEST_DATABASE=true`). This is the guard working as designed — see §2. |
-| API won’t boot, exits immediately | Missing required env var | Check the host logs — `env.ts` prints exactly which var failed. Run `pnpm check-env`. |
-| `prepared statement "s0" already exists` under load | `DATABASE_URL` uses port 6543 without `pgbouncer=true` | Append `?pgbouncer=true&connection_limit=10`. |
-| `P1001: can't reach database` during migrate | Migrating via the pooled URL or IPv6‑only direct host | Use `DIRECT_DATABASE_URL` (session pooler, 5432). |
-| Rate limits / logins behave randomly | Upstash eviction policy is `allkeys-lru` | Set **`noeviction`** in the Upstash console. |
-| `Not allowed by CORS` in the browser | Frontend origin missing from `CORS_ORIGIN`, or a trailing slash | List every origin exactly, no trailing slash, no `localhost` in prod. |
-| Login works but a page refresh logs you out | Refresh cookie (`__Host-refresh`) not stored — needs HTTPS + real domains, and all apps share one API host’s cookie | Fine in production over HTTPS; on `http://localhost` with different ports the cookie is shared across apps (one role at a time) — a test‑only artifact. |
-| WebSocket never connects in prod | Cloudflare WebSockets off, or the API machine auto‑stopped | Enable **Network → WebSockets**; keep the Fly machine always‑on. |
-| Turnstile widget missing / `TURNSTILE_TOKEN_MISSING` | Web missing `VITE_CLOUDFLARE_TURNSTILE_SITE_KEY`, or API missing the secret | Set both, redeploy both. Leave both unset to disable the check. |
-| Emails never arrive | Domain not verified in Resend (sandbox only mails your own address) | Complete §C6; set `EMAIL_FROM` to the verified domain. |
-| Owner’s plan doesn’t update after paying | Webhook URL/secret wrong, or events not subscribed | Verify the LS webhook URL + `LEMON_SQUEEZY_WEBHOOK_SECRET`; confirm all 8 events; check API logs for `subscription_*`. |
-| Direct origin IP still reachable | `CF_ORIGIN_SECRET` / Transform Rule mismatch | The header value and the env var must match exactly; redeploy API. |
-| Logos vanish after a redeploy | Local‑disk storage on a stateless host | Configure Cloudflare **R2** (`R2_*`) for prod. |
-| Prod deploy “does nothing” | It’s manual‑only | Actions → *Deploy · Production* → Run → type `DEPLOY`. |
+| `Refusing to run tests: TEST_DATABASE is not "true"` | No `.env.test`, or (in CI) an env var not passed through Turbo strict mode | Locally: `cp .env.test.example .env.test`, fill **TEST** creds. In CI: the var must be in `turbo.json` `test.passThroughEnv` **and** set in the workflow step. Guard working as designed (§2). |
+| CI red at **Set up job / Prepare actions** | An action pinned to a non‑existent SHA | Pin to a real commit SHA for the version (this repo's original SHAs were fabricated — fixed). |
+| CI red at **Audit dependencies** with `410` | npm retired the legacy `pnpm audit` endpoint | Non‑blocking now (warning only); Dependabot is the advisory gate. |
+| API won't boot, exits immediately | Missing required env var | Host logs — `env.ts` prints which var failed. Run `pnpm check-env`. |
+| `prepared statement "s0" already exists` | `DATABASE_URL` on port 6543 without `pgbouncer=true` | Append `?pgbouncer=true&connection_limit=10`. |
+| `P1001: can't reach database` during migrate | Migrating via the pooled URL | Use `DIRECT_DATABASE_URL` (session pooler, 5432). |
+| Rate limits / logins behave randomly | Upstash eviction policy `allkeys-lru` | Set **`noeviction`**. |
+| `Not allowed by CORS` | Origin missing from `CORS_ORIGIN`, or a trailing slash | List every origin exactly, no trailing slash, no `localhost` in prod. |
+| Refresh logs you out | Refresh cookie needs HTTPS + real domains | Fine in prod over HTTPS. |
+| WebSocket never connects in prod | Cloudflare WebSockets off, or the Railway service asleep | Enable **Network → WebSockets**; Railway stays on. |
+| Turnstile missing / `TURNSTILE_TOKEN_MISSING` | Web missing site key or API missing secret | Set both, redeploy both. Leave both unset to disable. |
+| Emails never arrive | Domain not verified in Resend | Complete §C6; set `EMAIL_FROM` to `@get-maida.com`. |
+| Plan doesn't update after paying | Webhook URL/secret wrong, or events not subscribed | Verify LS webhook URL + secret; confirm all 8 events; check logs for `subscription_*`. |
+| Direct origin IP reachable | `CF_ORIGIN_SECRET` / Transform Rule mismatch | Header value and env var must match exactly; redeploy API. |
+| Logos vanish after redeploy | Local‑disk storage on stateless Railway | Configure Cloudflare **R2** (`R2_*`) for prod. |
+| Prod deploy "does nothing" | It's manual‑only | Actions → *Deploy · Production* → Run → type `DEPLOY`. |
 
 **Common mistakes to avoid**
-- **Putting a production URL in a local file** (`.env`, `.env.test`). Prod creds
-  live only in Railway + GitHub Secrets (§2). If it's not on your machine, no
-  local command can wipe it.
-- Running `pnpm test` / `pnpm e2e` / `pnpm db:seed` / `pnpm db:reset` against a
-  production database (they create and delete rows — the `TEST_DATABASE` gate and
-  a separate `maida-test` stack exist to prevent exactly this).
+- **Putting a production URL/secret in a local file** (`.env`, `.env.test`). Prod
+  creds live only in Railway `api-prod` + GitHub `production` secrets (§2).
+- Running `pnpm test` / `e2e` / `db:seed` / `db:reset` against a production DB.
 - Reusing dev JWT keys or the dev `CF_ORIGIN_SECRET` in prod.
-- Forgetting to redeploy a **frontend** after changing a `VITE_*` var (Vite bakes
-  them in at build time).
-- Leaving Vercel on the free Hobby plan for a commercial product (ToS) — use
-  Cloudflare Pages or Vercel Pro.
-- Enabling Fly auto‑stop (breaks WebSockets + worker).
+- Forgetting to redeploy a **frontend** after changing a `VITE_*` var.
+- Pushing directly to `main` (it's protected — work on `staging`/feature branches).
+- Leaving Vercel on free Hobby for a commercial product (ToS) — Vercel Pro.
 
 ---
 
@@ -664,16 +657,15 @@ Requires a registered domain. Suggested layout:
 
 | What broke | Rollback |
 |------------|----------|
-| **Bad API release** (Railway) | Railway → service → **Deployments** → pick the last good one → **Redeploy/Rollback**. |
-| **Bad API release** (Fly) | `fly releases` → `fly deploy --image <previous-image>` (or `fly releases rollback`). |
-| **Bad frontend** (Pages/Vercel) | Pages/Vercel → Deployments → **promote** the previous good build to production. |
-| **Bad database migration** | Restore from a Supabase backup (Pro) or your latest `pnpm db:export` dump. Prisma has no auto down‑migration — ship a new forward migration that reverts the change, and re‑run `db:migrate:deploy`. |
-| **Leaked secret** | Rotate it at the source (Supabase/Upstash/Resend/LS/Cloudflare), update the host env + GitHub Secret, redeploy. For a JWT key, generate a new pair (this invalidates all sessions). |
-| **Total outage** | Verify `/health/ready` to isolate DB vs Redis; check the provider status pages; roll the API back to the last good release first. |
+| **Bad API release** (Railway) | Railway → service → **Deployments** → last good → **Redeploy/Rollback**. |
+| **Bad frontend** (Vercel) | Vercel → Deployments → **promote** the previous good build to Production. |
+| **Bad DB migration** | Restore a Supabase backup (Pro) or your latest `pnpm db:export`. Prisma has no auto down‑migration — ship a forward migration that reverts, re‑run `db:migrate:deploy`. |
+| **Leaked secret** | Rotate at the source, update Railway + GitHub Secret, redeploy. For a JWT key, generate a new pair (invalidates all sessions). |
+| **Bad merge on `main`** | Revert the PR on GitHub; `main` history is linear so `git revert` is clean. |
+| **Total outage** | `/health/ready` to isolate DB vs Redis; check provider status pages; roll the API back first. |
 
-> **Before any prod change:** take a fresh DB export (`pnpm db:export`) and note
-> the currently‑deployed release IDs on each host so you have a known‑good
-> rollback target.
+> **Before any prod change:** take a fresh `pnpm db:export` and note the deployed
+> release IDs on each host for a known‑good rollback target.
 
 ---
 
@@ -681,21 +673,30 @@ Requires a registered domain. Suggested layout:
 
 ```bash
 # One-time test-env setup (§2) — points the suites at your TEST databases
-cp .env.test.example .env.test                   # then fill in TEST Supabase + Upstash creds
-pnpm --filter @restaurant/db db:migrate:deploy   # against the TEST db (DIRECT_DATABASE_URL from .env.test)
+cp .env.test.example .env.test                   # fill in TEST Supabase + Upstash creds
+pnpm --filter @restaurant/db db:migrate:deploy   # against the TEST db
 
-# Local dev (root)
+# Local dev
 pnpm install
-pnpm redis:up                                   # local Redis via Docker
-pnpm dev                                         # all apps (turbo) — uses .env (TEST stack)
-pnpm lint && pnpm typecheck && pnpm test && pnpm build   # test/e2e load .env.test (never prod)
+pnpm redis:up                                    # local Redis via Docker (or use Upstash test)
+pnpm dev                                          # all apps (turbo) — uses .env (TEST stack)
+pnpm lint && pnpm typecheck && pnpm test && pnpm build
 
-# Database (test stack locally; prod only via CI / with prod DIRECT_DATABASE_URL exported)
+# Database (test locally; prod only via CI / with prod DIRECT_DATABASE_URL exported)
 pnpm --filter @restaurant/db db:migrate:deploy   # apply migrations (uses DIRECT_DATABASE_URL)
 pnpm db:export                                    # backup to ./backups
-pnpm check-env                                    # pre-deploy env validation (NODE_ENV=production for full checks)
+NODE_ENV=production pnpm check-env                # pre-deploy env validation
+
+# Branch flow
+git switch staging && git switch -c feature/xyz  # start work
+#   → PR into staging (auto-deploys) → PR staging→main → Deploy · Production
+
+# GitHub secrets (values prompted, hidden)
+gh secret set <NAME> --env staging    --repo majidifounder/maida
+gh secret set <NAME> --env production --repo majidifounder/maida
+gh secret list        --env production --repo majidifounder/maida
 
 # Admin bootstrap (after first deploy)
-#   UPDATE users SET role='ADMIN', "emailVerifiedAt"=now() WHERE email='you@yourdomain.com';
-#   then log in at admin.yourdomain.com → scan the TOTP QR → enter the 6-digit code
+#   UPDATE users SET role='ADMIN', "emailVerifiedAt"=now() WHERE email='you@get-maida.com';
+#   then log in at admin.get-maida.com → scan the TOTP QR → enter the 6-digit code
 ```
