@@ -30,7 +30,7 @@
     "@restaurant/types": "workspace:*",
     "bcryptjs": "^2.4.3",
     "bullmq": "^5.79.1",
-    "fastify": "^5.3.3",
+    "fastify": "^5.10.0",
     "fastify-plugin": "^5.0.0",
     "ioredis": "^5.11.1",
     "jsonwebtoken": "^9.0.3",
