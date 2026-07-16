@@ -17,14 +17,14 @@
     "@restaurant/types": "workspace:*",
     "@tanstack/react-query": "^5.90.12",
     "date-fns": "^4.1.0",
-    "react": "^18.3.1",
+    "react": "^19.2.7",
     "react-dom": "^18.3.1",
     "react-hook-form": "^7.66.1",
     "react-router-dom": "^6.30.2",
     "zod": "^3.25.76"
   },
   "devDependencies": {
-    "@types/react": "^18.3.27",
+    "@types/react": "^19.2.17",
     "@types/react-dom": "^18.3.7",
     "@vitejs/plugin-react": "^4.7.0",
     "autoprefixer": "^10.4.22",
