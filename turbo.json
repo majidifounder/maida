@@ -10,7 +10,10 @@
       "dependsOn": [],
       "outputs": ["coverage/**"],
       "cache": false,
-      "// passThroughEnv": "Turbo runs tasks in strict env mode: vars not listed here are stripped from the task process. The suite reads these from the environment when no .env.test file is present (i.e. in CI), so they must pass through or the TEST_DATABASE guard aborts.",
+      // Turbo runs tasks in strict env mode: vars not listed here are stripped
+      // from the task process. The suite reads these from the environment when
+      // no .env.test file is present (i.e. in CI), so they must pass through or
+      // vitest's TEST_DATABASE guard aborts the run.
       "passThroughEnv": [
         "TEST_DATABASE",
         "DATABASE_URL",
