@@ -1,58 +1,50 @@
 version: 2
+
+# Updates are opened against `staging` so they flow through the normal path
+# (staging → verify → PR to main), never straight onto the production branch.
+# Everything is grouped so a normal week is ~2 PRs, not 30. Config is read from
+# the default branch (main); PRs land on `staging`.
+
 updates:
+  # ── GitHub Actions — one grouped PR ────────────────────────────────────────
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    target-branch: "staging"
+    groups:
+      github-actions:
+        patterns: ["*"]
     labels:
       - "dependencies"
       - "github-actions"
 
+  # ── npm (whole pnpm workspace via the root lockfile) ───────────────────────
+  # A single root entry covers every package in the monorepo. Two groups keep
+  # the safe bulk in one mergeable PR and consolidate breaking majors into one
+  # review PR, instead of one PR per dependency.
   - package-ecosystem: "npm"
     directory: "/"
     schedule:
       interval: "weekly"
+    target-branch: "staging"
+    open-pull-requests-limit: 10
     groups:
-      production-deps:
+      npm-minor-and-patch:
         applies-to: version-updates
-        patterns: ["fastify", "@fastify/*", "prisma", "@prisma/*", "bullmq", "resend", "ioredis"]
-        update-types: ["patch", "minor"]
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+      npm-major:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: ["major"]
     labels:
       - "dependencies"
     ignore:
+      # Major bumps that need a deliberate migration, not an automated PR.
       - dependency-name: "fastify"
         update-types: ["version-update:semver-major"]
       - dependency-name: "vite"
         update-types: ["version-update:semver-major"]
-
-  - package-ecosystem: "npm"
-    directory: "/apps/api"
-    schedule:
-      interval: "weekly"
-    labels:
-      - "dependencies"
-      - "api"
-
-  - package-ecosystem: "npm"
-    directory: "/apps/web"
-    schedule:
-      interval: "weekly"
-    labels:
-      - "dependencies"
-      - "frontend"
-
-  - package-ecosystem: "npm"
-    directory: "/apps/dashboard"
-    schedule:
-      interval: "weekly"
-    labels:
-      - "dependencies"
-      - "frontend"
-
-  - package-ecosystem: "npm"
-    directory: "/apps/admin"
-    schedule:
-      interval: "weekly"
-    labels:
-      - "dependencies"
-      - "admin"
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
