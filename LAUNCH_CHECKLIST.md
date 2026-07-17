@@ -1,5 +1,19 @@
 # Maida — Production Deployment Guide
 
+> ## ⚠️ SUPERSEDED — read [LAUNCH_CHECKLIST_V2.md](LAUNCH_CHECKLIST_V2.md) instead
+>
+> This document describes an earlier architecture and is kept only for reference.
+> Two parts of it are now **wrong** — do not follow them:
+>
+> 1. **Local testing.** This guide points `.env` / `.env.test` at remote Supabase
+>    and Upstash. Local dev and tests now run against **Docker only**
+>    (`docker-compose.yml`); nothing local touches a remote database. See
+>    LAUNCH_CHECKLIST_V2.md § 2.1.
+> 2. **The deploy flow.** Branching, Railway service names and the promotion model
+>    are all defined in V2.
+>
+> Everything below predates both changes.
+
 A complete, start-to-finish guide to deploying the Maida restaurant‑reservation
 platform. **No prior knowledge of the stack is assumed.** Follow the parts in
 order; each step says exactly what to click, what to run, and where to find

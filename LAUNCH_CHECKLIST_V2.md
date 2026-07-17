@@ -32,7 +32,13 @@ everything before it runs on Lemon Squeezy **test mode**.
 |------|------|-------|
 | **Railway** | 1 project `maida`, 2 environments (`staging`, `production`), one service named `api` in each | 1 project |
 | **Vercel** | 1 project per app: `maida-web`, `maida-dashboard`, `maida-admin`. Staging = the Preview environment. Production = the Production environment. | 3 projects |
-| **Supabase / Upstash** | 1 test + 1 prod each | done |
+| **Supabase / Upstash** | 1 non-prod + 1 prod each | done |
+| **Local dev + tests** | Docker (`docker-compose.yml`): `postgres:16-alpine` + `redis:7-alpine` | 0 remote |
+
+> The non-prod Supabase/Upstash instances (`maida-test`) are **staging's** backing
+> services — nothing local points at them. Local dev and the test suites run against
+> Docker, so three environments (local / staging / production) stay isolated on a
+> Supabase free plan that allows only two projects.
 
 **Why not 5 Vercel projects:** a Vercel project already has Production and Preview
 environments with independently scoped env vars. One project per app gives you the
