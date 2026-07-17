@@ -28,7 +28,9 @@ async function assertApiReachable(): Promise<void> {
     } catch (err) {
       if (attempt === maxAttempts) {
         console.error('\n❌ API server not reachable at', BASE);
-        console.error('   Start it first: pnpm --filter @restaurant/api dev');
+        // `dev` loads `.env`; e2e needs the API on the SAME `.env.test` the suite
+        // reads, or it will drive a server pointed at a different database.
+        console.error('   Start it first: pnpm --filter @restaurant/api dev:test');
         console.error('   If port 3001 is stuck: scripts/stop-project-node.ps1\n');
         throw err;
       }

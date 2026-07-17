@@ -1,11 +1,36 @@
 services:
+  # Disposable local Postgres for `pnpm test` / `pnpm e2e`. Image, credentials
+  # and database name mirror the `postgres` service in .github/workflows/ci.yml
+  # so a local run and a CI run exercise the same engine. The suites CREATE and
+  # DELETE rows — this must never be pointed at staging or production.
+  postgres:
+    image: postgres:16-alpine
+    container_name: restaurant_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: maida_test
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d maida_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   redis:
     image: redis:7-alpine
     container_name: restaurant_redis
     restart: unless-stopped
+    # Single `$` so Compose interpolates at parse time. With `$$` the escape
+    # reaches redis-server as the literal string `${REDIS_PASSWORD:-devredispass}`
+    # and becomes the password — redis-server is not a shell and never expands it.
     command: >
       redis-server
-      --requirepass $${REDIS_PASSWORD:-devredispass}
+      --requirepass ${REDIS_PASSWORD:-devredispass}
       --maxmemory 256mb
       --maxmemory-policy allkeys-lru
       --appendonly yes
@@ -14,10 +39,11 @@ services:
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "$${REDIS_PASSWORD:-devredispass}", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-devredispass}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
 
 volumes:
   redis_data:
+  postgres_data:
