@@ -32,7 +32,13 @@ everything before it runs on Lemon Squeezy **test mode**.
 |------|------|-------|
 | **Railway** | 1 project `maida`, 2 environments (`staging`, `production`), one service named `api` in each | 1 project |
 | **Vercel** | 1 project per app: `maida-web`, `maida-dashboard`, `maida-admin`. Staging = the Preview environment. Production = the Production environment. | 3 projects |
-| **Supabase / Upstash** | 1 test + 1 prod each | done |
+| **Supabase / Upstash** | 1 non-prod + 1 prod each | done |
+| **Local dev + tests** | Docker (`docker-compose.yml`): `postgres:16-alpine` + `redis:7-alpine` | 0 remote |
+
+> The non-prod Supabase/Upstash instances (`maida-test`) are **staging's** backing
+> services — nothing local points at them. Local dev and the test suites run against
+> Docker, so three environments (local / staging / production) stay isolated on a
+> Supabase free plan that allows only two projects.
 
 **Why not 5 Vercel projects:** a Vercel project already has Production and Preview
 environments with independently scoped env vars. One project per app gives you the
@@ -199,7 +205,12 @@ it once, locally, before any host is involved.
 `pnpm test` and `pnpm e2e` load `.env.test` and **refuse to run** unless it sets
 `TEST_DATABASE=true` (`apps/api/vitest.config.ts`, `scripts/e2e/preload-env.ts`).
 Production never sets that var, so even if prod credentials were somehow loaded,
-the destructive suites abort. CI spins up its own throwaway Postgres and Redis.
+the destructive suites abort.
+
+Both CI and local runs use throwaway Postgres + Redis containers — CI via the
+`services:` block in `ci.yml`, locally via `docker-compose.yml` (`pnpm db:up`).
+`.env.test` points only at `localhost`, so the suites have no route to a remote
+database at all. That is the wall: a gate *and* no reachable target.
 
 **Never point these at production:** `pnpm test` · `pnpm e2e` · `pnpm db:seed` ·
 `pnpm db:reset` · `pnpm db:dev-reset`.
@@ -207,11 +218,20 @@ the destructive suites abort. CI spins up its own throwaway Postgres and Redis.
 ### 2.2 · Run the gate
 
 ```bash
-cp .env.test.example .env.test     # fill with TEST Supabase + Upstash creds only
+cp .env.test.example .env.test   # already points at local Docker — no creds needed
 pnpm install
-pnpm --filter @restaurant/db db:migrate:deploy   # against the TEST db
+pnpm db:up                       # start Docker postgres + redis
+pnpm db:migrate:test             # apply the schema to the LOCAL test db
 pnpm lint && pnpm typecheck && pnpm test && pnpm build
 ```
+
+> Local testing is Docker-only: `docker-compose.yml` runs `postgres:16-alpine`
+> and `redis:7-alpine`, mirroring the `services:` block in `ci.yml`. Nothing in
+> `.env.test` reaches Supabase or Upstash, so the suites cannot touch staging or
+> production even by accident. Use `pnpm db:nuke` to wipe the volumes.
+>
+> Use `db:migrate:test` (not `db:migrate:deploy`) for the test database —
+> `db:migrate:deploy` loads `.env`, not `.env.test`.
 
 - [ ] ✅ **VERIFY:** all four commands exit 0.
 - [ ] ✅ **VERIFY:** no production URL or credential appears in `.env`, `.env.test`,
@@ -862,9 +882,11 @@ IDs on each host as a known-good rollback target.
 ## Appendix · Command reference
 
 ```bash
-# Test-env setup (points the suites at TEST databases only)
+# Test-env setup (local Docker only — never staging/production)
 cp .env.test.example .env.test
-pnpm --filter @restaurant/db db:migrate:deploy
+pnpm db:up             # start Docker postgres + redis
+pnpm db:migrate:test   # apply the schema to the local test db
+pnpm db:nuke           # stop and wipe the volumes
 
 # Local dev
 pnpm install

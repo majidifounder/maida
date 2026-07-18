@@ -6,6 +6,7 @@
   "main": "src/index.ts",
   "scripts": {
     "dev": "dotenv -e ../../.env -- tsx watch src/index.ts",
+    "dev:test": "dotenv -e ../../.env.test -- tsx src/index.ts",
     "build": "tsc --project tsconfig.json",
     "start": "node dist/index.js",
     "worker": "dotenv -e ../../.env -- tsx src/worker.ts",

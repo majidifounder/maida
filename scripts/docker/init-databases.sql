@@ -1,0 +1,14 @@
+-- Runs once, on a fresh `postgres_data` volume (docker-entrypoint-initdb.d).
+--
+-- The `postgres` service already creates POSTGRES_DB (maida_test) for
+-- `pnpm test` / `pnpm e2e`. Local development needs its OWN database: the test
+-- suites truncate maida_test on every run, so sharing one would delete whatever
+-- you were working on.
+--
+--   maida_test  -> .env.test  (pnpm test, pnpm e2e)   -- disposable, truncated
+--   maida_dev   -> .env       (pnpm dev, db:seed)     -- your working data
+--
+-- Apply the schema to each after `pnpm db:up`:
+--   pnpm db:migrate:test    (maida_test)
+--   pnpm db:migrate:deploy  (maida_dev)
+CREATE DATABASE maida_dev;

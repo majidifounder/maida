@@ -17,10 +17,12 @@ if (process.env.TEST_DATABASE !== 'true') {
     '\n❌ Refusing to run e2e: TEST_DATABASE is not "true".\n' +
       '   The e2e suite creates AND deletes real rows, so it must point at a\n' +
       '   throwaway test database — never production.\n\n' +
-      '   Fix: copy .env.test.example → .env.test with your TEST Supabase +\n' +
-      '   Upstash credentials (it sets TEST_DATABASE=true), and make sure the\n' +
-      '   API server under test uses the same test databases.\n' +
-      '   See LAUNCH_CHECKLIST.md → "Test vs Production environments".\n',
+      '   Fix: cp .env.test.example .env.test   (it sets TEST_DATABASE=true and\n' +
+      '   points at the local Docker containers), then:\n' +
+      '     pnpm db:up                            # start Docker postgres + redis\n' +
+      '     pnpm db:migrate:test                  # apply the schema\n' +
+      '     pnpm --filter @restaurant/api dev:test  # API on the SAME test env\n' +
+      '   See LAUNCH_CHECKLIST_V2.md → 2.1 "The test/production wall".\n',
   );
   process.exit(1);
 }

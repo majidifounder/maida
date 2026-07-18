@@ -23,9 +23,11 @@ if (process.env.TEST_DATABASE !== 'true') {
     '\n❌ Refusing to run tests: TEST_DATABASE is not "true".\n' +
       '   The suites CREATE and DELETE data, so they must point at a throwaway\n' +
       '   test database — never production.\n\n' +
-      '   Fix: copy .env.test.example → .env.test and fill in your TEST Supabase\n' +
-      '   + Upstash credentials (it sets TEST_DATABASE=true).\n' +
-      '   See LAUNCH_CHECKLIST.md → "Test vs Production environments".\n',
+      '   Fix: cp .env.test.example .env.test   (it sets TEST_DATABASE=true and\n' +
+      '   points at the local Docker containers), then:\n' +
+      '     pnpm db:up             # start Docker postgres + redis\n' +
+      '     pnpm db:migrate:test   # apply the schema to the local test db\n' +
+      '   See LAUNCH_CHECKLIST_V2.md → 2.1 "The test/production wall".\n',
   );
   process.exit(1);
 }
