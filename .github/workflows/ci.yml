@@ -105,6 +105,11 @@ jobs:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/maida_test
           DIRECT_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/maida_test
 
+      - name: Spec drift guard
+        # Fails when spec-critical code changed without the matching living
+        # spec being re-synced. See docs/architecture/DRIFT-GUARD.md.
+        run: node scripts/spec-drift-check.mjs --check
+
       - name: Lint
         run: pnpm lint
 
