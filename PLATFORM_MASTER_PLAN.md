@@ -1,20 +1,6 @@
 # PLATFORM MASTER PLAN — Maida
 
-*Written 2026-07-10, derived entirely from source code in this repository (including the then-uncommitted "Phase 17" working tree). File-level system documentation lives in [PLATFORM_REVIEW.md](PLATFORM_REVIEW.md); this document assumes that baseline and goes further: it judges the business, the product, and the architecture, and lays out the path to market leadership. Nothing here defers to existing decisions.*
-
-> **Execution log (updated 2026-07-10, same day):** Phase A is largely done and committed to `main`:
-> **R1** Phase 17 committed; `lsUpdatedAt` webhook ordering guard wired (transactional, stale events dropped, test-covered); admin plan override now sets `status: ACTIVE` (comps actually work).
-> **R2** New `@restaurant/api-client` workspace package (single-flight refresh, 401→refresh→replay, proactive refresh + focus recovery, session-death only on server rejection; 14 unit tests). All three SPAs consume it via their old import paths; the dashboard WebSocket reconnects with a fresh token on close 4001. **The 15-minute session death is fixed.**
-> **R3** WeeklySchedulePanel (per-day multi-window editor, overnight, closures) shipped in the dashboard; config panel no longer sends open/close (schedule-wipe footgun closed); server rejects overlapping same-day windows; diner app consumes `serviceWindows[]`, `bookable`/`notice`, and the authoritative `offersCustomReservations` flag; until-close now caps at the *containing* window on split-service days.
-> **R5** CI runs the full integration suite against ephemeral Postgres 16 + Redis 7 with migrations and generated keys.
-> **R6** Maintenance worker (BullMQ schedulers): reservation status reconciliation + hold release every 5 min (keeps the partial GiST index small), daily refresh-token purge and audit-log retention (`AUDIT_LOG_RETENTION_DAYS`). Adjacent-day availability-cache invalidation fixed.
-> **R7 (part)** Day-of reminder emails (24h/2h lead, cancel-safe, ICS calendar attachment on confirmations). *Email verification at signup is still open.*
-> **R4 (2026-07-10, later the same day)** — the dashboard service view shipped: `/restaurants/:id/service` built to `maida-brand-guidelines.md` v3.0 (monochrome system, DM type, status = color+icon+label), with the full UX charter in `docs/R4-SERVICE-UX.md`. Day book grouped by operational relevance, walk-in + phone-booking dialogs (409 → one-tap "book the suggested time"), optimistic lifecycle actions with two-step inline arming for destructive ones (undo deliberately deferred until reinstatement endpoints exist — documented), free-tables-now strip, time-left on seated rows, keyboard shortcuts, adjacent-day prefetch, WS + 60s poll safety net. Supporting API: `rawStatus` exposed, day-list limit → 100. Detail page is now pure settings. Dashboard fully de-blued. R4 self-critique (§13 of the UX doc) feeds R4.1: table-occupancy overview refinements, waitlist tie-in, multi-device race UX.
-> **R7b/R8/R15 (2026-07-10, same day)** — Email verification shipped: gates booking (diners) and restaurant creation (owners), never the session; 24h single-use links, resend banners in both apps, grandfathered existing accounts, zero-extra-query enforcement, integration-tested. Billing coherence shipped: trial = full PRO for 14 days; EXPIRED = locked like an expired trial (free-forever loophole closed, existing-reservation management retained); quota exhaustion shows diners a neutral message and emails the owner once/month the moment bookings start bouncing. Edge hardening shipped: CF-Connecting-IP only trusted with proven Cloudflare provenance (x-cf-origin-secret, timing-safe); check-env blocks prod deploys missing CF_ORIGIN_SECRET or pgbouncer=true on the transaction pooler.
-> **R15 completion (2026-07-11)** — critical-review pass shipped the versioned availability cache: per-restaurant version counter gives O(1) invalidation for config mutations (which previously never invalidated at all — hours/table/rule changes served stale slots up to 300s); entries now carry the full response, so an availability cache hit costs 1 DB query + 1 Redis MGET (was ~5 queries) and warm search costs 3 queries + 1 MGET total; billing is never cached (live joined-row check); empty weekly schedules rejected (would silently mean "always open" via the pre-migration fallback). `docs/ARCHITECTURE-AVAILABILITY.md` is current. R15 is done pending the live-stack load tests.
-> **R15 search (2026-07-10, same day)** — availability search rebuilt as a five-gate, cache-first pipeline (SQL candidates → billing gate → schedule gate → shared-cache MGET → bounded-concurrency engine for misses that warms the cache). Warm cost: ~5 DB queries + 1 Redis round-trip per search regardless of candidate count; cold storms pool-bounded by construction. Fixed en route: q was not applied to availability candidates, and lapsed owners' restaurants appeared bookable. Full design record with scale model and revisit thresholds in `docs/ARCHITECTURE-AVAILABILITY.md`; integration-tested (closed-day, lapsed-owner incl. warm-cache ordering, q-filtering). Outstanding validation needing a live stack: booking-burst load test against PgBouncer + cold-search storm benchmark — run before the first marketing push.
-> **Still open:** web/admin brand rollout, R4.1 service-view items, R9 widget/SSR page (next wedge milestone). **Founder decisions pending:** the pricing-axis change to flat per-location tiers (requires new Lemon Squeezy products — see §11/R8), and applying the two pending migrations to the dev DB (`pnpm db:migrate`: service schedule + email verification).
-> **Operator action required:** the new migration is not yet applied to the dev database — run `pnpm db:migrate` (it was permission-gated for the agent). The API integration suite needs it locally; CI is self-contained.
+*Written 2026-07-10, derived from source. **Scope (rescoped 2026-07-19): strategy only** — product vision, market analysis, pricing, the R1–R21 plan, and standing rulings. Implementation status, completion tracking, and architecture state are deliberately **not** maintained here: current architecture lives in [docs/architecture/](docs/architecture/README.md) (living specs in `spec/`), open findings in [docs/architecture/BACKLOG.md](docs/architecture/BACKLOG.md), and session-level status in [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md). Historical execution logs formerly in this file are preserved in git history and reconciled in [docs/architecture/03-ground-truth-reconciliation.md](docs/architecture/03-ground-truth-reconciliation.md).*
 
 ---
 
@@ -35,47 +21,12 @@ Maida is a multi-tenant restaurant reservation SaaS: restaurant owners subscribe
 
 ## 2. What the Platform Is Today
 
-### 2.1 System in one paragraph
-
-pnpm/Turborepo monorepo, TypeScript throughout. One Fastify 5 API (`apps/api`) with Prisma 5 → Supabase Postgres, ioredis → Upstash, BullMQ → Resend emails, WebSocket live-updates to the owner dashboard. Three React 18 + Vite SPAs: `web` (diner), `dashboard` (owner), `admin` (internal, TOTP-gated). Billing via Lemon Squeezy webhooks. Deploy intent (from workflows/checklist): Railway (API) + Vercel (SPAs) + Cloudflare in front. Full detail: [PLATFORM_REVIEW.md](PLATFORM_REVIEW.md) Part 1.
-
-### 2.2 The engine (the crown jewel)
-
-- Atomic bookable units = physical tables (`dining_tables`) plus owner-predefined combinations (FLEXIBLE mode, plan-gated).
-- Every reservation writes one hold row per table (`reservation_tables`) carrying its `[startsAt, endsAt)` interval; a GiST `EXCLUDE` constraint over `(tableId, tstzrange)` where `releasedAt IS NULL` makes overlapping holds impossible *by construction* — no application locking, no race windows. Conflicts surface as SQLSTATE 23P01 → HTTP 409 with a `suggestedNextAvailableAt`.
-- Durations from party-size turn-time rules; timezone math via a dependency-free `Intl` implementation; availability walked in 15-minute steps over per-weekday service windows, Redis-cached 300 s.
-- As of the Phase 17 working tree: per-weekday multi-window schedules with overnight support (`service_periods`), blackout dates (`restaurant_closures`), and — finally — *server-side* enforcement that bookings fall inside opening hours.
-
-This is the same architectural shape the mature players converged on. Keep it. Everything in this plan builds *on* it, not around it.
-
-### 2.3 Where the working tree actually stands (important)
-
-The repo contains uncommitted Phase 17 work that resolves most of the audit's P0s. A new team must know what is done vs. half-done vs. untouched:
-
-| Area | Status in working tree |
-|---|---|
-| Weekly schedule + closures + overnight windows, server-side window check | ✅ Backend done (API endpoints exist), **no owner UI, diner UI unaware of multi-window days** |
-| Cross-tenant `tableIds` validation; staff/walk-in hardening | ✅ Done |
-| Email timezone correctness; walk-in ghost emails removed | ✅ Done |
-| Auth returns 503 (not 401) on Redis/DB outage | ✅ Done |
-| Race-safe refresh rotation | ✅ Done (server side) |
-| Diner abuse guards (365-day horizon, overlap block, 20-active cap, 12/min rate limit); quota excludes CANCELLED/NO_SHOW; advisory-lock exact quota | ✅ Done |
-| Suggestion scan efficiency (1 query/day, 14-day scan) | ✅ Done |
-| Prisma error → 4xx mapping (bad UUIDs, unique/check violations) | ✅ Done |
-| Custom-reservation gating unified (`offersCustomReservations` server flag) | ✅ Done — **diner UI still infers from fees** |
-| Lapsed owners can manage existing reservations; unbookable restaurants signal `bookable:false` | ✅ Done — **diner UI doesn't render the notice yet** |
-| Alerting (`ALERT_WEBHOOK_URL`), worker split-out (`RUN_WORKER_IN_PROCESS`), fatal-error hooks | ✅ Done |
-| **Frontend 15-minute session death** (no 401→refresh→retry, WS terminal on close 4001) | ❌ **Untouched — still the worst live bug** |
-| **Lemon Squeezy out-of-order webhook guard** | ⚠️ **Half-done: `lsUpdatedAt` column migrated but no code reads or writes it** |
-| Search-with-availability fan-out (~3×100 queries, anonymous, uncached) | ❌ Open |
-| Owner reservation list (20 oldest, no pagination, browser-tz, no walk-in/override/extend UI) | ❌ Open |
-| `CF-Connecting-IP` trusted unconditionally; `CF_ORIGIN_SECRET` optional | ❌ Open |
-| PgBouncer `?pgbouncer=true` undocumented/unvalidated | ❌ Open |
-| CI runs the test suite with no database → integration tests cannot pass in CI | ❌ Open |
-| No status reconciliation (rows stay SCHEDULED/SEATED forever; display-layer lies) | ❌ Open |
-| No cleanup jobs (refresh_tokens, audit_logs, released holds grow unboundedly) | ❌ Open |
-
-**First action for any team: commit Phase 17** (it is coherent and reviewed here), then finish its two loose ends (session refresh, `lsUpdatedAt` wiring) before anything new.
+**Superseded — see [docs/architecture/](docs/architecture/README.md).** The system map is
+[01-system-map.md](docs/architecture/01-system-map.md); per-subsystem contracts are the
+living specs in [docs/architecture/spec/](docs/architecture/spec/README.md) (the engine:
+[spec/reservation.md](docs/architecture/spec/reservation.md)). The one strategic fact this
+plan depends on: the reservation engine (GiST-exclusion, interval-overlap availability) is
+architecturally correct and is the asset everything below builds on — keep it.
 
 ---
 
@@ -272,59 +223,36 @@ Priorities: **P0** = blocks charging real restaurants; **P1** = blocks scale/ret
 
 ---
 
-## 9. Deep Technical Reviews
+## 9. Standing Architectural Rulings (strategy-level; technical state lives elsewhere)
 
-### 9.1 Database — verdict: **strong core, wrong edges; evolve, don't replace**
+The detailed 2026-07-10 technical reviews are superseded by
+[docs/architecture/](docs/architecture/README.md) (current state) and
+[05-systemic-review.md](docs/architecture/05-systemic-review.md) (systemic verdicts). What
+remains *strategic* — the rulings future work should honor:
 
-Keep: UUIDs, citext email, timestamptz(3), the exclusion constraint, soft deletes, snapshot fee columns, append-only audit shape, `service_periods`/`restaurant_closures` (Phase 17 modeling is right, including overnight-as-`close<=open` and closures-suppress-starts semantics).
-
-Change:
-- **Introduce `organizations`** (owner → org member) and hang restaurants + subscriptions off the org, not the user. This is the single most important schema decision to make *early*: subscription-per-user is already the wrong shape (an owner's plan gates *all* their restaurants jointly; a sold restaurant can't change hands; a second manager can't exist). Migration is straightforward now (1 org per owner backfill) and brutal in two years.
-- **Introduce `guests`** (per-restaurant, nullable link to platform user, phone/email, notes/tags) and point `reservations.guestId` at it; `guestName` becomes a fallback.
-- `turn_time_rules` allows overlapping bands silently (first-match by `minPartySize asc`); add an overlap check or explicit priority.
-- Prisma cannot express the exclusion constraint (fine — raw migration), but the migration history still carries the retired slot-model detour; squash before the next team reads it.
-- No RLS in production (app-layer only). Acceptable for a single API surface; revisit when a public API or analytics warehouse reads the DB directly.
-- Add missing operational indexes when the service view ships (e.g., `reservations(restaurantId, startsAt)` exists ✅; will need `(restaurantId, status, startsAt)` for the floor filters).
-
-### 9.2 Reservation/availability engine — verdict: **right foundation; needs pacing, granularity, and a capacity concept**
-
-- Correctness: post-Phase 17, genuinely solid — window enforcement server-side, tables validated, races handled at the constraint, quota exact under an advisory lock.
-- **Pacing is the missing engine concept** (§5 item 7). Model: per-restaurant `maxCoversPerInterval` / `maxPartiesPerInterval`; enforce inside `createReservationWithHolds` (count within the tx under the same advisory lock — cheap) and in `computeAvailabilityTimes` (in-memory against the day occupancy it already loads).
-- 15-min step is hardcoded (`AVAILABILITY_STEP_MINS`); make it per-restaurant (15/30/60).
-- Best-fit = smallest max capacity; fine as default, but owners will want table-priority (keep windows for walk-ins, fill bar first). A per-table `bookingPriority` sortkey is a cheap 80% solution.
-- Combinations with deactivated member tables remain bookable (P2-7) — filter combos with inactive members in `loadBookableUnits`.
-- Cache invalidation misses the adjacent day for windows crossing midnight — now *more* likely with overnight periods; invalidate both local dates touched by `[startsAt, endsAt)`.
-- The old `serviceWindowBounds`-based helpers in `service-hours.ts` and any callers should be retired to one source of truth (`service-schedule.ts`).
-- The `web` SPA still assumes a single contiguous window per day and computes scan dates in browser-UTC — must consume `serviceWindows[]` and restaurant-local dates.
-
-### 9.3 API — verdict: **good; standardize and open up**
-
-Consistent module pattern (routes/schema/service), zod at the boundary, 422 details, honest error taxonomy post-`mapPrismaError`. To do: version the API (`/v1`) *before* the widget/public API exists; publish OpenAPI (generate from zod); idempotency keys on booking; cursor pagination (offset today); a public slug-lookup endpoint (slugs exist, no route uses them — the SSR booking page needs it); replace the in-body refresh-token return (cookie is enough; body copy widens exposure).
-
-### 9.4 Backend architecture — verdict: **modular monolith is correct; keep it for years**
-
-Do not microservice. The seams are already clean (modules, worker separable, pub/sub). What must change is *deployment posture*, not architecture: worker as its own process in prod (env flag exists — flip it), health-checked, plus the reliability items in §8.5. Bcryptjs (pure JS, event-loop-blocking ~200 ms/login) → native `argon2id` when convenient.
-
-### 9.5 Frontend — verdict: **the weakest layer; concentrated effort needed**
-
-Three competent CRUD SPAs sharing no code (`packages/ui` is empty while Button/Input/Card are triplicated — either fill the package or delete it). The critical items: the shared fetch wrapper with 401→refresh→retry + proactive refresh (P0-1); restaurant-tz formatting *everywhere* (one shared `formatInRestaurantTz` util); the dashboard service view (§8.1); consuming the Phase 17 payloads (`serviceWindows`, `bookable`, `offersCustomReservations`) that the server now sends and the clients ignore. The diner surface should be re-founded as SSR (Next/Remix/Astro) *when the public booking page ships* — don't retrofit the SPA; build the booking page right and let the SPA wither.
-
-### 9.6 Infrastructure & deployment — verdict: **sane for stage; harden the gaps**
-
-Railway+Vercel+Supabase+Upstash+Cloudflare is a reasonable v1. Gaps: CI test databases (P0); `pgbouncer=true` (P1); staging actually exercised (deploy workflows exist; nothing proves staging runs); Cloudflare origin lockdown made mandatory; secrets out of laptops; uptime/error monitoring external to the box. Cost posture is excellent (<€100/mo until real traffic) — the platform's cost curve is dominated by Postgres and Resend/Twilio volume, both linear and fine.
+- **Modular monolith is correct; keep it for years.** Do not microservice. Change
+  *deployment posture* (standalone worker, health checks, multi-instance readiness — SYS-1),
+  not architecture. Re-architect only when a single Postgres writer saturates on
+  hold-writes (§15).
+- **The engine is the asset — evolve, don't replace.** Missing engine *concepts* are
+  product roadmap items, not rewrites: pacing (covers/interval under the existing advisory
+  lock), per-restaurant slot granularity, table priority.
+- **Introduce `organizations` early** (subscription-per-user is already the wrong shape —
+  BACKLOG SYS-7/CI-A4): cheap now, brutal in two years. Likewise `guests` (per-restaurant
+  guest book) as the CRM moat's data model.
+- **The frontend is the weakest layer**; the diner surface should be re-founded as SSR
+  when the public booking page ships (R9) — don't retrofit the SPA.
+- **API openness comes before the widget**: `/v1` versioning, OpenAPI from zod,
+  idempotency keys, cursor pagination, public slug endpoint.
 
 ---
 
-## 10. Technical Debt Register (beyond the open findings)
+## 10. Technical Debt Register
 
-1. Hand-written `packages/types` drifting from Prisma/zod (three consumers).
-2. Plan limits duplicated client-side (`plan-limits.ts`) — server already sends `planComparison`; delete the copy.
-3. Retired slot-model residue: migration history, `@deprecated` aliases, `load-test.ts` comments, `admin` "bookings" naming.
-4. `deriveDisplayStatus` (presentation-layer status lies) — delete once the reconciliation job exists.
-5. Legacy `openMinutes/closeMinutes` now redundant with `service_periods` — keep one release for fallback, then drop columns and the fallback branch in `loadRestaurantSchedule`.
-6. Tests hit whatever DB `.env` points at (developer machines share the dev DB) — point vitest at a dedicated ephemeral DB locally too.
-7. WS URL built from `window.location.host` while REST honors `VITE_API_URL` — breaks split-origin deploys silently.
-8. Registration auto-login consumes a login rate-limit slot (shared-IP onboarding trap).
+**Superseded.** The single tracked backlog is
+[docs/architecture/BACKLOG.md](docs/architecture/BACKLOG.md) (original finding IDs
+preserved; guard-test mapping in
+[docs/architecture/INVARIANTS.md](docs/architecture/INVARIANTS.md)).
 
 ---
 
@@ -347,14 +275,14 @@ Railway+Vercel+Supabase+Upstash+Cloudflare is a reasonable v1. Gaps: CI test dat
 
 ---
 
-## 12. Performance Bottlenecks (ranked)
+## 12. Performance Bottlenecks
 
-1. **Search-with-availability fan-out** (anonymous, ~300 queries/request, 100-restaurant hard cap) — precompute/caching required before any marketing push.
-2. **Prepared-statement failures under PgBouncer** without `pgbouncer=true` — a latent production incident, not a perf tune.
-3. Interactive booking transactions (15 s maxWait/20 s timeout) pin pooled connections; acceptable at low volume, needs pool sizing + load test.
-4. Bcryptjs on the event loop (login bursts stall the process).
-5. Redis fail-fast client (no retry, 2 s timeouts) converts blips into 503 storms — right *direction* (fail fast + 503) but needs a small in-process grace cache for the deny list.
-6. Availability cache is fine (300 s + invalidation); extend it to the search path and it covers 90% of read load.
+**Superseded** (several items on the 2026-07-10 list have since been fixed — e.g. the
+search fan-out and PgBouncer guard). Current performance/scale posture:
+[05-systemic-review.md](docs/architecture/05-systemic-review.md) (SYS-1/SYS-2) and open
+items in [docs/architecture/BACKLOG.md](docs/architecture/BACKLOG.md) (P2-5, CI-D4,
+BLND-1). The one standing strategic note: run the booking-burst load test against
+PgBouncer before the first marketing push (`pnpm load-test`).
 
 ---
 
@@ -418,4 +346,9 @@ The *product and strategy* as currently aimed could not. A diner-marketplace wit
 
 ---
 
-*Cross-references: file-level system documentation and the full finding-by-finding audit are in [PLATFORM_REVIEW.md](PLATFORM_REVIEW.md). Working-tree status as of this writing is summarized in §2.3 — commit Phase 17 first.*
+*Cross-references: current architecture — [docs/architecture/](docs/architecture/README.md)
+(living specs, invariants, backlog); editing workflow — [AGENTS.md](AGENTS.md); deployment
+operations — [LAUNCH_CHECKLIST_V2.md](LAUNCH_CHECKLIST_V2.md). The historical
+finding-by-finding audits (PLATFORM_REVIEW, SECURITY_REVIEW) are retired — see
+[docs/architecture/RETIRED.md](docs/architecture/RETIRED.md); their open findings live on in
+[docs/architecture/BACKLOG.md](docs/architecture/BACKLOG.md) under their original IDs.*
