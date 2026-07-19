@@ -1,0 +1,57 @@
+{
+  "$comment": "Drift guard map: spec file -> source paths (files or directories) whose change requires reviewing that spec. Checked by scripts/spec-drift-check.mjs (CI + pnpm spec:check). After updating a spec, run `pnpm spec:sync` to refresh .spec-hashes.json in the same commit.",
+  "docs/architecture/spec/platform.md": [
+    "apps/api/src/index.ts",
+    "apps/api/src/env.ts",
+    "apps/api/src/lib/redis.ts",
+    "apps/api/src/lib/cloudflare.ts",
+    "apps/api/src/lib/logger.ts",
+    "apps/api/src/lib/threat-detector.ts",
+    "apps/api/src/lib/handle-route-error.ts",
+    "apps/api/src/plugins/cloudflareOnly.ts",
+    "packages/db/src",
+    "packages/db/prisma/schema.prisma",
+    "railway.json",
+    ".github/workflows"
+  ],
+  "docs/architecture/spec/auth-session.md": [
+    "apps/api/src/modules/auth",
+    "apps/api/src/lib/jwt.ts",
+    "apps/api/src/lib/cookies.ts",
+    "apps/api/src/plugins/authenticate.ts"
+  ],
+  "docs/architecture/spec/reservation.md": [
+    "apps/api/src/modules/reservation",
+    "apps/api/src/lib/reservation-engine.ts",
+    "apps/api/src/lib/service-schedule.ts",
+    "apps/api/src/lib/timezone.ts"
+  ],
+  "docs/architecture/spec/availability.md": [
+    "apps/api/src/modules/restaurant",
+    "apps/api/src/lib/availability-cache.ts",
+    "apps/api/src/lib/image-validation.ts",
+    "apps/api/src/lib/r2-storage.ts"
+  ],
+  "docs/architecture/spec/billing.md": [
+    "apps/api/src/modules/subscription",
+    "apps/api/src/lib/lemon-squeezy.ts",
+    "apps/api/src/lib/plan.ts"
+  ],
+  "docs/architecture/spec/notifications.md": [
+    "apps/api/src/services/email.service.ts",
+    "apps/api/src/lib/queue.ts",
+    "apps/api/src/lib/pubsub.ts",
+    "apps/api/src/lib/notify-once.ts",
+    "apps/api/src/lib/alert.ts",
+    "apps/api/src/workers",
+    "apps/api/src/worker.ts",
+    "apps/api/src/plugins/websocket.ts"
+  ],
+  "docs/architecture/spec/admin.md": [
+    "apps/api/src/modules/admin"
+  ],
+  "docs/architecture/INVARIANTS.md": [
+    "apps/api/src/__tests__/guards",
+    "scripts/spec-drift-check.mjs"
+  ]
+}
