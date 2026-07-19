@@ -1,0 +1,34 @@
+{
+  "docs/architecture/spec/platform.md": {
+    "digest": "86752002f212ffa541d0de4e11520a599bffd5ae56e4c97359988023bf399db4",
+    "watchedFiles": 16
+  },
+  "docs/architecture/spec/auth-session.md": {
+    "digest": "41d02c9bb7aadab0a981b909f8a78e79c8ccec45f592faca2ab391767a7060f0",
+    "watchedFiles": 6
+  },
+  "docs/architecture/spec/reservation.md": {
+    "digest": "b0bc4b6428547242bcc13a2c1d3124681a0c08f28ad06a93494d58419e9add81",
+    "watchedFiles": 6
+  },
+  "docs/architecture/spec/availability.md": {
+    "digest": "daf47548334290ddf76e84b8b6d83629d4c745400746ec9bf68cd31ef66d5c3d",
+    "watchedFiles": 6
+  },
+  "docs/architecture/spec/billing.md": {
+    "digest": "4026b0c948fb6df06cb9e240c75528bbb14e5026eba3e45be6d5fdc009f698aa",
+    "watchedFiles": 5
+  },
+  "docs/architecture/spec/notifications.md": {
+    "digest": "f3b3e081a4c89cfb97bd9bcedec1454357cf0b230ab4986bcd3d7afc613a7b22",
+    "watchedFiles": 9
+  },
+  "docs/architecture/spec/admin.md": {
+    "digest": "8e82b05cea9a9bdb6354d9ef7944d89a3a8954275b87d51cec65064dc1a5cc44",
+    "watchedFiles": 3
+  },
+  "docs/architecture/INVARIANTS.md": {
+    "digest": "7dbbc9874b998f8286c82937c3e5a9f6d5785f00628823061d4e80f4b5a50f0b",
+    "watchedFiles": 5
+  }
+}

@@ -25,6 +25,8 @@
     "load-test":  "tsx scripts/load-test.ts",
     "e2e":        "tsx scripts/e2e/run.ts",
     "check-env":  "tsx scripts/check-env.ts",
+    "spec:check": "node scripts/spec-drift-check.mjs --check",
+    "spec:sync":  "node scripts/spec-drift-check.mjs --update",
     "db:export":    "tsx scripts/export-backup.ts",
     "db:restore":   "tsx scripts/restore-backup.ts",
     "db:dev-reset": "tsx scripts/dev-data-reset.ts"
